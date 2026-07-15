@@ -28,14 +28,17 @@ The following workspace rules are STRICTLY ENFORCED for this project:
 
 ## Project Context
 
-`jupyterlab_passkey_extension` is a JupyterLab 4 extension that captures passkeys in
-JupyterLab and exposes them through a supporting server API, so internal functionality such
-as vaults or secrets can authenticate with the passkey (WebAuthn) capability of the user's
-browser or operating system. It ships as a Python server extension plus an NPM frontend,
-both named `jupyterlab_passkey_extension`.
+`jupyterlab_passkey_extension` is a JupyterLab 4 extension that bridges the passkey
+(WebAuthn) capability of the user's browser or operating system to local clients with no
+browser of their own - the JupyterLab terminal and the CLI or API clients running on the
+Jupyter server. It runs the browser-side passkey ceremony and hands the result back to the
+requesting local process. It is purpose-agnostic and performs no cryptography; callers
+supply every parameter. It ships as a Python server extension plus an NPM frontend, both
+named `jupyterlab_passkey_extension`.
 
-- **Frontend** - TypeScript, `@jupyterlab/application`, built with `@jupyter/builder`
-- **Server** - `jupyter_server` Tornado API handlers under `jupyterlab_passkey_extension/`
+- **Frontend** - TypeScript, `@jupyterlab/application`; one command `passkey:run` with args `{op:"get"|"create", nonce, rp_id, cred_id?, prf_salt?, user?}` runs the ceremony (optional PRF eval) and POSTs the result
+- **Server** - `jupyter_server` Tornado handlers: one authenticated `POST <base>/jupyterlab-passkey/result` that writes a one-shot `0600` `/dev/shm/jlab-passkey/<nonce>.json` relay (never logged), plus `GET <base>/jupyterlab-passkey/health`
+- **Trigger** - consumers invoke `passkey:run` via jupyterlab-notify (the notification button click supplies the required WebAuthn user gesture); this extension builds no request-submission surface of its own
 - **Build/release** - versioned Makefile (currently v1.34), jupyter-releaser CI/CD workflows
 - **Tests** - Jest (frontend), pytest (server), Playwright (`ui-tests/`)
 
@@ -46,12 +49,12 @@ both named `jupyterlab_passkey_extension`.
 - **Commit `package.json` and `package-lock.json` together** - always stage and commit both lockfiles in the same commit; never split them across commits
 - **Keep the Makefile current** - always check the local `Makefile` version against `/home/lab/workspace/private/jupyterlab/@utils/jupyterlab-extensions/Makefile` and update the local copy as soon as a newer version is found
 
-## Required Workspace Skills
+## Required Global Skills
 
-These skills MUST be used when working on this project:
+These global skills (at `/home/lab/.claude/skills/`) MUST be used when working on this project:
 
 - **jupyterlab-extension** - extension development guidelines, CI/CD, jupyter-releaser, common caveats
-- **playwright** - browser automation for screenshots and UI verification
+- **my-browser** - browser automation for screenshots and UI verification
 
 ## Journal Rules (Project-Specific)
 
