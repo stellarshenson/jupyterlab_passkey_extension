@@ -1,0 +1,19 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: v4.6.2
+_src_path: https://github.com/jupyterlab/extension-template
+advanced: false
+author_email: konrad.jelen+github@gmail.com
+author_name: Stellars Henson
+has_ai_rules: false
+has_binder: false
+has_settings: false
+kind: frontend-and-server
+labextension_name: jupyterlab_passkey_extension
+project_short_description: Jupyterlab extension to allow passkeys to be captured by
+    Jupyterlab with supporting API, CLI etc - to allow internal functionality such
+    as vaults or secrets to be using the passkey functionality of the user's browser
+    or operating system
+python_name: jupyterlab_passkey_extension
+repository: ''
+test: true
+

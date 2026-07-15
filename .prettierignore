@@ -1,0 +1,8 @@
+node_modules
+**/node_modules
+**/lib
+**/package.json
+!/package.json
+jupyterlab_passkey_extension
+eslint.config.mjs
+.venv
