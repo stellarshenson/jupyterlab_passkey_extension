@@ -37,7 +37,7 @@ supply every parameter. It ships as a Python server extension plus an NPM fronte
 named `jupyterlab_passkey_extension`.
 
 - **Frontend** - TypeScript, `@jupyterlab/application`; one command `passkey:run` with args `{op:"get"|"create", nonce, rp_id, cred_id?, prf_salt?, user?}` runs the ceremony (optional PRF eval) and POSTs the result
-- **Server** - `jupyter_server` Tornado handlers: one authenticated `POST <base>/jupyterlab-passkey/result` that writes a one-shot `0600` `/dev/shm/jlab-passkey/<nonce>.json` relay (never logged), plus `GET <base>/jupyterlab-passkey/health`
+- **Server** - `jupyter_server` Tornado handlers: one authenticated `POST <base>/jupyterlab-passkey-extension/result` that writes a one-shot `0600` `/dev/shm/jlab-passkey-<uid>/<nonce>.json` relay (never logged), plus `GET <base>/jupyterlab-passkey-extension/health`
 - **Trigger** - consumers invoke `passkey:run` via jupyterlab-notify (the notification button click supplies the required WebAuthn user gesture); this extension builds no request-submission surface of its own
 - **Build/release** - versioned Makefile (currently v1.34), jupyter-releaser CI/CD workflows
 - **Tests** - Jest (frontend), pytest (server), Playwright (`ui-tests/`)

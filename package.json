@@ -1,6 +1,6 @@
 {
     "name": "jupyterlab_passkey_extension",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Jupyterlab extension to allow passkeys to be captured by Jupyterlab with supporting API, CLI etc - to allow internal functionality such as vaults or secrets to be using the passkey functionality of the user's browser or operating system",
     "keywords": [
         "jupyter",
@@ -57,6 +57,7 @@
     },
     "dependencies": {
         "@jupyterlab/application": "^4.0.0",
+        "@jupyterlab/apputils": "^4.0.0",
         "@jupyterlab/coreutils": "^6.0.0",
         "@jupyterlab/services": "^7.0.0"
     },
@@ -83,13 +84,18 @@
         "stylelint-config-standard": "^34.0.0",
         "stylelint-csstree-validator": "^3.0.0",
         "stylelint-prettier": "^4.0.0",
-        "typescript": "~5.5.4",
+        "typescript": "~5.8.0",
         "typescript-eslint": "^8.0.0",
         "yjs": "^13.5.0"
     },
     "resolutions": {
+        "chalk": "4.1.2",
         "lib0": "0.2.111",
         "webpack": "5.106.0"
+    },
+    "overrides": {
+        "webpack": "5.106.0",
+        "chalk": "4.1.2"
     },
     "sideEffects": [
         "style/*.css",
