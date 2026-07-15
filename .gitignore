@@ -128,3 +128,9 @@ dmypy.json
 .yarn/
 
 .nodeenv/
+
+# passkey ui-tests: relay dir written by the test server, read back by Playwright
+ui-tests/.tmp-passkey-relay/
+
+# jest junit reporter artifact
+junit.xml

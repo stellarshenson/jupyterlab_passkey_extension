@@ -94,13 +94,14 @@ export async function runPasskey(
       publicKey
     })) as PublicKeyCredential;
 
-    const prf_enabled = cred.getClientExtensionResults().prf?.enabled === true;
-    if (!prf_enabled) {
-      await post({ nonce, ok: false, error: 'prf-unsupported' });
-      return;
-    }
-
+    // A successfully created credential is a success. We report prf_enabled as a
+    // plain attribute and never reject on it: the create-time PRF flag is
+    // unreliable (Windows Hello commonly reports enabled:false at registration
+    // yet yields a real PRF at assertion), and that policy belongs to the caller,
+    // not this bridge. The caller confirms PRF with a follow-up `get` (prf_salt) -
+    // which is why cred_id is always returned here.
     const cred_id = b64urlEncode(cred.rawId);
+    const prf_enabled = cred.getClientExtensionResults().prf?.enabled === true;
     await post({ nonce, ok: true, cred_id, prf_enabled });
   } catch (e) {
     await post({ nonce, ok: false, error: mapCeremonyError(e) });
