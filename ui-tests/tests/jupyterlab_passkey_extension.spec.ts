@@ -220,13 +220,17 @@ test('get without prf_salt returns the credential and no PRF', async ({
 });
 
 /**
- * Fire passkey:passphrase, type into the real dialog, and submit. Returns the
- * command's own promise so a test can await the full round trip.
+ * Fire passkey:passphrase and wait for the dialog to render.
+ *
+ * The command's promise only settles once the dialog is submitted, so it is
+ * returned wrapped in an object: an async function that returned it bare would
+ * adopt it, and awaiting this helper would deadlock against the dialog it is
+ * supposed to let the test drive.
  */
 async function openPassphraseDialog(
   page: any,
   nonce: string
-): Promise<Promise<boolean>> {
+): Promise<{ done: Promise<boolean> }> {
   const done = page.evaluate(
     (n: string) =>
       (window as any).jupyterapp.commands.execute('passkey:passphrase', {
@@ -236,7 +240,7 @@ async function openPassphraseDialog(
     nonce
   );
   await page.waitForSelector('.jp-PassphraseDialog-body');
-  return done;
+  return { done };
 }
 
 test('passphrase dialog relays the value to a raw 0600 relay file', async ({
@@ -249,7 +253,7 @@ test('passphrase dialog relays the value to a raw 0600 relay file', async ({
   fs.rmSync(passFile, { force: true });
   const PASSPHRASE = 'correct horse battery staple';
 
-  const done = await openPassphraseDialog(page, nonce);
+  const { done } = await openPassphraseDialog(page, nonce);
 
   const inputs = page.locator('.jp-PassphraseDialog-input');
   await inputs.nth(0).fill(PASSPHRASE);
@@ -275,7 +279,7 @@ test('passphrase dialog relays nothing when the two entries differ', async ({
   const passFile = path.join(RELAY_DIR, `${nonce}.pass`);
   fs.rmSync(passFile, { force: true });
 
-  const done = await openPassphraseDialog(page, nonce);
+  const { done } = await openPassphraseDialog(page, nonce);
 
   const inputs = page.locator('.jp-PassphraseDialog-input');
   await inputs.nth(0).fill('correct horse battery staple');
@@ -298,7 +302,7 @@ test('passphrase dialog relays nothing when cancelled', async ({ page }) => {
   const passFile = path.join(RELAY_DIR, `${nonce}.pass`);
   fs.rmSync(passFile, { force: true });
 
-  const done = await openPassphraseDialog(page, nonce);
+  const { done } = await openPassphraseDialog(page, nonce);
 
   const inputs = page.locator('.jp-PassphraseDialog-input');
   await inputs.nth(0).fill('correct horse battery staple');

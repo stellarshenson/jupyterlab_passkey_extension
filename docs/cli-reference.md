@@ -1,12 +1,14 @@
 # CLI reference
 
-Everything the bridge exposes to a local client with no browser of its own. There is no bespoke CLI binary: you drive the two frontend commands with `jupyterlab-notify` and read the result from a one-shot relay file.
+Everything the bridge exposes to a local client with no browser of its own. There is no CLI binary - a `jupyterlab-notify` button runs one of two frontend commands, and the result lands in a one-shot relay file.
 
-- **Trigger** - `jupyterlab-notify` posts a notification whose action button runs a command; the click supplies the user gesture WebAuthn requires
-- **Relay dir** - `/dev/shm/jlab-passkey-$(id -u)`, mode `0700`; override with `JLAB_PASSKEY_RELAY_DIR`
-- **Relay file** - `<nonce>.json` for a ceremony, `<nonce>.pass` for a passphrase; both `0600`, written atomically, never logged
-- **Nonce** - `[A-Za-z0-9_-]{16,128}`; it is the filename, so anything else is rejected with `400`
-- **Consumer deletes** - the server only writes; `shred -u` the file once read
+- **Trigger** - a notify action button runs the command; the click is the user gesture WebAuthn requires
+- **Relay dir** - `/dev/shm/jlab-passkey-$(id -u)`, mode `0700`
+- **Dir override** - `JLAB_PASSKEY_RELAY_DIR`
+- **Relay file** - `<nonce>.json` for a ceremony, `<nonce>.pass` for a passphrase
+- **File mode** - `0600`, written mkstemp-then-rename, never logged
+- **Nonce** - `[A-Za-z0-9_-]{16,128}`, and it is the filename - anything else is `400`
+- **Lifecycle** - the server only writes; the consumer reads then `shred -u`
 
 ## Commands
 
@@ -47,7 +49,10 @@ Prompts for a passphrase in a dialog - entered twice, relayed only when both ent
 | `nonce`  | yes      | relay filename; same guard as above                          |
 | `prompt` | no       | dialog prompt text; defaults to `Enter the passphrase twice` |
 
-The passphrase travels browser → server → tmpfs. It never enters the terminal, shell history, or a process argument.
+- **Path** - browser → server → tmpfs; never the terminal, shell history, or a process argument
+- **Confirmation** - the two entries must match before anything is relayed
+- **Cancel or mismatch** - relays nothing, so the file never appears and a consumer's wait loop times out
+- **Consumer** - point `PASS_RECOVERY_FILE` at the file directly, no parsing
 
 ```bash
 NONCE=$(head -c18 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')
@@ -61,8 +66,6 @@ until [ -f "$PASS_FILE" ]; do sleep 0.4; done
 PASS_RECOVERY_FILE="$PASS_FILE" pass-cli-open --ensure
 shred -u "$PASS_FILE"
 ```
-
-Cancelling the dialog, or accepting it with two entries that differ, relays nothing - the file never appears, so a consumer's wait loop simply times out.
 
 ## Result shapes
 
