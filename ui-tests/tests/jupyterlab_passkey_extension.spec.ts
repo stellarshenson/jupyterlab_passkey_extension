@@ -194,3 +194,27 @@ test('get with an unknown credential relays a not-allowed error', async ({
   expect(relay.ok).toBe(false);
   expect(relay.error).toBe('not-allowed');
 });
+
+test('get without prf_salt returns the credential and no PRF', async ({
+  page
+}) => {
+  await addAuthenticator(page, true);
+  await page.goto();
+
+  const created = await runPasskey(page, {
+    op: 'create',
+    nonce: 'testplaincreate0123456789',
+    user: USER
+  });
+  expect(created.ok).toBe(true);
+
+  const relay = await runPasskey(page, {
+    op: 'get',
+    nonce: 'testplainget0123456789',
+    cred_id: created.cred_id
+  });
+
+  expect(relay.ok).toBe(true);
+  expect(relay.cred_id).toBe(created.cred_id);
+  expect(relay.prf).toBeUndefined();
+});

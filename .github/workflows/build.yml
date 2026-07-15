@@ -160,3 +160,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: jupyterlab/maintainer-tools/.github/actions/base-setup@v1
       - uses: jupyterlab/maintainer-tools/.github/actions/check-links@v1
+        with:
+          # This package's npm/PyPI/pepy badges 404 until first release - ignore
+          # only those four, scoped to the package name so other links still check.
+          ignore_links: "https://www.npmjs.com/package/jupyterlab_passkey_extension https://pypi.org/project/jupyterlab-passkey-extension.* https://pepy.tech/project/jupyterlab-passkey-extension https://static.pepy.tech/badge/jupyterlab-passkey-extension"
