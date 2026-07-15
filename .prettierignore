@@ -6,3 +6,4 @@ node_modules
 jupyterlab_passkey_extension
 eslint.config.mjs
 .venv
+.claude
