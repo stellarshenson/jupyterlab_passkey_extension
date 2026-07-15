@@ -106,6 +106,8 @@ The local client then reads `<relay_dir>/<nonce>.json` to collect the result.
 > [!NOTE]
 > Do not start JupyterLab with `--expose-app-in-browser` just to trigger the command by hand. A notify button (or any extension that holds the app reference) reaches `passkey:run` directly with a genuine gesture and no global.
 
+See [docs/example-secret-unlock.md](docs/example-secret-unlock.md) for a four-step consumer walkthrough that unlocks a secret with a passkey.
+
 ## Security
 
 - Both endpoints are gated by `@tornado.web.authenticated` - a caller needs the Jupyter token or session
