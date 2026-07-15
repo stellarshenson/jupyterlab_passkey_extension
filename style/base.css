@@ -3,3 +3,31 @@
 
     https://jupyterlab.readthedocs.io/en/stable/developer/css.html
 */
+
+/* Passphrase dialog - tokens only, so a theme switch recolours for free. */
+
+.jp-PassphraseDialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 320px;
+}
+
+.jp-PassphraseDialog-prompt {
+  color: var(--jp-ui-font-color1);
+  font-size: var(--jp-ui-font-size1);
+}
+
+.jp-PassphraseDialog-input {
+  width: 100%;
+}
+
+/* Status accent line: the mismatch state, revealed only once both fields carry
+   content. */
+.jp-PassphraseDialog-error {
+  padding: 6px 12px;
+  background: var(--jp-layout-color2);
+  border-left: 2px solid var(--jp-error-color1);
+  color: var(--jp-ui-font-color1);
+  font-size: var(--jp-ui-font-size1);
+}

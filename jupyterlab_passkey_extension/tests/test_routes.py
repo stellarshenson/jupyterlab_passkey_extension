@@ -232,3 +232,93 @@ async def test_health_requires_auth(http_server_client, jp_base_url):
         await http_server_client.fetch(path)
 
     assert exc.value.code == 403
+
+
+PASSPHRASE = "correct horse battery staple"
+
+
+async def test_passphrase_writes_raw_relay_file(jp_fetch, relay_dir):
+    body = {"nonce": VALID_NONCE, "passphrase": PASSPHRASE}
+
+    response = await jp_fetch(
+        "jupyterlab-passkey-extension", "passphrase",
+        method="POST", body=json.dumps(body),
+    )
+
+    assert response.code == 204
+    relay_file = relay_dir / f"{VALID_NONCE}.pass"
+    assert relay_file.exists()
+    assert stat.S_IMODE(os.stat(relay_file).st_mode) == 0o600
+    # Written raw: no JSON envelope and no trailing newline, so a consumer can
+    # use the file directly as PASS_RECOVERY_FILE.
+    assert relay_file.read_text() == PASSPHRASE
+
+
+async def test_passphrase_preserves_exact_bytes(jp_fetch, relay_dir):
+    # Whitespace and unicode must survive byte-for-byte - a passphrase that is
+    # silently trimmed or re-encoded would derive the wrong key.
+    tricky = "  leading and trailing  \t spaces éü \n embedded"
+    await jp_fetch(
+        "jupyterlab-passkey-extension", "passphrase",
+        method="POST", body=json.dumps({"nonce": VALID_NONCE, "passphrase": tricky}),
+    )
+
+    assert (relay_dir / f"{VALID_NONCE}.pass").read_text() == tricky
+
+
+@pytest.mark.parametrize(
+    "bad_nonce", ["../../etc/evil", "a/b", "../aaaaaaaaaaaaaaaa", "aaaaaaaa aaaaaaaa"]
+)
+async def test_passphrase_rejects_traversal_nonce(jp_fetch, relay_dir, bad_nonce):
+    body = {"nonce": bad_nonce, "passphrase": PASSPHRASE}
+
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await jp_fetch(
+            "jupyterlab-passkey-extension", "passphrase",
+            method="POST", body=json.dumps(body),
+        )
+
+    assert exc.value.code == 400
+    assert not relay_dir.exists()
+
+
+@pytest.mark.parametrize("passphrase", ["", None, 123, ["a"]])
+async def test_passphrase_rejects_missing_or_non_string(
+    jp_fetch, relay_dir, passphrase
+):
+    # An empty or non-string passphrase is a client bug, not a valid secret.
+    body = {"nonce": VALID_NONCE, "passphrase": passphrase}
+
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await jp_fetch(
+            "jupyterlab-passkey-extension", "passphrase",
+            method="POST", body=json.dumps(body),
+        )
+
+    assert exc.value.code == 400
+    assert not relay_dir.exists()
+
+
+async def test_passphrase_requires_auth(http_server_client, jp_base_url, relay_dir):
+    path = url_path_join(jp_base_url, "jupyterlab-passkey-extension", "passphrase")
+    body = {"nonce": VALID_NONCE, "passphrase": PASSPHRASE}
+
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await http_server_client.fetch(path, method="POST", body=json.dumps(body))
+
+    assert exc.value.code == 403
+    assert not relay_dir.exists()
+
+
+async def test_passphrase_not_logged(jp_fetch, relay_dir, caplog):
+    secret = "PASSPHRASE_MUST_NOT_BE_LOGGED_ZZZ"
+    body = {"nonce": VALID_NONCE, "passphrase": secret}
+
+    with caplog.at_level(logging.DEBUG):
+        response = await jp_fetch(
+            "jupyterlab-passkey-extension", "passphrase",
+            method="POST", body=json.dumps(body),
+        )
+
+    assert response.code == 204
+    assert secret not in caplog.text

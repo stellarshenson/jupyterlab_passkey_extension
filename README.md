@@ -80,11 +80,29 @@ The frontend POSTs one of these JSON bodies to the server, keyed by `nonce`:
 
 `create` never rejects on the create-time PRF flag - it always returns `cred_id` and a plain `prf_enabled`. Some authenticators (Windows Hello) report `prf_enabled: false` at registration yet yield a real PRF at assertion, so PRF availability is confirmed by a follow-up `get` with a `prf_salt`. `not-allowed` is WebAuthn's deliberate conflation of user-cancel, no-matching-credential, and wrong-RP into one privacy-preserving code.
 
+### Frontend command `passkey:passphrase`
+
+A second command captures a passphrase in the browser and relays it to the same directory, for the case where a local client needs a secret a passkey cannot supply - a keystore's recovery passphrase, for example. The dialog takes the passphrase twice and relays it only when both entries match; it never enters the terminal, shell history, or a process argument.
+
+| Argument | Description                                                      |
+| -------- | ---------------------------------------------------------------- |
+| `nonce`  | correlation key and relay filename; same `[A-Za-z0-9_-]{16,128}` |
+| `prompt` | optional dialog prompt; defaults to `Enter the passphrase twice` |
+
+The value lands **raw** in `<relay_dir>/<nonce>.pass` - no JSON envelope and no trailing newline - so a consumer can point at the file directly:
+
+```bash
+PASS_RECOVERY_FILE="/dev/shm/jlab-passkey-$(id -u)/<nonce>.pass" pass-cli-open --ensure
+```
+
+Cancelling, or accepting two entries that differ, relays nothing - the file never appears.
+
 ### Server endpoints
 
-Both live under the server base URL and require Jupyter authentication.
+All live under the server base URL and require Jupyter authentication.
 
 - `POST <base_url>/jupyterlab-passkey-extension/result` - validates the nonce, writes the body to a one-shot `0600` relay, returns `204`. The body, including any PRF value, is never logged
+- `POST <base_url>/jupyterlab-passkey-extension/passphrase` - validates the nonce, writes the passphrase raw to a one-shot `0600` `<nonce>.pass`, returns `204`. The passphrase is never logged
 - `GET <base_url>/jupyterlab-passkey-extension/health` - returns `{ "ok": true }`
 
 The relay directory defaults to the uid-scoped `/dev/shm/jlab-passkey-<uid>` and is overridable with the `JLAB_PASSKEY_RELAY_DIR` environment variable.
@@ -106,7 +124,7 @@ The local client then reads `<relay_dir>/<nonce>.json` to collect the result.
 > [!NOTE]
 > Do not start JupyterLab with `--expose-app-in-browser` just to trigger the command by hand. A notify button (or any extension that holds the app reference) reaches `passkey:run` directly with a genuine gesture and no global.
 
-See [docs/example-secret-unlock.md](docs/example-secret-unlock.md) for a four-step consumer walkthrough that unlocks a secret with a passkey.
+See [docs/cli-reference.md](docs/cli-reference.md) for the full command, endpoint and self-test reference, and [docs/example-secret-unlock.md](docs/example-secret-unlock.md) for a worked consumer walkthrough that seals and opens a secret with a passkey.
 
 ## Security
 

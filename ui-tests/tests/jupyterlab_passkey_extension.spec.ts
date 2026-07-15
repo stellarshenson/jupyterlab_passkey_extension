@@ -218,3 +218,93 @@ test('get without prf_salt returns the credential and no PRF', async ({
   expect(relay.cred_id).toBe(created.cred_id);
   expect(relay.prf).toBeUndefined();
 });
+
+/**
+ * Fire passkey:passphrase, type into the real dialog, and submit. Returns the
+ * command's own promise so a test can await the full round trip.
+ */
+async function openPassphraseDialog(
+  page: any,
+  nonce: string
+): Promise<Promise<boolean>> {
+  const done = page.evaluate(
+    (n: string) =>
+      (window as any).jupyterapp.commands.execute('passkey:passphrase', {
+        nonce: n,
+        prompt: 'Recovery passphrase'
+      }) as Promise<boolean>,
+    nonce
+  );
+  await page.waitForSelector('.jp-PassphraseDialog-body');
+  return done;
+}
+
+test('passphrase dialog relays the value to a raw 0600 relay file', async ({
+  page
+}) => {
+  await page.goto();
+
+  const nonce = 'testpassphrase0123456789';
+  const passFile = path.join(RELAY_DIR, `${nonce}.pass`);
+  fs.rmSync(passFile, { force: true });
+  const PASSPHRASE = 'correct horse battery staple';
+
+  const done = await openPassphraseDialog(page, nonce);
+
+  const inputs = page.locator('.jp-PassphraseDialog-input');
+  await inputs.nth(0).fill(PASSPHRASE);
+  await inputs.nth(1).fill(PASSPHRASE);
+  await page.click('.jp-Dialog-button.jp-mod-accept');
+
+  await expect(done).resolves.toBe(true);
+  await expect
+    .poll(() => fs.existsSync(passFile), { timeout: 15000 })
+    .toBeTruthy();
+
+  // Written raw and 0600 - a consumer points PASS_RECOVERY_FILE straight at it.
+  expect(fs.readFileSync(passFile, 'utf-8')).toBe(PASSPHRASE);
+  expect(fs.statSync(passFile).mode & 0o777).toBe(0o600);
+});
+
+test('passphrase dialog relays nothing when the two entries differ', async ({
+  page
+}) => {
+  await page.goto();
+
+  const nonce = 'testpassmismatch01234567';
+  const passFile = path.join(RELAY_DIR, `${nonce}.pass`);
+  fs.rmSync(passFile, { force: true });
+
+  const done = await openPassphraseDialog(page, nonce);
+
+  const inputs = page.locator('.jp-PassphraseDialog-input');
+  await inputs.nth(0).fill('correct horse battery staple');
+  await inputs.nth(1).fill('correct horse battery stapl');
+
+  // The mismatch banner must be visible before the user can act on it.
+  await expect(page.locator('.jp-PassphraseDialog-error')).toBeVisible();
+
+  await page.click('.jp-Dialog-button.jp-mod-accept');
+
+  // Accepting a mismatch relays nothing rather than writing an unconfirmed value.
+  await expect(done).resolves.toBe(false);
+  expect(fs.existsSync(passFile)).toBe(false);
+});
+
+test('passphrase dialog relays nothing when cancelled', async ({ page }) => {
+  await page.goto();
+
+  const nonce = 'testpasscancel0123456789';
+  const passFile = path.join(RELAY_DIR, `${nonce}.pass`);
+  fs.rmSync(passFile, { force: true });
+
+  const done = await openPassphraseDialog(page, nonce);
+
+  const inputs = page.locator('.jp-PassphraseDialog-input');
+  await inputs.nth(0).fill('correct horse battery staple');
+  await inputs.nth(1).fill('correct horse battery staple');
+  await page.click('.jp-Dialog-button.jp-mod-reject');
+
+  await expect(done).resolves.toBe(false);
+  expect(fs.existsSync(passFile)).toBe(false);
+});

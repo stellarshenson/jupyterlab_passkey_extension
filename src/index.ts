@@ -7,7 +7,10 @@ import { ICommandPalette } from '@jupyterlab/apputils';
 
 import { runPasskey, IPasskeyArgs, PasskeyOp } from './passkey';
 
+import { runPassphrase, IPassphraseArgs } from './passphrase';
+
 const COMMAND_ID = 'passkey:run';
+const PASSPHRASE_COMMAND_ID = 'passkey:passphrase';
 
 /**
  * Initialization data for the jupyterlab_passkey_extension extension.
@@ -33,8 +36,17 @@ const plugin: JupyterFrontEndPlugin<void> = {
       }
     });
 
+    app.commands.addCommand(PASSPHRASE_COMMAND_ID, {
+      label: 'Enter Passphrase',
+      execute: args => {
+        const passphraseArgs = args as unknown as IPassphraseArgs;
+        return runPassphrase(passphraseArgs, app.serviceManager.serverSettings);
+      }
+    });
+
     if (palette) {
       palette.addItem({ command: COMMAND_ID, category: 'Passkey' });
+      palette.addItem({ command: PASSPHRASE_COMMAND_ID, category: 'Passkey' });
     }
   }
 };
