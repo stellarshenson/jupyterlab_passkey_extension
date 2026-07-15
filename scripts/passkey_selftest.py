@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
 """On-demand manual passkey test - runs the real ceremony against your own device.
 
-Exercises the installed extension end to end with your actual authenticator
-(Windows Hello / security key / platform passkey):
+Uses the production trigger: a `jupyterlab-notify` notification whose action button
+is bound to `passkey:run`. Clicking the button in your JupyterLab tab supplies the
+WebAuthn user gesture; the browser runs the ceremony against your real authenticator
+(Windows Hello / security key), POSTs the result, and the server writes a one-shot
+0600 relay that this script reads back and verifies.
 
-    browser console -> passkey:run -> navigator.credentials.* (OS prompt)
-    -> POST /result -> server writes 0600 relay -> this script reads + verifies it.
+No `--expose-app-in-browser` and no console paste - the notify button holds the app
+reference inside a real extension, so `passkey:run` is reachable directly.
 
-Run this in a JupyterLab *terminal* (same server as the browser tab). It prints a
-one-line snippet; paste each into the JupyterLab tab's DevTools console and
-approve the OS prompt. The script reads back the server relay and reports PASS/FAIL.
+Run it in a JupyterLab *terminal* (same server as the tab), keep the tab open, click
+the button when it pops, and approve the OS prompt.
 
-Prereq: start JupyterLab with `--expose-app-in-browser` (or
-`c.LabApp.expose_app_in_browser = True`) so `window.jupyterapp` exists - that is
-the only hook a hand-typed console call has to reach the command.
-
-Usage:
-    python scripts/passkey_selftest.py                 # create, then get (PRF)
-    python scripts/passkey_selftest.py --op create     # register only
-    python scripts/passkey_selftest.py --op get --cred-id <b64url> [--prf-salt <b64url>]
+Usage (--rp-id is your JupyterLab hostname = the WebAuthn RP ID):
+    python scripts/passkey_selftest.py --rp-id <host>                     # create, then get (PRF)
+    python scripts/passkey_selftest.py --rp-id <host> --op create        # register only
+    python scripts/passkey_selftest.py --rp-id <host> --op get --cred-id <b64url> [--prf-salt <b64url>]
 """
 
 import argparse
@@ -26,7 +24,10 @@ import base64
 import json
 import os
 import secrets
+import subprocess
 import time
+
+NOTIFY = "/opt/conda/bin/jupyterlab-notify"
 
 
 def b64url(data: bytes) -> str:
@@ -34,16 +35,11 @@ def b64url(data: bytes) -> str:
 
 
 def relay_dir() -> str:
-    return os.environ.get(
-        "JLAB_PASSKEY_RELAY_DIR", f"/dev/shm/jlab-passkey-{os.getuid()}"
-    )
+    return os.environ.get("JLAB_PASSKEY_RELAY_DIR", f"/dev/shm/jlab-passkey-{os.getuid()}")
 
 
-USER = {"id": b64url(b"passkey-selftest"), "name": "selftest", "displayName": "Passkey Self-Test"}
-
-
-def trigger_and_wait(args_obj: dict, timeout: float) -> dict:
-    """Print the console snippet for this ceremony, then read back its relay."""
+def trigger_and_wait(args_obj: dict, label: str, message: str, timeout: float) -> dict:
+    """Send the notify button bound to passkey:run, then read back its relay."""
     nonce = args_obj["nonce"]
     relay = os.path.join(relay_dir(), f"{nonce}.json")
     try:
@@ -51,12 +47,12 @@ def trigger_and_wait(args_obj: dict, timeout: float) -> dict:
     except FileNotFoundError:
         pass
 
-    snippet = (
-        "jupyterapp.commands.execute('passkey:run', "
-        f"Object.assign({{rp_id: location.hostname}}, {json.dumps(args_obj)}))"
+    subprocess.run(
+        [NOTIFY, "--now", "--no-auto-close", "-t", "info", "-m", message,
+         "--action", label, "--cmd", "passkey:run", "--command-args", json.dumps(args_obj)],
+        check=True,
     )
-    print("\n  Paste into the JupyterLab tab's DevTools console, then approve the OS prompt:\n")
-    print(f"    {snippet}\n")
+    print(f"  sent notification - click '{label}' in your JupyterLab tab and approve the prompt")
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -68,8 +64,7 @@ def trigger_and_wait(args_obj: dict, timeout: float) -> dict:
         time.sleep(0.4)
 
     raise TimeoutError(
-        f"no relay after {timeout:.0f}s. Check: JupyterLab started with "
-        "--expose-app-in-browser, snippet pasted in the *lab* tab, prompt approved."
+        f"no relay after {timeout:.0f}s - was the notification clicked and the prompt approved?"
     )
 
 
@@ -80,7 +75,6 @@ def report(op: str, data: dict) -> bool:
     if op == "create":
         print(f"  PASS (create): cred_id={data.get('cred_id')}  prf_enabled={data.get('prf_enabled')}")
         return bool(data.get("cred_id"))
-    # get
     prf = data.get("prf")
     print(f"  PASS (get): cred_id={data.get('cred_id')}  prf={'present, %d chars' % len(prf) if prf else 'none'}")
     return True
@@ -89,24 +83,30 @@ def report(op: str, data: dict) -> bool:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--op", choices=["both", "create", "get"], default="both")
+    p.add_argument("--rp-id", required=True, help="WebAuthn RP ID = your JupyterLab hostname")
     p.add_argument("--cred-id", help="required for --op get")
     p.add_argument("--prf-salt", help="b64url 32-byte salt (default: random) to evaluate PRF")
-    p.add_argument("--timeout", type=float, default=60.0)
+    p.add_argument("--timeout", type=float, default=120.0)
     a = p.parse_args()
 
-    print(f"relay dir: {relay_dir()}")
+    print(f"relay dir: {relay_dir()}   rp_id: {a.rp_id}")
     salt = a.prf_salt or b64url(secrets.token_bytes(32))
+    user = {"id": b64url(secrets.token_bytes(16)), "name": "selftest", "displayName": "Passkey Self-Test"}
 
     if a.op == "get":
         if not a.cred_id:
             p.error("--op get requires --cred-id")
         got = trigger_and_wait(
-            {"op": "get", "nonce": secrets.token_urlsafe(24), "cred_id": a.cred_id, "prf_salt": salt},
-            a.timeout,
+            {"op": "get", "nonce": secrets.token_urlsafe(24), "rp_id": a.rp_id,
+             "cred_id": a.cred_id, "prf_salt": salt},
+            "Assert test passkey", "Passkey self-test - click to assert (PRF).", a.timeout,
         )
         return 0 if report("get", got) else 1
 
-    created = trigger_and_wait({"op": "create", "nonce": secrets.token_urlsafe(24), "user": USER}, a.timeout)
+    created = trigger_and_wait(
+        {"op": "create", "nonce": secrets.token_urlsafe(24), "rp_id": a.rp_id, "user": user},
+        "Register test passkey", "Passkey self-test - click to register a disposable test passkey.", a.timeout,
+    )
     ok = report("create", created)
     if a.op == "create":
         return 0 if ok else 1
@@ -114,8 +114,9 @@ def main() -> int:
         return 1
 
     got = trigger_and_wait(
-        {"op": "get", "nonce": secrets.token_urlsafe(24), "cred_id": created["cred_id"], "prf_salt": salt},
-        a.timeout,
+        {"op": "get", "nonce": secrets.token_urlsafe(24), "rp_id": a.rp_id,
+         "cred_id": created["cred_id"], "prf_salt": salt},
+        "Assert test passkey", "Passkey self-test - click to assert the passkey just created (PRF).", a.timeout,
     )
     ok = report("get", got)
     if created.get("prf_enabled") is False and got.get("prf"):

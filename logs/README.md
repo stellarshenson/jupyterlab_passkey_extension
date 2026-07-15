@@ -6,3 +6,4 @@ Progress logs for background jobs in this project.
 - `ui-tests-install.log` - output of `jlpm install` + `jlpm playwright install chromium` in `ui-tests/` (Galata + Playwright deps and browser for the integration suite)
 - `jlpm-build.log` - output of `jlpm build` (dev tsc + labextension rebuild; no version bump)
 - `galata.log` - output of the Galata integration run (`playwright test`) for the passkey E2E suite
+- `passkey-selftest.log` - output of `scripts/passkey_selftest.py` (on-demand manual test: notify button → `passkey:run` → relay verify)
