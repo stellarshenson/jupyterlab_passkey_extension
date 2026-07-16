@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -438,6 +439,64 @@ def test_a_relay_that_lands_as_we_give_up_is_not_left_on_disk(relay_dir, monkeyp
         cli._run({"nonce": nonce}, "label", "message", 1.0)
 
     assert not relay.exists(), "timing out left the PRF on disk"
+
+
+def test_a_base64url_value_starting_with_a_dash_survives_argv(relay_dir, capsys, monkeypatch, no_wait):
+    """base64url's alphabet includes "-", so ~1 in 64 cred_ids and salts begin with one.
+
+    argparse reads any leading-dash token as an option, so the documented
+    `--cred-id "$cred"` died with "expected one argument" before any ceremony ran - on
+    an unlucky credential only, which is how it reached a release. Every other test in
+    this file calls cmd_get/cmd_create directly with a namespace, so argv parsing was
+    never exercised and nothing here could have caught it. Drive main() for that reason.
+    """
+    seen = {}
+
+    def fake_trigger(command_id, args_obj, label, message):
+        seen.update(args_obj)
+        (relay_dir / f"{args_obj['nonce']}.json").write_text(
+            json.dumps({"nonce": args_obj["nonce"], "ok": True, "cred_id": "-CID", "prf": "PRFVALUE"})
+        )
+
+    monkeypatch.setattr(cli, "_trigger", fake_trigger)
+    monkeypatch.setattr(sys, "argv", [
+        "jupyterlab-passkey", "get", "--rp-id", "h",
+        "--cred-id", "-Ab7xK9mQ2vLpZ", "--prf-salt", "-DashSalt",
+    ])
+
+    assert cli.main() == 0
+    # Not merely parsed - the dash must reach the ceremony unmangled, or the
+    # authenticator is handed a different credential than the caller named.
+    assert seen["cred_id"] == "-Ab7xK9mQ2vLpZ"
+    assert seen["prf_salt"] == "-DashSalt"
+    assert capsys.readouterr().out.strip() == "PRFVALUE"
+
+
+def test_the_equals_form_still_parses(relay_dir, capsys, monkeypatch, no_wait):
+    """The glue must not double-handle a value the caller already attached with "=" ."""
+    seen = {}
+
+    def fake_trigger(command_id, args_obj, label, message):
+        seen.update(args_obj)
+        (relay_dir / f"{args_obj['nonce']}.json").write_text(
+            json.dumps({"nonce": args_obj["nonce"], "ok": True, "cred_id": "CID", "prf": "P"})
+        )
+
+    monkeypatch.setattr(cli, "_trigger", fake_trigger)
+    monkeypatch.setattr(sys, "argv", [
+        "jupyterlab-passkey", "get", "--rp-id=h", "--cred-id=-Ab7", "--prf-salt=-S",
+    ])
+
+    assert cli.main() == 0
+    assert seen["cred_id"] == "-Ab7"
+    assert seen["prf_salt"] == "-S"
+
+
+def test_a_flag_with_no_value_still_errors(monkeypatch):
+    """The glue must not swallow a genuine mistake into a silent misparse."""
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "get", "--rp-id", "h", "--cred-id"])
+    with pytest.raises(SystemExit):
+        cli.main()
 
 
 def _ns(**kw):

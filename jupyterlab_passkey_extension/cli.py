@@ -237,6 +237,33 @@ def cmd_passphrase(a) -> int:
     return 0
 
 
+# The values these flags carry are base64url, whose alphabet includes "-", so roughly
+# one in 64 begins with one. argparse reads ANY leading-dash token as an option, so the
+# documented `--cred-id "$cred"` dies with "expected one argument" before the ceremony
+# runs - not flakily but for that credential always, which is how it survives a release
+# and then strands a passkey that registered perfectly well.
+_B64URL_FLAGS = ("--cred-id", "--prf-salt")
+
+
+def _glue_b64url(argv: list[str]) -> list[str]:
+    """Rewrite `--cred-id VALUE` to `--cred-id=VALUE`, the form argparse cannot misread.
+
+    Only the separator changes; the value is passed through untouched. A flag already
+    written as `--cred-id=...` never matches and is left alone, and a flag with no value
+    left to take is left alone too, so argparse still reports the real mistake.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        if argv[i] in _B64URL_FLAGS and i + 1 < len(argv):
+            out.append(f"{argv[i]}={argv[i + 1]}")
+            i += 2
+        else:
+            out.append(argv[i])
+            i += 1
+    return out
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="jupyterlab-passkey",
@@ -266,7 +293,7 @@ def main() -> int:
     s.add_argument("--prompt", default="Enter the passphrase twice", help="dialog prompt text")
     s.set_defaults(func=cmd_passphrase)
 
-    a = p.parse_args()
+    a = p.parse_args(_glue_b64url(sys.argv[1:]))
     return a.func(a)
 
 

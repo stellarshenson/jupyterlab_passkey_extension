@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.0.12] - 2026-07-16
+
+Fixes a credential id or PRF salt that begins with `-` aborting the CLI before the ceremony runs.
+
+### Fixed
+
+- A `cred_id` or `prf_salt` beginning with `-` no longer aborts `jupyterlab-passkey get` before any ceremony runs. base64url's alphabet includes `-`, so roughly one value in 64 starts with one, and argparse reads such a value as an option rather than an argument - failing the documented `--cred-id "$cred"` with `expected one argument`, deterministically for that credential rather than intermittently, which is how it survived a release. Values now reach argparse attached with `=`, the form it cannot misread. Every existing CLI test called the subcommand with a ready-made namespace, so argv parsing had no coverage at all; the regression tests drive `main()`
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.0.10] - 2026-07-16
 
 Adds `jupyterlab-passkey`, a shipped console script that turns a browser ceremony into a blocking local call, and `passkey:passphrase` for the secret a passkey cannot supply. Everything since 1.0.4 lands here.
@@ -26,8 +36,6 @@ Adds `jupyterlab-passkey`, a shipped console script that turns a browser ceremon
 - Server token precedence follows the hub variables first, since under JupyterHub a server rejects its own listed token and accepts only the hub-issued one
 - `--timeout` is accepted after the subcommand, where it is natural to type
 - Removed `scripts/passkey_selftest.py`, which was never packaged and so unreachable for anyone installing from PyPI
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.4] - 2026-07-15
 
