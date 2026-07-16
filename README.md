@@ -95,7 +95,7 @@ The value lands **raw** in `<relay_dir>/<nonce>.pass` - no JSON envelope and no 
 PASS_RECOVERY_FILE="/dev/shm/jlab-passkey-$(id -u)/<nonce>.pass" pass-cli-open --ensure
 ```
 
-Cancelling, or accepting two entries that differ, relays nothing - the file never appears.
+Submit stays disabled until the two entries match, so a mismatch cannot be relayed; Cancel and Submit are the only ways out, and Escape cancels. Cancelling relays nothing - the file never appears.
 
 ### Server endpoints
 

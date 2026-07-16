@@ -22,12 +22,27 @@
   width: 100%;
 }
 
-/* Status accent line: the mismatch state, revealed only once both fields carry
-   content. */
-.jp-PassphraseDialog-error {
+/* Status accent line: reports match or mismatch once the confirm field has
+   content. It always occupies its row and only its visibility flips - `hidden`
+   or `display: none` would collapse the box and walk the dialog's bottom edge up
+   and down under the pointer as the user types. The accent colour carries the
+   state; the row's geometry never changes. */
+.jp-PassphraseDialog-status {
   padding: 6px 12px;
   background: var(--jp-layout-color2);
-  border-left: 2px solid var(--jp-error-color1);
+  border-left: 2px solid transparent;
   color: var(--jp-ui-font-color1);
   font-size: var(--jp-ui-font-size1);
+}
+
+.jp-PassphraseDialog-status[data-state='pending'] {
+  visibility: hidden;
+}
+
+.jp-PassphraseDialog-status[data-state='mismatch'] {
+  border-left-color: var(--jp-error-color1);
+}
+
+.jp-PassphraseDialog-status[data-state='match'] {
+  border-left-color: var(--jp-success-color1);
 }

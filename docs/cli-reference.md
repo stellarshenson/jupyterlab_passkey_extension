@@ -69,7 +69,7 @@ Opens a dialog that takes a passphrase twice and relays it only when both entrie
 | ---------- | -------- | ------------------------------------------------------------ |
 | `--prompt` | no       | dialog prompt text; defaults to `Enter the passphrase twice` |
 
-Cancelling, or accepting two entries that differ, relays nothing - the call times out and exits `1`. The file is left in place for the consumer to read; shred it when done.
+Submit is disabled until the two entries match, so a mismatch cannot be submitted. Cancel and Submit are the only ways out, and Escape cancels; cancelling relays nothing, so the call times out and exits `1`. The file is left in place for the consumer to read; shred it when done.
 
 ```bash
 pass_file=$(jupyterlab-passkey passphrase --prompt "Recovery passphrase")

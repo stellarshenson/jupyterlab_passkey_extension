@@ -2,6 +2,22 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.0.15] - 2026-07-16
+
+Hardens the passphrase dialog: Submit is impossible until the two entries match, Cancel and Submit are the only ways out, and the status line no longer resizes the dialog.
+
+### Changed
+
+- Submit is disabled until both entries match, from the moment the dialog opens rather than only on the caller's after-the-fact check. The confirm field carries a custom validity message, which is the signal JupyterLab's own `Dialog` already reads to gate its accept buttons
+- Cancel and Submit are the only exits. The close button and dismiss-on-outside-click are gone - a passphrase prompt that vanishes on a stray click leaves the waiting CLI blocked on a relay that never arrives, which reads as a hang rather than a cancel. Escape still cancels
+- The status line reports both states - `Passphrases match` as well as `Passphrases do not match` - and reserves its row at all times, so revealing it no longer walks the dialog's bottom edge up and down under the pointer as you type
+
+### Fixed
+
+- The mismatch indicator no longer collapses the dialog's height when hidden
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.0.12] - 2026-07-16
 
 Fixes a credential id or PRF salt that begins with `-` aborting the CLI before the ceremony runs.
@@ -9,8 +25,6 @@ Fixes a credential id or PRF salt that begins with `-` aborting the CLI before t
 ### Fixed
 
 - A `cred_id` or `prf_salt` beginning with `-` no longer aborts `jupyterlab-passkey get` before any ceremony runs. base64url's alphabet includes `-`, so roughly one value in 64 starts with one, and argparse reads such a value as an option rather than an argument - failing the documented `--cred-id "$cred"` with `expected one argument`, deterministically for that credential rather than intermittently, which is how it survived a release. Values now reach argparse attached with `=`, the form it cannot misread. Every existing CLI test called the subcommand with a ready-made namespace, so argv parsing had no coverage at all; the regression tests drive `main()`
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.10] - 2026-07-16
 

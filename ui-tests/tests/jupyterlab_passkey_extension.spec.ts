@@ -270,7 +270,7 @@ test('passphrase dialog relays the value to a raw 0600 relay file', async ({
   expect(fs.statSync(passFile).mode & 0o777).toBe(0o600);
 });
 
-test('passphrase dialog relays nothing when the two entries differ', async ({
+test('passphrase dialog cannot submit two entries that differ', async ({
   page
 }) => {
   await page.goto();
@@ -281,18 +281,59 @@ test('passphrase dialog relays nothing when the two entries differ', async ({
 
   const { done } = await openPassphraseDialog(page, nonce);
 
+  const submit = page.locator('.jp-Dialog-button.jp-mod-accept');
+  const status = page.locator('.jp-PassphraseDialog-status');
   const inputs = page.locator('.jp-PassphraseDialog-input');
+
+  // Gated from the moment it opens, before a keystroke - Dialog only re-checks on
+  // `input`, so an unseeded gate would sit enabled over two empty fields.
+  await expect(submit).toBeDisabled();
+
   await inputs.nth(0).fill('correct horse battery staple');
   await inputs.nth(1).fill('correct horse battery stapl');
 
-  // The mismatch banner must be visible before the user can act on it.
-  await expect(page.locator('.jp-PassphraseDialog-error')).toBeVisible();
+  // The mismatch is reported, and accepting it is impossible - the dialog no
+  // longer leans on the caller to reject a value the user never confirmed.
+  await expect(status).toHaveText('Passphrases do not match');
+  await expect(submit).toBeDisabled();
 
-  await page.click('.jp-Dialog-button.jp-mod-accept');
+  // Correcting the typo is what re-opens the path.
+  await inputs.nth(1).fill('correct horse battery staple');
+  await expect(status).toHaveText('Passphrases match');
+  await expect(submit).toBeEnabled();
 
-  // Accepting a mismatch relays nothing rather than writing an unconfirmed value.
+  await page.click('.jp-Dialog-button.jp-mod-reject');
   await expect(done).resolves.toBe(false);
   expect(fs.existsSync(passFile)).toBe(false);
+});
+
+test('passphrase dialog keeps its height as the status changes', async ({
+  page
+}) => {
+  await page.goto();
+
+  const { done } = await openPassphraseDialog(page, 'testpassheight0123456789');
+
+  const dialog = page.locator('.jp-Dialog-content');
+  const inputs = page.locator('.jp-PassphraseDialog-input');
+  const status = page.locator('.jp-PassphraseDialog-status');
+
+  // Pending: the status row holds its space while saying nothing. `hidden` or
+  // `display: none` would collapse it and walk the bottom edge under the pointer.
+  await expect(status).toBeHidden();
+  const pendingHeight = (await dialog.boundingBox())!.height;
+
+  await inputs.nth(0).fill('correct horse battery staple');
+  await inputs.nth(1).fill('nope');
+  await expect(status).toBeVisible();
+  expect((await dialog.boundingBox())!.height).toBe(pendingHeight);
+
+  await inputs.nth(1).fill('correct horse battery staple');
+  await expect(status).toHaveText('Passphrases match');
+  expect((await dialog.boundingBox())!.height).toBe(pendingHeight);
+
+  await page.click('.jp-Dialog-button.jp-mod-reject');
+  await expect(done).resolves.toBe(false);
 });
 
 test('passphrase dialog relays nothing when cancelled', async ({ page }) => {
