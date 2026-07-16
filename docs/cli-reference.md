@@ -35,13 +35,14 @@ Pointing `JUPYTER_RUNTIME_DIR` at a specific runtime folder therefore narrows di
 
 Registers a passkey. Prints its `cred_id` to stdout - keep it; `get` needs it.
 
-| Flag          | Required | Meaning                                    |
-| ------------- | -------- | ------------------------------------------ |
-| `--rp-id`     | yes      | WebAuthn RP ID - your JupyterLab hostname  |
-| `--user-name` | no       | credential user name; defaults to the tool |
+| Flag          | Required | Meaning                                                                        |
+| ------------- | -------- | ------------------------------------------------------------------------------ |
+| `--rp-id`     | yes      | WebAuthn RP ID - your JupyterLab tab's hostname, bare: no scheme, port or path |
+| `--user-name` | no       | credential user name; defaults to the tool                                     |
 
 ```bash
-cred_id=$(jupyterlab-passkey create --rp-id your.host)
+# the hostname of the tab you will click in - not a URL
+cred_id=$(jupyterlab-passkey create --rp-id lab.example.com)
 ```
 
 ## `get`
@@ -50,14 +51,14 @@ Asserts a passkey. With `--prf-salt` it prints the PRF; without, the `cred_id`.
 
 | Flag         | Required | Meaning                                          |
 | ------------ | -------- | ------------------------------------------------ |
-| `--rp-id`    | yes      | WebAuthn RP ID - your JupyterLab hostname        |
+| `--rp-id`    | yes      | same hostname the credential was created with    |
 | `--cred-id`  | yes      | base64url credential id from a prior `create`    |
 | `--prf-salt` | no       | base64url 32-byte salt; prints the PRF it yields |
 
 The PRF is deterministic - the same credential and the same salt always yield the same 32 bytes, which is what makes it usable as key material. It goes to stdout for a `$(...)` capture, so redirect with care.
 
 ```bash
-prf=$(jupyterlab-passkey get --rp-id your.host --cred-id "$cred_id" --prf-salt "$salt")
+prf=$(jupyterlab-passkey get --rp-id lab.example.com --cred-id "$cred_id" --prf-salt "$salt")
 ```
 
 ## `passphrase`
@@ -86,7 +87,7 @@ The two secret sources a passkey-backed keystore needs, each one command:
 
 ```bash
 salt=$(head -c32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')
-prf=$(jupyterlab-passkey get --rp-id your.host --cred-id "$cred_id" --prf-salt "$salt")
+prf=$(jupyterlab-passkey get --rp-id lab.example.com --cred-id "$cred_id" --prf-salt "$salt")
 ```
 
 See [example-secret-unlock.md](example-secret-unlock.md) for a worked end-to-end example.
