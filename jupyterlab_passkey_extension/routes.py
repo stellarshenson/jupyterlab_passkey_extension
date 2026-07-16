@@ -12,11 +12,15 @@ import tornado
 NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
 
 
-def _relay_dir():
-    """Per-user relay directory.
+def relay_dir():
+    """Per-user relay directory - the one definition, shared with the CLI.
 
     Defaults to a uid-scoped path so a co-tenant sharing /dev/shm cannot squat or
     pre-create the predictable directory. Overridable via env for tests.
+
+    Public because `cli` reads it too: the writer and the reader must agree on this
+    path or every relay silently strands, so a second copy of the default is a bug
+    waiting to happen rather than a convenience.
     """
     return os.environ.get(
         "JLAB_PASSKEY_RELAY_DIR", f"/dev/shm/jlab-passkey-{os.getuid()}"
@@ -24,23 +28,26 @@ def _relay_dir():
 
 
 def _write_relay(nonce, filename, content):
-    """Write `content` to <relay_dir>/<filename> as a one-shot 0600 file.
+    """Write `content` to <relay_dir>/<filename> as a 0600 file, atomically.
 
     mkstemp makes a fresh 0600 file with O_EXCL and a random name (no symlink to
     follow, no world-readable window); os.replace then renames it onto the final
-    name so the relay is one-shot. The caller must validate `nonce` first.
+    name, so a reader never sees a partial write. Atomicity is what this buys - a
+    relay is never read half-written and never appended to. It does NOT make the
+    file single-read: reading it once and deleting it is the consumer's job.
+    The caller must validate `nonce` first.
     """
-    relay_dir = _relay_dir()
-    os.makedirs(relay_dir, exist_ok=True)
+    dest_dir = relay_dir()
+    os.makedirs(dest_dir, exist_ok=True)
     try:
-        os.chmod(relay_dir, 0o700)  # best-effort; tolerate a pre-existing dir
+        os.chmod(dest_dir, 0o700)  # best-effort; tolerate a pre-existing dir
     except OSError:
         pass
 
-    fd, tmp_path = tempfile.mkstemp(dir=relay_dir, prefix=f".{nonce}.", suffix=".tmp")
+    fd, tmp_path = tempfile.mkstemp(dir=dest_dir, prefix=f".{nonce}.", suffix=".tmp")
     with os.fdopen(fd, "w") as f:
         f.write(content)
-    os.replace(tmp_path, os.path.join(relay_dir, filename))
+    os.replace(tmp_path, os.path.join(dest_dir, filename))
 
 
 class PasskeyResultHandler(APIHandler):

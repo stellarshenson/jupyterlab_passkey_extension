@@ -45,6 +45,33 @@ cd ./ui-tests
 jlpm playwright test
 ```
 
+The test server binds port 8888 and Galata sets `port_retries = 0`, so it dies rather
+than move if that port is taken. The suite never adopts a server it did not start, so if
+you already have JupyterLab on 8888 you must move the suite - `JUPYTER_TEST_PORT` is a
+single knob that repoints the server, the URL Playwright waits on, and the endpoints the
+CLI tests call:
+
+```sh
+cd ./ui-tests
+JUPYTER_TEST_PORT=8889 jlpm playwright test
+```
+
+These tests spawn the real `jupyterlab-passkey` binary, which finds its server on its
+own - so the suite has to make sure it can only ever find this one. That takes three
+guards together, and none of them is sufficient alone:
+
+- `JUPYTER_RUNTIME_DIR` is redirected to a private folder, so `jupyter server list` shows
+  only the server the suite started and not a lab you have open
+- the CLI's discovery **fallback** variables are subtracted from its environment, and
+  `JUPYTER_PORT` is pinned to the suite's own port. Redirecting the runtime dir alone is
+  not isolation - an empty server list is exactly what makes the CLI guess, and its guess
+  is `JUPYTER_PORT` (default 8888) with your `JUPYTERHUB_API_TOKEN`
+- the server is never reused, only started, so the suite cannot drive a lab of yours that
+  happens to answer on the port
+
+Scratch state (`.tmp-runtime`, `.tmp-passkey-relay`) is swept before the server starts and
+again after the run; both are gitignored.
+
 Test results will be shown in the terminal. In case of any test failures, the test report
 will be opened in your browser at the end of the tests execution; see
 [Playwright documentation](https://playwright.dev/docs/test-reporters#html-reporter)

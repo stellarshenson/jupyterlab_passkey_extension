@@ -965,10 +965,20 @@ wheels = [
 ]
 
 [[package]]
+name = "jupyterlab-notifications-extension"
+version = "1.2.24"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/22/da/dd803d44a0f2f5483897dff4e62854fa114da124816c4a0d97b0501b50b2/jupyterlab_notifications_extension-1.2.24.tar.gz", hash = "sha256:852f2f589be5906ee5e7c83a35c1ed96aca65f0d660f1543eee3f90b6ffc836a", size = 507301, upload-time = "2026-07-15T11:10:15.398Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f8/b6/2ffc79a99b42b840b99c6947ea1c0c5edc9d947d7f72e458c8f4553b956d/jupyterlab_notifications_extension-1.2.24-py3-none-any.whl", hash = "sha256:06cca1a5cd4cad22866501cf9feff705ffea2138e631511929c9f213a57e91fa", size = 32871, upload-time = "2026-07-15T11:10:13.991Z" },
+]
+
+[[package]]
 name = "jupyterlab-passkey-extension"
 source = { editable = "." }
 dependencies = [
     { name = "jupyter-server" },
+    { name = "jupyterlab-notifications-extension" },
 ]
 
 [package.optional-dependencies]
@@ -990,6 +1000,7 @@ requires-dist = [
     { name = "jupyter-builder", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "jupyter-server", specifier = ">=2.4.0,<3" },
     { name = "jupyterlab", marker = "extra == 'dev'", specifier = ">=4" },
+    { name = "jupyterlab-notifications-extension", specifier = ">=1.2" },
     { name = "pytest", marker = "extra == 'test'" },
     { name = "pytest-asyncio", marker = "extra == 'test'" },
     { name = "pytest-cov", marker = "extra == 'test'" },

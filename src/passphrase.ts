@@ -79,7 +79,7 @@ class PassphraseBody extends Widget {
  * Prompt for a passphrase (entered twice) and relay it to the server.
  *
  * The passphrase is confirmed to match in the dialog, then POSTed to the
- * "passphrase" endpoint, which writes it raw to a one-shot 0600 relay file so a
+ * "passphrase" endpoint, which writes it raw to an atomic 0600 relay file so a
  * local client can read it. Returns true when a passphrase was relayed, false
  * when the user cancelled. The value is never logged.
  */

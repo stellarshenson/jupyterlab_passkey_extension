@@ -93,6 +93,11 @@ jobs:
         jupyter labextension list 2>&1 | grep -ie "jupyterlab_passkey_extension.*OK"
         python -m jupyterlab.browser_check --no-browser-test
 
+        # Pin the console script against the wheel IN ISOLATION - no node, no dev tree,
+        # no test extras. The Galata suite also spawns the binary, but only here is it
+        # proven to work from what a user actually pip-installs.
+        jupyterlab-passkey --help
+
   integration-tests:
     name: Integration tests
     needs: build

@@ -132,5 +132,9 @@ dmypy.json
 # passkey ui-tests: relay dir written by the test server, read back by Playwright
 ui-tests/.tmp-passkey-relay/
 
+# passkey ui-tests: private Jupyter runtime dir, so the CLI under test discovers only
+# the server the suite started and never a developer's own lab
+ui-tests/.tmp-runtime/
+
 # jest junit reporter artifact
 junit.xml

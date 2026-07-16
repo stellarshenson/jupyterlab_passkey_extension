@@ -4,7 +4,7 @@ The JupyterLab commands the extension registers, and the server contract behind 
 
 - **Commands** - `passkey:run` (ceremony), `passkey:passphrase` (passphrase capture)
 - **Trigger** - a `jupyterlab-notify` action button bound to the command id
-- **Return path** - the frontend POSTs to the server, which writes a one-shot relay file
+- **Return path** - the frontend POSTs to the server, which writes an atomic relay file
 - **Relay dir** - `/dev/shm/jlab-passkey-$(id -u)`, mode `0700`; override with `JLAB_PASSKEY_RELAY_DIR`
 - **Relay file** - `<nonce>.json` for a ceremony, raw `<nonce>.pass` for a passphrase
 - **File mode** - `0600`, written mkstemp-then-rename, never logged

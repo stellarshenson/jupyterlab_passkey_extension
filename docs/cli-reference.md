@@ -1,10 +1,10 @@
 # CLI reference
 
-`jupyterlab-passkey` turns a browser ceremony into a blocking local call. It is a thin proxy to the [JupyterLab commands](commands-reference.md): it posts the notification that carries the command, waits for the relay the server writes, prints the result, and cleans up. A consumer never learns the relay contract.
+`jupyterlab-passkey` turns a browser ceremony into a blocking local call. It is a thin proxy to the [JupyterLab commands](commands-reference.md): it posts the notification that carries the command, waits for the relay the server writes, and prints the result. It deletes the ceremony relay after reading it; the passphrase relay is left for its consumer to shred. A consumer never learns the relay contract.
 
 - **Ships with the package** - `pip install jupyterlab_passkey_extension` puts it on `PATH`
 - **Subcommands** - `create`, `get`, `passphrase`, mirroring the commands one-to-one
-- **Transport** - HTTP only; it finds the server and token via `jupyter server list --json`
+- **Transport** - HTTP only; it finds the server and token via `jupyter server list --json`, taking the **first** server reported
 - **Where to run it** - a terminal on the same Jupyter server, with a JupyterLab tab open
 - **Blocking** - each call waits for you to click the button and approve the prompt
 - **Timeout** - `--timeout` seconds, default `120`; exit `1` if no relay arrives
@@ -12,10 +12,24 @@
 
 The click is not incidental - WebAuthn requires a user gesture, and a terminal has none. The notification button is the gesture.
 
+> [!IMPORTANT]
+> The CLI assumes **one** running Jupyter server, and there is no flag to select one. It takes the first entry `jupyter server list` reports, and that order follows the runtime directory's filesystem order rather than anything meaningful. With a second server running, the notification can be raised in a tab you are not watching, and the call then fails on its timeout as though the button was never clicked. Run it where exactly one server is live.
+
+### How the server is found
+
+Discovery has a fallback, and it is worth knowing because it is silent:
+
+- **Normally** - the first entry of `jupyter server list --json` supplies the port, base URL, and token
+- **When that list is empty** - the CLI guesses instead: `JUPYTER_PORT` (defaulting to **8888**) with `JUPYTERHUB_SERVICE_PREFIX`, authenticating with `JUPYTERHUB_API_TOKEN`, `JPY_API_TOKEN` or `JUPYTER_TOKEN`
+
+The hub variables take priority over the server list's own token, because under JupyterHub a server rejects its own listed token and accepts only the hub-issued one.
+
+Pointing `JUPYTER_RUNTIME_DIR` at a specific runtime folder therefore narrows discovery only if that folder actually holds the server's record. Point it somewhere empty and the list is empty, so the CLI falls through to the guess above and quietly targets port 8888 - which is the likeliest port for some _other_ lab.
+
 ## Requirements
 
 - A JupyterLab tab open on the same server, to receive the notification and run the ceremony
-- The notifications extension installed in that lab - the CLI posts to its `ingest` endpoint
+- [`jupyterlab_notifications_extension`](https://github.com/stellarshenson/jupyterlab_notifications_extension) - a hard dependency, installed for you; the CLI posts to its `ingest` endpoint to raise the button. A lab without it answers `404`
 
 ## `create`
 

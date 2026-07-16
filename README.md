@@ -14,7 +14,7 @@ It is purpose-agnostic and performs no cryptography of its own. Every caller sup
 
 ## How it works
 
-A browser page can only talk back to the Jupyter server over HTTP. A terminal or CLI process on the server cannot receive anything from the page directly. So the ceremony runs in the page, and its result returns through a small authenticated server endpoint that writes a one-shot relay file the local client reads.
+A browser page can only talk back to the Jupyter server over HTTP. A terminal or CLI process on the server cannot receive anything from the page directly. So the ceremony runs in the page, and its result returns through a small authenticated server endpoint that writes an atomic `0600` relay file the local client reads and shreds.
 
 ```mermaid
 flowchart LR
@@ -29,12 +29,12 @@ flowchart LR
     subgraph SERVER["Jupyter server"]
         direction TB
         EP["POST /result<br/>authenticated"]
-        RELAY[("one-shot 0600 relay<br/>/dev/shm/jlab-passkey-uid")]
+        RELAY[("atomic 0600 relay<br/>/dev/shm/jlab-passkey-uid")]
         EP --> RELAY
     end
     LOCAL["local client<br/>terminal / CLI / API"]
     CER -->|"POST JSON result"| EP
-    RELAY -->|"reads one-shot file"| LOCAL
+    RELAY -->|"reads, then shreds"| LOCAL
 
     style BROWSER stroke:#6b7280,stroke-width:3px
     style SERVER stroke:#6b7280,stroke-width:3px
@@ -101,15 +101,15 @@ Cancelling, or accepting two entries that differ, relays nothing - the file neve
 
 All live under the server base URL and require Jupyter authentication.
 
-- `POST <base_url>/jupyterlab-passkey-extension/result` - validates the nonce, writes the body to a one-shot `0600` relay, returns `204`. The body, including any PRF value, is never logged
-- `POST <base_url>/jupyterlab-passkey-extension/passphrase` - validates the nonce, writes the passphrase raw to a one-shot `0600` `<nonce>.pass`, returns `204`. The passphrase is never logged
+- `POST <base_url>/jupyterlab-passkey-extension/result` - validates the nonce, writes the body to an atomic `0600` relay, returns `204`. The body, including any PRF value, is never logged
+- `POST <base_url>/jupyterlab-passkey-extension/passphrase` - validates the nonce, writes the passphrase raw to an atomic `0600` `<nonce>.pass`, returns `204`. The passphrase is never logged
 - `GET <base_url>/jupyterlab-passkey-extension/health` - returns `{ "ok": true }`
 
 The relay directory defaults to the uid-scoped `/dev/shm/jlab-passkey-<uid>` and is overridable with the `JLAB_PASSKEY_RELAY_DIR` environment variable.
 
 ## Triggering a ceremony
 
-WebAuthn requires a user gesture, and this extension builds no request-submission UI of its own - that is the consumer's job. The reference trigger is a [jupyterlab-notify](https://pypi.org/project/jupyterlab-notify/) notification whose action button is bound to `passkey:run`; clicking it supplies the gesture and reaches the command with the app already in hand.
+WebAuthn requires a user gesture, and this extension builds no request-submission UI of its own - that is the consumer's job. The reference trigger is a [`jupyterlab-notify`](https://github.com/stellarshenson/jupyterlab_notifications_extension) notification whose action button is bound to `passkey:run`; clicking it supplies the gesture and reaches the command with the app already in hand.
 
 ```bash
 jupyterlab-notify --now --no-auto-close -t info \
@@ -129,7 +129,7 @@ See [docs/commands-reference.md](docs/commands-reference.md) for the full comman
 ## Security
 
 - Both endpoints are gated by `@tornado.web.authenticated` - a caller needs the Jupyter token or session
-- The relay is created with `mkstemp` + `os.replace`, giving a fresh `0600` file with no world-readable window, then renamed onto `<nonce>.json` so it is one-shot
+- The relay is created with `mkstemp` + `os.replace`, giving a fresh `0600` file with no world-readable window, then renamed onto `<nonce>.json` atomically - a reader never sees a partial write, and the file is never appended to. Single-read is the consumer's responsibility, not an enforced guarantee: the server does not delete relays, so a consumer must `shred -u` what it reads
 - The relay directory is uid-scoped, so a co-tenant sharing `/dev/shm` cannot pre-create or squat the path
 - The result body and any PRF value are never written to logs
 - The extension performs no cryptography and stores no secret; every parameter and all key handling belong to the caller
@@ -137,7 +137,7 @@ See [docs/commands-reference.md](docs/commands-reference.md) for the full comman
 ## Requirements
 
 - JupyterLab >= 4.0.0
-- A consumer to trigger `passkey:run` (for example `jupyterlab-notify`) and a local client to read the relay
+- A consumer to trigger `passkey:run` and a local client to read the relay. [`jupyterlab_notifications_extension`](https://github.com/stellarshenson/jupyterlab_notifications_extension) provides the reference trigger and is installed automatically - the `jupyterlab-passkey` CLI posts to it
 
 ## Install
 
@@ -147,13 +147,18 @@ pip install jupyterlab_passkey_extension
 
 ## Command line
 
-`jupyterlab-passkey` ships with the package and proxies the commands above, so a local process can drive a ceremony as a blocking call without knowing the relay contract. It posts the trigger over HTTP, waits for your click, prints the result, and cleans up.
+`jupyterlab-passkey` ships with the package and proxies the commands above, so a local process can drive a ceremony as a blocking call without knowing the relay contract. It posts the trigger over HTTP, waits for your click, and prints the result. It deletes the ceremony relay after reading it; the passphrase relay is left for its consumer, so shred that one yourself.
 
 ```bash
 cred_id=$(jupyterlab-passkey create --rp-id your.jupyterlab.host)
 prf=$(jupyterlab-passkey get --rp-id your.jupyterlab.host --cred-id "$cred_id" --prf-salt "$salt")
-pass_file=$(jupyterlab-passkey passphrase)
+
+pass_file=$(jupyterlab-passkey passphrase) || exit 1
+PASS_RECOVERY_FILE="$pass_file" pass-cli-open --ensure
+shred -u "$pass_file"
 ```
+
+The `|| exit 1` matters: a prefix assignment does not propagate a command substitution's exit status, so `PASS_RECOVERY_FILE=$(jupyterlab-passkey passphrase) pass-cli-open` would run the consumer with an empty passphrase file after a timeout or a cancel.
 
 Full flags in [docs/cli-reference.md](docs/cli-reference.md).
 

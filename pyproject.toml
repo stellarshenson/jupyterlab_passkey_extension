@@ -23,7 +23,12 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "jupyter_server>=2.4.0,<3"
+    "jupyter_server>=2.4.0,<3",
+    # The jupyterlab-passkey CLI posts its trigger to this extension's ingest endpoint
+    # to raise the notification button that supplies WebAuthn's user gesture. The
+    # console script ships unconditionally, so this is a hard requirement, not an
+    # extra - without it the very first command dies with a 404.
+    "jupyterlab_notifications_extension>=1.2"
 ]
 dynamic = ["version", "description", "authors", "urls", "keywords"]
 

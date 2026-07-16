@@ -3,12 +3,18 @@
 
 A proxy to the extension's JupyterLab commands. WebAuthn needs a user gesture and a
 browser; a terminal has neither. So each subcommand posts a notification whose action
-button is bound to the command, waits for the one-shot relay the server writes, and
+button is bound to the command, waits for the relay the server writes, and
 returns the result - turning a browser ceremony into a blocking call.
 
     cred_id=$(jupyterlab-passkey create --rp-id lab.example)
     prf=$(jupyterlab-passkey get --rp-id lab.example --cred-id "$cred_id" --prf-salt "$salt")
-    PASS_RECOVERY_FILE=$(jupyterlab-passkey passphrase) pass-cli-open --ensure
+    pass_file=$(jupyterlab-passkey passphrase) || exit 1
+    PASS_RECOVERY_FILE=$pass_file pass-cli-open --ensure
+
+Take the `|| exit 1` seriously: a prefix assignment does not propagate the exit status
+of a command substitution, so `PASS_RECOVERY_FILE=$(jupyterlab-passkey passphrase)
+pass-cli-open` would run the consumer with an EMPTY passphrase file after a timeout or
+a cancel.
 
 Run it in a terminal on the same Jupyter server, keep a JupyterLab tab open, and click
 the button when it pops.
@@ -25,17 +31,20 @@ import time
 import urllib.error
 import urllib.request
 
+from .routes import relay_dir
+
 INGEST = "jupyterlab-notifications-extension/ingest"
 RUN_COMMAND = "passkey:run"
 PASSPHRASE_COMMAND = "passkey:passphrase"
 
+# The trigger POST is a local, non-interactive call - only the click it asks for is slow.
+# --timeout governs the wait for the click, never this; without a bound here a wedged
+# server event loop hangs the CLI forever, ignoring --timeout entirely.
+TRIGGER_TIMEOUT = 10
+
 
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def relay_dir() -> str:
-    return os.environ.get("JLAB_PASSKEY_RELAY_DIR", f"/dev/shm/jlab-passkey-{os.getuid()}")
 
 
 def _server_list() -> dict:
@@ -63,17 +72,23 @@ def _base_url(info: dict) -> str:
 def _token(info: dict) -> str | None:
     """The token that authenticates to that server.
 
-    Environment first, exactly as jupyterlab-notify resolves it. Under JupyterHub the
-    server's own token from `jupyter server list` is NOT accepted by its API - only the
-    hub-issued token is - so preferring the server list here earns a 403.
+    Order matters and both ends are a real 403:
+
+    - The hub vars win outright. Under JupyterHub the server's own token from
+      `jupyter server list` is NOT accepted by its API - only the hub-issued one is.
+    - The server list then beats JUPYTER_TOKEN, which is generic and easily stale (an
+      old export in a shell rc). Letting a stale env value outrank the token the running
+      server just handed us is a 403 that reads like a config error.
     """
-    return (
-        os.environ.get("JUPYTERHUB_API_TOKEN")
-        or os.environ.get("JPY_API_TOKEN")
-        or os.environ.get("JUPYTER_TOKEN")
-        or info.get("token")
-        or None
-    )
+    hub = os.environ.get("JUPYTERHUB_API_TOKEN") or os.environ.get("JPY_API_TOKEN")
+    if hub:
+        return hub
+    # `in`, not truthiness: a server reporting token "" is answering "I want none", which
+    # is a different thing from having no server record at all. An `or` chain conflates
+    # them and lets a stale env var send an Authorization header to a tokenless server.
+    if "token" in info:
+        return info["token"] or None
+    return os.environ.get("JUPYTER_TOKEN") or None
 
 
 def _server() -> tuple[str, str | None]:
@@ -105,8 +120,14 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
         f"{base}/{INGEST}", data=json.dumps(payload).encode(), headers=headers, method="POST",
     )
     try:
-        urllib.request.urlopen(req).read()
+        with urllib.request.urlopen(req, timeout=TRIGGER_TIMEOUT) as r:
+            r.read()
     except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise SystemExit(
+                f"trigger rejected (404) by {base}/{INGEST} - the notifications extension "
+                "is not installed in that lab; the CLI needs it to raise the button"
+            )
         raise SystemExit(f"trigger rejected ({e.code} {e.reason}) by {base}/{INGEST}")
     except urllib.error.URLError as e:
         raise SystemExit(f"cannot reach {base} ({e.reason}) - is JupyterLab running?")
@@ -114,23 +135,52 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
     print(f"click '{label}' in your JupyterLab tab", file=sys.stderr)
 
 
-def _wait(path: str, timeout: float) -> None:
+def _wait(path: str, timeout: float, on_timeout: str) -> None:
+    """Block until the relay appears.
+
+    Existence is enough: the write lands atomically, so the value is whole - see
+    `routes._write_relay`.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if os.path.exists(path):
             return
         time.sleep(0.4)
-    raise SystemExit(f"no relay after {timeout:.0f}s - was the button clicked and the prompt approved?")
+    # One last look. The final sleep straddles the deadline, so a relay landing in that
+    # window would otherwise be declared missing while sitting on disk - failing a
+    # ceremony the user completed in time AND stranding its PRF, since the caller that
+    # would have consumed the file is the one raising here.
+    if os.path.exists(path):
+        return
+    raise SystemExit(f"no relay after {timeout:.0f}s - {on_timeout}")
 
 
 def _run(args_obj: dict, label: str, message: str, timeout: float) -> dict:
-    """Drive passkey:run and consume its one-shot relay."""
+    """Drive passkey:run and consume its relay, deleting it on every path out of here.
+
+    The relay carries the PRF, so the unlink sits in a finally that also covers the
+    timeout - `_wait` is inside the try for exactly that reason. A malformed body, or a
+    relay that landed just as we gave up, would otherwise leave key material on disk
+    precisely when nobody is left to collect it.
+
+    It is best effort and cannot be more: the server writes whenever the ceremony
+    finishes, so a click that lands after this process has exited strands a relay no
+    matter what we do here. That residue is bounded by the relay dir living in /dev/shm
+    (tmpfs, gone at reboot) and is why shredding is documented as the consumer's job.
+    """
     relay = os.path.join(relay_dir(), f"{args_obj['nonce']}.json")
     _trigger(RUN_COMMAND, args_obj, label, message)
-    _wait(relay, timeout)
-    with open(relay) as f:
-        data = json.load(f)
-    os.unlink(relay)
+    try:
+        _wait(relay, timeout, "was the button clicked and the prompt approved?")
+        with open(relay) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise SystemExit(f"unreadable relay {relay}: {e}")
+    finally:
+        try:
+            os.unlink(relay)
+        except OSError:
+            pass
     if not data.get("ok"):
         raise SystemExit(f"ceremony failed: {data.get('error')}")
     return data
@@ -180,7 +230,9 @@ def cmd_passphrase(a) -> int:
         PASSPHRASE_COMMAND, {"nonce": nonce, "prompt": a.prompt},
         "Enter passphrase", "Enter the passphrase - click to open the dialog.",
     )
-    _wait(relay, a.timeout)
+    # The dialog relays nothing on cancel or on two entries that differ, so a timeout
+    # here usually means a deliberate refusal, not an unnoticed button.
+    _wait(relay, a.timeout, "cancelled, the two entries differed, or the button was never clicked")
     print(relay)
     return 0
 
