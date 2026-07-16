@@ -124,7 +124,7 @@ The local client then reads `<relay_dir>/<nonce>.json` to collect the result.
 > [!NOTE]
 > Do not start JupyterLab with `--expose-app-in-browser` just to trigger the command by hand. A notify button (or any extension that holds the app reference) reaches `passkey:run` directly with a genuine gesture and no global.
 
-See [docs/cli-reference.md](docs/cli-reference.md) for the full command, endpoint and self-test reference, and [docs/example-secret-unlock.md](docs/example-secret-unlock.md) for a worked consumer walkthrough that seals and opens a secret with a passkey.
+See [docs/commands-reference.md](docs/commands-reference.md) for the full command, relay and endpoint reference, [docs/cli-reference.md](docs/cli-reference.md) for the CLI, and [docs/example-secret-unlock.md](docs/example-secret-unlock.md) for a worked consumer walkthrough that seals and opens a secret with a passkey.
 
 ## Security
 
@@ -145,13 +145,17 @@ See [docs/cli-reference.md](docs/cli-reference.md) for the full command, endpoin
 pip install jupyterlab_passkey_extension
 ```
 
-## Manual end-to-end test
+## Command line
 
-`scripts/passkey_selftest.py` drives the real trigger against your own authenticator: it sends the notify button, runs `create` then `get`, and verifies the relay the server writes (the PRF value is redacted, never printed).
+`jupyterlab-passkey` ships with the package and proxies the commands above, so a local process can drive a ceremony as a blocking call without knowing the relay contract. It posts the trigger over HTTP, waits for your click, prints the result, and cleans up.
 
 ```bash
-python scripts/passkey_selftest.py --rp-id your.jupyterlab.host
+cred_id=$(jupyterlab-passkey create --rp-id your.jupyterlab.host)
+prf=$(jupyterlab-passkey get --rp-id your.jupyterlab.host --cred-id "$cred_id" --prf-salt "$salt")
+pass_file=$(jupyterlab-passkey passphrase)
 ```
+
+Full flags in [docs/cli-reference.md](docs/cli-reference.md).
 
 ## Development install
 
