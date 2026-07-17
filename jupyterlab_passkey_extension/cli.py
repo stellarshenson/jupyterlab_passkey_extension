@@ -3,13 +3,22 @@
 
 A proxy to the extension's JupyterLab commands. WebAuthn needs a user gesture and a
 browser; a terminal has neither. So each subcommand posts a notification whose action
-button is bound to the command, waits for the relay the server writes, and
-returns the result - turning a browser ceremony into a blocking call.
+button is bound to the command, then (all but `copy`) waits for the relay the server
+writes and returns the result - turning a browser ceremony into a blocking call.
 
     cred_id=$(jupyterlab-passkey create --rp-id lab.example)
     prf=$(jupyterlab-passkey get --rp-id lab.example --cred-id "$cred_id" --prf-salt "$salt")
     pass_file=$(jupyterlab-passkey passphrase) || exit 1
     PASS_RECOVERY_FILE=$pass_file pass-cli-open --ensure
+
+Secrets move both ways. `passphrase` takes one FROM you in a dialog and leaves it in a
+relay for a vault or a .env to read; `copy` sends one TO the clipboard of the browser
+you are sitting in front of, to paste wherever it is wanted:
+
+    tok_file=$(jupyterlab-passkey passphrase --once --prompt "GitHub token") || exit 1
+    PASS_SECRET_FILE=$tok_file pass-cli-save github/api -u me -c infrastructure
+
+    pass-cli get github/api --field password --quiet --no-clipboard | jupyterlab-passkey copy
 
 Take the `|| exit 1` seriously: a prefix assignment does not propagate the exit status
 of a command substitution, so `PASS_RECOVERY_FILE=$(jupyterlab-passkey passphrase)
@@ -31,20 +40,61 @@ import time
 import urllib.error
 import urllib.request
 
-from .routes import relay_dir
+from .routes import ensure_relay_dir, write_relay
 
 INGEST = "jupyterlab-notifications-extension/ingest"
 RUN_COMMAND = "passkey:run"
 PASSPHRASE_COMMAND = "passkey:passphrase"
+COPY_COMMAND = "passkey:copy"
 
 # The trigger POST is a local, non-interactive call - only the click it asks for is slow.
 # --timeout governs the wait for the click, never this; without a bound here a wedged
 # server event loop hangs the CLI forever, ignoring --timeout entirely.
 TRIGGER_TIMEOUT = 10
 
+# How long any subcommand waits for the click, unless --timeout says otherwise. ONE
+# definition, fed to argparse and interpolated into the help text below: all four
+# commands wait for the same thing - a human noticing a notification and clicking it -
+# and a second literal would drift from this one the first time anybody retunes it.
+CLICK_TIMEOUT = 120.0
+
 
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _say(message: str) -> None:
+    """Tell the user something on stderr, and never fail the command doing it.
+
+    Catching the write error is not enough on its own. stderr is buffered, so a
+    failed write leaves the bytes sitting in it; CPython retries that flush at
+    interpreter shutdown - long after main() has returned, where no except can
+    reach it - and exits 120 when it fails again. So the whole command reports
+    failure because a progress message could not be printed.
+
+    That is not cosmetic here. `copy` answers a failed trigger by destroying the
+    secret it staged, precisely so a retry cannot strand another copy; a caller
+    that reads 120 as "the trigger failed" retries, and strands one anyway. And
+    `passphrase` prints a path its caller captures with `|| exit 1`, which a 120
+    throws away while the relay stays on disk.
+
+    Dropping the stream takes the poisoned buffer with it, so shutdown has nothing
+    left to retry.
+    """
+    stderr = sys.stderr
+    # None: print(file=None) falls back to STDOUT, and stdout is load-bearing here -
+    # it carries the cred_id, the PRF, the relay path. Chatter must never land there.
+    # Closed: an earlier call already dropped it, and printing to a closed stream
+    # raises ValueError, which would take the command down over a progress message.
+    if stderr is None or getattr(stderr, "closed", False):
+        return
+    try:
+        print(message, file=stderr)
+    except (OSError, ValueError):
+        try:
+            stderr.close()
+        except (OSError, ValueError):
+            pass
 
 
 def _server_list() -> dict:
@@ -131,15 +181,40 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
         raise SystemExit(f"trigger rejected ({e.code} {e.reason}) by {base}/{INGEST}")
     except urllib.error.URLError as e:
         raise SystemExit(f"cannot reach {base} ({e.reason}) - is JupyterLab running?")
+    except OSError as e:
+        # Must come after URLError, which subclasses OSError. TimeoutError and
+        # ConnectionResetError are OSError but NOT URLError, and urlopen raises them
+        # bare out of the read phase - so without this the one case TRIGGER_TIMEOUT
+        # exists to bound, a server that accepts the connection and then wedges, ends
+        # in a traceback instead of the sentence that names the problem.
+        raise SystemExit(f"cannot reach {base} ({e}) - is JupyterLab running?")
 
-    print(f"click '{label}' in your JupyterLab tab", file=sys.stderr)
+    # The POST has landed by here and the button is live in the browser, so a broken
+    # stderr (a full log volume, a pipe whose reader has gone) must not report the
+    # trigger as failed - `copy`'s caller answers that by unstaging the secret the
+    # live button is about to ask for. See _say.
+    _say(f"click '{label}' in your JupyterLab tab")
+
+
+def _relay_dir() -> str:
+    """`ensure_relay_dir`, with its refusal rendered as a sentence.
+
+    It raises PermissionError when the relay path is a symlink or belongs to another
+    uid - a co-tenant squatting /dev/shm, which is world-writable. That is a real
+    condition a user can hit and fix, so it deserves the same one-line diagnosis every
+    other failure here gets rather than a traceback out of os.lstat.
+    """
+    try:
+        return ensure_relay_dir()
+    except OSError as e:
+        raise SystemExit(f"refusing to use the relay directory: {e}")
 
 
 def _wait(path: str, timeout: float, on_timeout: str) -> None:
     """Block until the relay appears.
 
     Existence is enough: the write lands atomically, so the value is whole - see
-    `routes._write_relay`.
+    `routes.write_relay`.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -155,6 +230,32 @@ def _wait(path: str, timeout: float, on_timeout: str) -> None:
     raise SystemExit(f"no relay after {timeout:.0f}s - {on_timeout}")
 
 
+def _wait_gone(path: str, timeout: float, on_timeout: str) -> None:
+    """Block until the relay is consumed.
+
+    The mirror of `_wait`. The `secret` endpoint reads its relay and unlinks it in
+    the same breath, so the file DISAPPEARING is the signal - there is nothing else
+    to watch. Nothing is posted back from the page, so this is as close to "the
+    secret arrived" as the caller can get.
+
+    It is not proof of a clipboard write. The frontend collects the value and only
+    then calls navigator.clipboard.writeText, so a browser that refuses the
+    clipboard does so after this has already returned. `--block` therefore means
+    collected, not pasted.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not os.path.exists(path):
+            return
+        time.sleep(0.4)
+    # One last look, for the same reason `_wait` takes one: the final sleep straddles
+    # the deadline, and a click landing in that window is a success we would
+    # otherwise report as a timeout - and then shred the secret it just delivered.
+    if not os.path.exists(path):
+        return
+    raise SystemExit(f"not copied after {timeout:.0f}s - {on_timeout}")
+
+
 def _run(args_obj: dict, label: str, message: str, timeout: float) -> dict:
     """Drive passkey:run and consume its relay, deleting it on every path out of here.
 
@@ -168,11 +269,14 @@ def _run(args_obj: dict, label: str, message: str, timeout: float) -> dict:
     matter what we do here. That residue is bounded by the relay dir living in /dev/shm
     (tmpfs, gone at reboot) and is why shredding is documented as the consumer's job.
     """
-    relay = os.path.join(relay_dir(), f"{args_obj['nonce']}.json")
+    relay = os.path.join(_relay_dir(), f"{args_obj['nonce']}.json")
     _trigger(RUN_COMMAND, args_obj, label, message)
     try:
         _wait(relay, timeout, "was the button clicked and the prompt approved?")
-        with open(relay) as f:
+        # utf-8 pinned like every other relay boundary: the writer is the server
+        # process with its own locale. json.dumps is ASCII today, which is luck,
+        # not a contract.
+        with open(relay, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
         raise SystemExit(f"unreadable relay {relay}: {e}")
@@ -196,7 +300,13 @@ def cmd_create(a) -> int:
         {"op": "create", "nonce": secrets.token_urlsafe(24), "rp_id": a.rp_id, "user": user},
         "Register passkey", "Register a passkey - click to approve.", a.timeout,
     )
-    print(data["cred_id"])
+    # .get, not [..]: the server writes any authenticated body verbatim, so an ok:true
+    # relay with no cred_id is reachable - and every failure here answers with a line,
+    # not a KeyError traceback.
+    cred_id = data.get("cred_id")
+    if not cred_id:
+        raise SystemExit("malformed relay - the ceremony result carries no cred_id")
+    print(cred_id)
     return 0
 
 
@@ -214,26 +324,169 @@ def cmd_get(a) -> int:
             raise SystemExit("no PRF returned - the authenticator did not evaluate the salt")
         print(data["prf"])
     else:
-        print(data["cred_id"])
+        # Same guard as cmd_create: an ok:true relay without the field is a malformed
+        # writer, not a KeyError of ours.
+        cred_id = data.get("cred_id")
+        if not cred_id:
+            raise SystemExit("malformed relay - the ceremony result carries no cred_id")
+        print(cred_id)
     return 0
 
 
 def cmd_passphrase(a) -> int:
-    """Capture a passphrase in the browser and leave it in a 0600 relay.
+    """Capture a secret in the browser and leave it in a 0600 relay.
 
-    Prints the file's path, never the value - the passphrase must reach its consumer
-    without passing through the terminal, shell history, or a process argument.
+    Prints the file's path, never the value - the secret must reach its consumer (a
+    vault, a .env, a keystore) without passing through the terminal, shell history, or
+    a process argument.
+
+    The prompt is left out of the args unless given, so the frontend can pick a default
+    that suits the mode rather than being told "Enter the passphrase twice" about a
+    single field.
     """
     nonce = secrets.token_urlsafe(24)
-    relay = os.path.join(relay_dir(), f"{nonce}.pass")
+    relay = os.path.join(_relay_dir(), f"{nonce}.pass")
+    args_obj = {"nonce": nonce}
+    if a.prompt:
+        args_obj["prompt"] = a.prompt
+    if a.once:
+        args_obj["once"] = True
     _trigger(
-        PASSPHRASE_COMMAND, {"nonce": nonce, "prompt": a.prompt},
-        "Enter passphrase", "Enter the passphrase - click to open the dialog.",
+        PASSPHRASE_COMMAND, args_obj,
+        "Enter secret" if a.once else "Enter passphrase",
+        "Enter the secret - click to open the dialog." if a.once
+        else "Enter the passphrase - click to open the dialog.",
     )
-    # The dialog relays nothing on cancel or on two entries that differ, so a timeout
+    # The dialog relays nothing on cancel, or on two entries that differ, so a timeout
     # here usually means a deliberate refusal, not an unnoticed button.
-    _wait(relay, a.timeout, "cancelled, the two entries differed, or the button was never clicked")
+    refused = "cancelled or the button was never clicked" if a.once else (
+        "cancelled, the two entries differed, or the button was never clicked"
+    )
+    _wait(relay, a.timeout, refused)
     print(relay)
+    return 0
+
+
+def cmd_copy(a) -> int:
+    """Stage a secret from a file or stdin and offer it to the browser's clipboard.
+
+    The only command that runs outward: the caller already holds the secret and wants
+    it in the clipboard of the browser they are sitting in front of, to paste
+    somewhere this bridge knows nothing about.
+
+    The value is staged in a 0600 relay and the notification carries only the nonce.
+    Putting the secret in the notification instead would be simpler and wrong - the
+    notifications extension pushes every payload to every connected socket and parks
+    it in an in-memory queue until a client drains it.
+
+    Fire and forget by default: the relay is one-shot, so the click consumes it, but
+    nothing here waits for the click. A secret nobody clicks sits in tmpfs until
+    reboot - the button is up and the user can see it, which is a different thing
+    from the stranded case the unstage below exists to prevent.
+
+    `--block` waits for the relay to be consumed and deletes it if it never is, so an
+    agent can sequence work after the secret has actually landed, and nothing is left
+    behind when it has not. It means COLLECTED, not pasted: the page fetches the
+    value and only then writes the clipboard, so a refused clipboard happens after
+    the wait has already returned.
+    """
+    if a.timeout is not None and not a.block:
+        # Without --block nothing here waits, so a --timeout would be accepted and then
+        # ignored - and a caller who set it would believe the command had bounded
+        # something. Refuse rather than lie.
+        raise SystemExit("--timeout only applies with --block - without it, copy waits for nothing")
+    timeout = CLICK_TIMEOUT if a.timeout is None else a.timeout
+
+    if a.file == "-" and sys.stdin.isatty():
+        # Reading a terminal echoes the secret onto the screen and into the
+        # scrollback, which is the one thing this bridge exists to avoid. Typing a
+        # secret is what `passphrase` is for; this command is for piping one.
+        raise SystemExit(
+            "refusing to read a secret from a terminal - pipe it in or pass a FILE "
+            "(to type one, use `jupyterlab-passkey passphrase --once`)"
+        )
+
+    source = "stdin" if a.file == "-" else a.file
+    try:
+        if a.file == "-":
+            # .buffer, decoded here rather than sys.stdin.read(): sys.stdin decodes
+            # with surrogateescape whatever the locale, so bad bytes would not raise
+            # here at all - they would pass through as lone surrogates and blow up
+            # later inside the relay write, as a UnicodeEncodeError nothing catches.
+            # Strict, at the boundary, is where the error belongs.
+            raw = sys.stdin.buffer.read().decode("utf-8")
+        else:
+            with open(a.file, encoding="utf-8") as f:
+                raw = f.read()
+    except OSError as e:
+        raise SystemExit(f"cannot read {source}: {e}")
+    except UnicodeDecodeError:
+        raise SystemExit(f"{source} is not text - a clipboard holds text, not bytes")
+
+    # `echo t | ...`, `cat token.txt`, and every here-string end in a newline nobody
+    # meant to copy, and a trailing newline pasted into a login field submits it
+    # early. Drop exactly one, which is what $(...) would have done anyway - and only
+    # one, so a deliberately multi-line secret (a PEM key) survives intact.
+    secret = raw[:-1] if raw.endswith("\n") else raw
+    if secret == "":
+        raise SystemExit("nothing to copy - the input was empty")
+
+    nonce = secrets.token_urlsafe(24)
+    filename = f"{nonce}.secret"
+    relay = os.path.join(_relay_dir(), filename)
+    message = (
+        f"A secret is waiting: {a.label}" if a.label
+        else "A secret is waiting - click to copy it to the clipboard."
+    )
+
+    try:
+        write_relay(nonce, filename, secret)
+    except OSError as e:
+        # A full /dev/shm is the realistic one. Every other failure here answers with
+        # a line; this should not be the one that answers with a traceback.
+        raise SystemExit(f"cannot stage the secret: {e}")
+
+    # The label rides along so the frontend can name the secret if it has to ask
+    # for a second click (a clipboard write refused past its retry window).
+    command_args = {"nonce": nonce, "label": a.label} if a.label else {"nonce": nonce}
+    try:
+        _trigger(COPY_COMMAND, command_args, "Copy to clipboard", message)
+    except BaseException:
+        # The nonce dies with this process, so a relay left behind here is not
+        # "uncollected" but uncollectable: no button was ever raised, nothing can
+        # ever ask for it, and it would sit in tmpfs until reboot while the CLI told
+        # the user it had failed. A 404 from a lab without the notifications
+        # extension is a first-run failure, not an exotic one, and every retry would
+        # strand another copy.
+        #
+        # BaseException, not Exception: _trigger raises SystemExit, and a Ctrl+C
+        # between the write above and the POST strands the secret identically.
+        try:
+            os.unlink(relay)
+        except OSError:
+            pass
+        raise
+
+    if a.block:
+        try:
+            _wait_gone(relay, timeout, "was the button clicked?")
+        finally:
+            # Whatever happened, this secret is ours to clean up: on a timeout nobody
+            # collected it, and leaving it would hand a live button to whoever clicks
+            # next, long after the caller gave up and moved on. Already gone on the
+            # success path, where the unlink is a no-op.
+            try:
+                os.unlink(relay)
+            except OSError:
+                pass
+        return 0
+
+    # _trigger has just said "click ...", which after every other command is followed
+    # by a blocking wait. Here the shell prompt returns underneath it, which reads as
+    # done - so say plainly that it is not. Past the unstage window on purpose: the
+    # button is live, and a stderr that cannot be written to is no reason to destroy
+    # the secret it is about to collect.
+    _say("nothing is reported back here - the click is what copies it")
     return 0
 
 
@@ -264,36 +517,211 @@ def _glue_b64url(argv: list[str]) -> list[str]:
     return out
 
 
+def _sub(sub, name: str, help_: str, description: str, epilog: str, parents=()):
+    """Add a subcommand whose --help is worth reading.
+
+    Every subparser here wants the same three things and argparse defaults to none of
+    them: prose under the usage line, examples under the options, and a formatter that
+    does not reflow either into one paragraph.
+    """
+    return sub.add_parser(
+        name, parents=list(parents), help=help_,
+        description=description.strip("\n"), epilog=epilog.strip("\n"),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="jupyterlab-passkey",
         description=__doc__,
+        epilog="""
+Every subcommand has its own --help with examples: `jupyterlab-passkey copy --help`.
+
+Exit status is the contract: 0 succeeded, 1 refused, timed out, or could not reach the
+server (the reason is one line on stderr). Only the result goes to stdout - a cred_id,
+a PRF, or a relay path - so `$(...)` captures it clean and progress chatter cannot
+contaminate it.
+""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     # --timeout hangs off a parent parser so it is accepted after the subcommand, which
-    # is where anyone would think to type it.
+    # is where anyone would think to type it. `copy` declares its own instead - see below.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
-        "--timeout", type=float, default=120.0, help="seconds to wait for the click (default 120)",
+        "--timeout", type=float, default=CLICK_TIMEOUT,
+        metavar="SECONDS",
+        help=f"how long to wait for the click before giving up and exiting 1 (default {CLICK_TIMEOUT:.0f})",
     )
-    sub = p.add_subparsers(dest="op", required=True)
+    sub = p.add_subparsers(dest="op", required=True, metavar="COMMAND")
 
-    c = sub.add_parser("create", parents=[common], help="register a passkey; prints its cred_id")
-    c.add_argument("--rp-id", required=True, help="WebAuthn RP ID = your JupyterLab hostname")
-    c.add_argument("--user-name", default="jupyterlab-passkey", help="credential user name")
+    c = _sub(
+        sub, "create", "register a passkey; prints its cred_id",
+        """
+Register a new passkey and print its credential id to stdout.
+
+Keep the cred_id: it is not a secret, but it is the only handle to the credential, and
+`get` cannot assert a passkey without it. Store it wherever you store the config for
+whatever this passkey unlocks.
+""",
+        """
+example:
+  cred_id=$(jupyterlab-passkey create --rp-id lab.example.com) || exit 1
+""",
+        parents=[common],
+    )
+    c.add_argument(
+        "--rp-id", required=True, metavar="HOSTNAME",
+        help="WebAuthn RP ID: your JupyterLab tab's hostname, bare - no scheme, port or path",
+    )
+    c.add_argument(
+        "--user-name", default="jupyterlab-passkey", metavar="NAME",
+        help="credential user name, shown in the browser's passkey picker (default jupyterlab-passkey)",
+    )
     c.set_defaults(func=cmd_create)
 
-    g = sub.add_parser("get", parents=[common], help="assert a passkey; prints its PRF (with --prf-salt) or cred_id")
-    g.add_argument("--rp-id", required=True, help="WebAuthn RP ID = your JupyterLab hostname")
-    g.add_argument("--cred-id", required=True, help="base64url credential id from a prior create")
-    g.add_argument("--prf-salt", help="base64url 32-byte salt; evaluates the WebAuthn PRF")
+    g = _sub(
+        sub, "get", "assert a passkey; prints its PRF (with --prf-salt) or cred_id",
+        """
+Assert an existing passkey. With --prf-salt, prints the 32-byte PRF the authenticator
+derives; without, prints the cred_id back as a liveness check.
+
+The PRF is deterministic - the same credential and the same salt always yield the same
+bytes - which is what makes it usable as a key. It goes to stdout, so capture it, do
+not let it scroll.
+""",
+        """
+example:
+  salt=$(head -c32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')
+  prf=$(jupyterlab-passkey get --rp-id lab.example.com --cred-id "$cred_id" \\
+          --prf-salt "$salt") || exit 1
+""",
+        parents=[common],
+    )
+    g.add_argument(
+        "--rp-id", required=True, metavar="HOSTNAME",
+        help="WebAuthn RP ID: the same hostname the credential was created with",
+    )
+    g.add_argument(
+        "--cred-id", required=True, metavar="B64URL",
+        help="base64url credential id printed by a prior `create`",
+    )
+    g.add_argument(
+        "--prf-salt", metavar="B64URL",
+        help="base64url 32-byte salt; prints the PRF it yields instead of the cred_id",
+    )
     g.set_defaults(func=cmd_get)
 
-    s = sub.add_parser("passphrase", parents=[common], help="capture a passphrase; prints the relay file's path")
-    s.add_argument("--prompt", default="Enter the passphrase twice", help="dialog prompt text")
+    s = _sub(
+        sub, "passphrase", "capture a secret from a dialog; prints the relay file's path",
+        """
+Open a dialog in the browser, take a secret, and print the PATH of the 0600 file it was
+relayed to - never the value. The secret reaches its consumer without passing through
+this terminal, the shell history, or any process argument, which is the point.
+
+Use it to get a secret out of a head and into something else: a vault entry, a .env, a
+keystore's recovery slot. An AI agent can run this and pipe the path onward without the
+secret ever entering its transcript.
+
+The value is entered twice and Submit stays disabled until the two match. --once drops
+the confirm field for a secret being pasted rather than typed. Cancelling relays
+nothing, so the command times out and exits 1. Shred the file when done - it is left in
+place for the consumer to read.
+""",
+        """
+examples:
+  # a passphrase being set - typed twice, confirmed
+  pass_file=$(jupyterlab-passkey passphrase --prompt "Recovery passphrase") || exit 1
+  PASS_RECOVERY_FILE="$pass_file" pass-cli-open --ensure
+  shred -u "$pass_file"
+
+  # a token being pasted - once is enough
+  tok_file=$(jupyterlab-passkey passphrase --once --prompt "GitHub token") || exit 1
+""",
+        parents=[common],
+    )
+    s.add_argument(
+        "--prompt", metavar="TEXT",
+        help="dialog prompt text (default: 'Enter the passphrase twice', or 'Enter the secret' with --once)",
+    )
+    s.add_argument(
+        "--once", action="store_true",
+        help="ask for the secret once instead of twice - for a value pasted from a password manager",
+    )
     s.set_defaults(func=cmd_passphrase)
 
-    a = p.parse_args(_glue_b64url(sys.argv[1:]))
+    # No `common` here: without --block this command waits for nothing, and a --timeout
+    # it accepted and then ignored would be a lie about what it does. It declares its
+    # own, and refuses it unless --block makes it mean something.
+    cp = _sub(
+        sub, "copy", "stage a secret from FILE or stdin; a notification button copies it to the clipboard",
+        """
+Read a secret from FILE or stdin and raise a notification whose button puts it on the
+browser's clipboard. The mirror of `passphrase`: that one brings a secret in from the
+user, this one sends one out to them, to paste wherever it is wanted.
+
+The secret is never in the notification - it is staged in a 0600 relay and the
+notification carries only a nonce, which is useless without the Jupyter token. The
+click collects it and the relay is deleted in the same breath, so a second click finds
+nothing. An AI agent can hand a user a secret this way without the value appearing in
+its transcript or in any file the user has to clean up.
+
+Fire and forget by default: it posts and returns, so exit 0 means POSTED, not copied,
+and nothing is reported back. --block instead waits until the browser collects the
+secret and deletes it if that never happens - use it to sequence work after the secret
+has actually landed. Note it means COLLECTED, not pasted: the page fetches the value
+and only then writes the clipboard, so a browser that refuses the clipboard does so
+after --block has already returned 0.
+
+Exactly one trailing newline is stripped, as $(...) would; a multi-line secret survives
+intact. A stdin that is a terminal is refused - that would echo the secret into the
+scrollback; pipe it in, pass a FILE, or use `passphrase --once` to type one.
+""",
+        """
+examples:
+  # out of a vault, into the clipboard, ready to paste into a web form
+  pass-cli get github/api --field password --quiet --no-clipboard | jupyterlab-passkey copy
+
+  # straight from a file
+  jupyterlab-passkey copy ~/.config/some-service/token
+
+  # two in flight - name them, the notifications are otherwise identical
+  ... | jupyterlab-passkey copy --label "GitHub token"
+  ... | jupyterlab-passkey copy --label "DB password"
+
+  # wait for it to land before moving on, and leave nothing behind if it does not
+  ... | jupyterlab-passkey copy --label "DB password" --block || exit 1
+""",
+    )
+    cp.add_argument(
+        "file", nargs="?", default="-", metavar="FILE",
+        help="file to read the secret from; omit or '-' to read stdin",
+    )
+    cp.add_argument(
+        "--label", metavar="NAME",
+        help="name shown in the notification - the only way to tell two staged secrets apart",
+    )
+    cp.add_argument(
+        "--block", action="store_true",
+        help="wait until the browser collects the secret; exit 1 and delete it if it never does",
+    )
+    cp.add_argument(
+        "--timeout", type=float, default=None, metavar="SECONDS",
+        help=f"with --block: how long to wait before giving up (default {CLICK_TIMEOUT:.0f}); rejected without --block",
+    )
+    cp.set_defaults(func=cmd_copy)
+
+    argv = _glue_b64url(sys.argv[1:])
+    if not argv:
+        # argparse answers a bare invocation with a usage line and "the following
+        # arguments are required: COMMAND", which tells a first-time caller - or an
+        # agent probing what this thing does - nothing at all. The full help is the
+        # honest answer to "what are you?". On stderr and still exit 2, because it is
+        # still a usage error and stdout carries results, not prose.
+        p.print_help(sys.stderr)
+        return 2
+
+    a = p.parse_args(argv)
     return a.func(a)
 
 

@@ -353,3 +353,281 @@ test('passphrase dialog relays nothing when cancelled', async ({ page }) => {
   await expect(done).resolves.toBe(false);
   expect(fs.existsSync(passFile)).toBe(false);
 });
+
+test('passphrase --once takes one entry, with no confirm field to match', async ({
+  page
+}) => {
+  await page.goto();
+
+  const nonce = 'testpassonce012345678901';
+  const passFile = path.join(RELAY_DIR, `${nonce}.pass`);
+  fs.rmSync(passFile, { force: true });
+  const TOKEN = 'ghp_pasted_token_value';
+
+  const done = page.evaluate(
+    (n: string) =>
+      (window as any).jupyterapp.commands.execute('passkey:passphrase', {
+        nonce: n,
+        once: true,
+        prompt: 'GitHub token'
+      }) as Promise<boolean>,
+    nonce
+  );
+  await page.waitForSelector('.jp-PassphraseDialog-body');
+
+  const inputs = page.locator('.jp-PassphraseDialog-input');
+  const submit = page.locator('.jp-Dialog-button.jp-mod-accept');
+
+  await expect(inputs).toHaveCount(1);
+  // Nothing to disagree with, so no status row either.
+  await expect(page.locator('.jp-PassphraseDialog-status')).toHaveCount(0);
+
+  // The gate still holds an empty field shut, and still opens on the real
+  // keystroke rather than one behind it - the capture-phase ordering has to be
+  // right in this mode too, and jest cannot see it because it mocks Dialog away.
+  await expect(submit).toBeDisabled();
+  await inputs.nth(0).fill(TOKEN);
+  await expect(submit).toBeEnabled();
+
+  await page.click('.jp-Dialog-button.jp-mod-accept');
+
+  await expect(done).resolves.toBe(true);
+  await expect
+    .poll(() => fs.existsSync(passFile), { timeout: 15000 })
+    .toBeTruthy();
+  expect(fs.readFileSync(passFile, 'utf-8')).toBe(TOKEN);
+  expect(fs.statSync(passFile).mode & 0o777).toBe(0o600);
+});
+
+test('copy puts a staged secret on the clipboard and consumes the relay', async ({
+  page
+}) => {
+  // The only tier that proves the clipboard write survives the async gap after
+  // the fetch - jsdom has no clipboard and no user activation to lose.
+  await page.page
+    .context()
+    .grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto();
+
+  const nonce = 'testcopysecret0123456789';
+  const secretFile = path.join(RELAY_DIR, `${nonce}.secret`);
+  const SECRET = 's3cr3t-token-value';
+  // Stand in for `jupyterlab-passkey copy`, which stages exactly this.
+  fs.writeFileSync(secretFile, SECRET, { mode: 0o600 });
+
+  await page.evaluate(
+    (n: string) =>
+      (window as any).jupyterapp.commands.execute('passkey:copy', { nonce: n }),
+    nonce
+  );
+
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    SECRET
+  );
+  // One shot: collecting it spends it, so nothing outlives the click.
+  expect(fs.existsSync(secretFile)).toBe(false);
+});
+
+test('copy leaves the clipboard alone when the relay is already spent', async ({
+  page
+}) => {
+  await page.page
+    .context()
+    .grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto();
+
+  await page.evaluate(() =>
+    navigator.clipboard.writeText('previous-clipboard')
+  );
+
+  // A nonce that was never staged - the same 404 a second click would get.
+  await expect(
+    page.evaluate(() =>
+      (window as any).jupyterapp.commands.execute('passkey:copy', {
+        nonce: 'testcopymissing012345678'
+      })
+    )
+  ).rejects.toThrow();
+
+  // Clobbering what the user already had would be a real loss.
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    'previous-clipboard'
+  );
+});
+
+/**
+ * The refused-write conditions, reproduced.
+ *
+ * Chrome only honours a clipboard write for a focused window within ~5s of a
+ * real user gesture - observed live as silently lost secrets (a click with
+ * DevTools focused, a click followed by a minute's absence). Headless Chromium
+ * cannot produce a real focus refusal, so these tests reproduce the CONDITION
+ * at the one boundary it occurs: navigator.clipboard.writeText is wrapped to
+ * refuse exactly as Chrome does (NotAllowedError). Everything else is real -
+ * the command, the fetch, the one-shot relay, the retry ticks, the recovery
+ * toast, the button click (a genuine gesture), and the final clipboard bytes.
+ */
+
+/** Stage a copy relay the way the CLI would - 0700 dir, 0600 one-shot file. */
+function stageSecret(nonce: string, value: string): string {
+  fs.mkdirSync(RELAY_DIR, { recursive: true, mode: 0o700 });
+  const secretFile = path.join(RELAY_DIR, `${nonce}.secret`);
+  fs.writeFileSync(secretFile, value, { mode: 0o600 });
+  return secretFile;
+}
+
+/** Wrap writeText to refuse until the flag flips; delegate to real after. */
+async function refuseWritesUntilAllowed(
+  page: any,
+  refusalsBeforeOpen: number
+): Promise<void> {
+  await page.evaluate((n: number) => {
+    const w = window as any;
+    const real = navigator.clipboard.writeText.bind(navigator.clipboard);
+    w.__refusals = 0;
+    w.__refuseLeft = n; // Infinity never opens without __clipAllowed
+    navigator.clipboard.writeText = (t: string) => {
+      if (w.__clipAllowed || w.__refuseLeft <= 0) {
+        return real(t);
+      }
+      w.__refuseLeft -= 1;
+      w.__refusals += 1;
+      return Promise.reject(
+        new DOMException('Document is not focused.', 'NotAllowedError')
+      );
+    };
+  }, refusalsBeforeOpen);
+}
+
+test('copy survives a transient focus blip - the background retry lands it', async ({
+  page
+}) => {
+  test.setTimeout(60000);
+  await page.page
+    .context()
+    .grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto();
+
+  const nonce = 'testcopyblip012345678901';
+  const SECRET = 'blip-survivor-value';
+  const secretFile = stageSecret(nonce, SECRET);
+
+  // Two refusals - the exact shape that beat the shipped single-retry version.
+  await refuseWritesUntilAllowed(page, 2);
+
+  await page.evaluate(
+    (n: string) =>
+      (window as any).jupyterapp.commands.execute('passkey:copy', { nonce: n }),
+    nonce
+  );
+
+  // The command resolved, so the retry loop has already landed the write.
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    SECRET
+  );
+  // Quietly: a blip that recovers must not raise the second notification.
+  expect(
+    await page
+      .locator('.jp-toast-message', { hasText: 'needs another click' })
+      .count()
+  ).toBe(0);
+  expect(fs.existsSync(secretFile)).toBe(false);
+});
+
+test('copy refused past its retry window offers a click that finishes it', async ({
+  page
+}) => {
+  // The long-absence condition: the click's activation is gone, so EVERY
+  // background write is refused and only a fresh gesture can land the value.
+  test.setTimeout(90000);
+  await page.page
+    .context()
+    .grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto();
+
+  const nonce = 'testcopyrecover012345678';
+  const SECRET = 'recovered-after-absence';
+  const secretFile = stageSecret(nonce, SECRET);
+  await page.evaluate(() =>
+    navigator.clipboard.writeText('previous-clipboard')
+  );
+
+  await refuseWritesUntilAllowed(page, Number.POSITIVE_INFINITY);
+
+  // Resolves - after ~15s of refused retries - by OFFERING, not by losing.
+  await page.evaluate(
+    (n: string) =>
+      (window as any).jupyterapp.commands.execute('passkey:copy', {
+        nonce: n,
+        label: 'Galata secret'
+      }),
+    nonce
+  );
+
+  // The offer names the secret and never carries it.
+  const toast = page.locator('.jp-toast-message', {
+    hasText: 'needs another click'
+  });
+  await expect(toast).toHaveCount(1);
+  await expect(toast).toContainText('Galata secret');
+  expect(await toast.textContent()).not.toContain(SECRET);
+  // Nothing has touched the clipboard yet - refusals must not clobber it.
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    'previous-clipboard'
+  );
+
+  // The user returns: their click is the fresh gesture the browser wants.
+  await page.evaluate(() => ((window as any).__clipAllowed = true));
+  await page.locator('.jp-toast-button[title="Copy to clipboard"]').click();
+
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()), {
+      timeout: 15000
+    })
+    .toBe(SECRET);
+  // The value rode page memory, never a second relay.
+  expect(fs.existsSync(secretFile)).toBe(false);
+});
+
+test('copy re-offers the click when even the recovery write is refused', async ({
+  page
+}) => {
+  test.setTimeout(90000);
+  await page.page
+    .context()
+    .grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto();
+
+  const nonce = 'testcopyreoffer012345678';
+  const SECRET = 'twice-offered-value';
+  stageSecret(nonce, SECRET);
+
+  await refuseWritesUntilAllowed(page, Number.POSITIVE_INFINITY);
+
+  await page.evaluate(
+    (n: string) =>
+      (window as any).jupyterapp.commands.execute('passkey:copy', { nonce: n }),
+    nonce
+  );
+
+  // First offer up; click it while the clipboard is STILL refusing.
+  const button = page.locator('.jp-toast-button', {
+    hasText: 'Copy to clipboard'
+  });
+  await expect(button).toHaveCount(1);
+  await button.first().click();
+
+  // Below this rung there is nothing, so the offer must come back.
+  await expect(
+    page.locator('.jp-toast-message', { hasText: 'needs another click' })
+  ).toHaveCount(1, { timeout: 15000 });
+
+  // And the returned offer still works once the refusal clears.
+  await page.evaluate(() => ((window as any).__clipAllowed = true));
+  await page.locator('.jp-toast-button[title="Copy to clipboard"]').click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()), {
+      timeout: 15000
+    })
+    .toBe(SECRET);
+});

@@ -46,3 +46,17 @@
 .jp-PassphraseDialog-status[data-state='match'] {
   border-left-color: var(--jp-success-color1);
 }
+
+/* The same message for a screen reader, and only for a screen reader. It is
+   clipped rather than hidden because `visibility: hidden` and `display: none`
+   both drop a node out of the accessibility tree, which would silence the live
+   region this exists to be. Taken out of flow so it contributes no geometry -
+   the row above is the one defending the dialog's height. */
+.jp-PassphraseDialog-announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

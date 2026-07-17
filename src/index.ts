@@ -9,8 +9,11 @@ import { runPasskey, IPasskeyArgs, PasskeyOp } from './passkey';
 
 import { runPassphrase, IPassphraseArgs } from './passphrase';
 
+import { runCopy, ICopyArgs } from './copy';
+
 const COMMAND_ID = 'passkey:run';
 const PASSPHRASE_COMMAND_ID = 'passkey:passphrase';
+const COPY_COMMAND_ID = 'passkey:copy';
 
 /**
  * Initialization data for the jupyterlab_passkey_extension extension.
@@ -44,9 +47,18 @@ const plugin: JupyterFrontEndPlugin<void> = {
       }
     });
 
+    app.commands.addCommand(COPY_COMMAND_ID, {
+      label: 'Copy Secret To Clipboard',
+      execute: args => {
+        const copyArgs = args as unknown as ICopyArgs;
+        return runCopy(copyArgs, app.serviceManager.serverSettings);
+      }
+    });
+
     if (palette) {
       palette.addItem({ command: COMMAND_ID, category: 'Passkey' });
       palette.addItem({ command: PASSPHRASE_COMMAND_ID, category: 'Passkey' });
+      palette.addItem({ command: COPY_COMMAND_ID, category: 'Passkey' });
     }
   }
 };

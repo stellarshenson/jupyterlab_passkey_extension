@@ -5,6 +5,7 @@
  */
 
 jest.mock('../passkey');
+jest.mock('../copy');
 // Stub the heavy @jupyterlab modules so index.ts loads without pulling their
 // untransformed ESM graph into jest (apputils is a real value use of the
 // ICommandPalette token).
@@ -13,9 +14,11 @@ jest.mock('@jupyterlab/apputils', () => ({
   ICommandPalette: 'ICommandPalette'
 }));
 import { runPasskey } from '../passkey';
+import { runCopy } from '../copy';
 import plugin from '../index';
 
 const mockRun = runPasskey as jest.MockedFunction<typeof runPasskey>;
+const mockCopy = runCopy as jest.MockedFunction<typeof runCopy>;
 
 function fakeApp(): { app: any; addCommand: jest.Mock; serverSettings: any } {
   const addCommand = jest.fn();
@@ -28,7 +31,10 @@ function fakeApp(): { app: any; addCommand: jest.Mock; serverSettings: any } {
 }
 
 describe('plugin activation', () => {
-  beforeEach(() => mockRun.mockReset());
+  beforeEach(() => {
+    mockRun.mockReset();
+    mockCopy.mockReset();
+  });
 
   it('registers the passkey:run command and adds a palette item', () => {
     const { app, addCommand } = fakeApp();
@@ -81,6 +87,26 @@ describe('plugin activation', () => {
     config.execute({ op: 'create', ...args });
 
     expect(mockRun).toHaveBeenCalledWith('create', args, serverSettings);
+  });
+
+  it('registers passkey:copy, forwarding the nonce and adding a palette item', () => {
+    const { app, addCommand, serverSettings } = fakeApp();
+    const palette = { addItem: jest.fn() } as any;
+
+    plugin.activate!(app, palette);
+
+    const call = addCommand.mock.calls.find(c => c[0] === 'passkey:copy');
+    expect(call).toBeDefined();
+    call![1].execute({ nonce: 'unit_nonce_0123456789' });
+
+    expect(mockCopy).toHaveBeenCalledWith(
+      { nonce: 'unit_nonce_0123456789' },
+      serverSettings
+    );
+    expect(palette.addItem).toHaveBeenCalledWith({
+      command: 'passkey:copy',
+      category: 'Passkey'
+    });
   });
 
   it('activates without a command palette', () => {

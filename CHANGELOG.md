@@ -2,6 +2,29 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.0.32] - 2026-07-17
+
+Adds copy-to-clipboard for local secrets, makes it survive Chrome's clipboard gating in every tested condition, and hardens the `/dev/shm` relay directory against squatting.
+
+### Added
+
+- `copy` subcommand and `passkey:copy` command: the CLI stages a secret from a file or stdin as a one-shot `0600` relay, the notification carries only the nonce, and the browser fetches the value (read and unlink in the same breath) and writes it to the clipboard. Flags: `--label` names the secret, `--block` waits for collection and deletes the relay on timeout; a tty is refused as the secret source
+- Recovery notification: a clipboard write still refused once the click's user activation has expired (Chrome honours writes only ~5s past the last gesture) raises a "clipboard needs another click" toast whose button finishes the copy under a fresh gesture. The value lives only in page memory and dies with the tab; no refusal loses a secret short of closing the tab first
+- `passphrase --once` drops the confirm field, for pasting existing secrets rather than typing new ones
+- Three Galata tests reproduce Chrome's focus-refusal conditions (transient blip, expired activation plus recovery click, refused recovery re-offer) against the real command, relay, and clipboard
+
+### Changed
+
+- A refused clipboard write retries on every return of window focus and on a 2s tick for 15s before offering the recovery click; refusal reasons go to the console, never the value
+
+### Fixed
+
+- The relay directory under the world-writable `/dev/shm` is now guarded against squatting: symlink, ownership, and mode are checked before every relay read and write, a foreign-owned or loose-permissioned directory is refused, and a self-owned loose one is tightened to `0700`
+- A ceremony relay missing `cred_id` exits with a one-line message instead of a `KeyError` traceback
+- Relay reads pin `utf-8` regardless of locale
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.0.15] - 2026-07-16
 
 Hardens the passphrase dialog: Submit is impossible until the two entries match, Cancel and Submit are the only ways out, and the status line no longer resizes the dialog.
@@ -15,8 +38,6 @@ Hardens the passphrase dialog: Submit is impossible until the two entries match,
 ### Fixed
 
 - The mismatch indicator no longer collapses the dialog's height when hidden
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.12] - 2026-07-16
 

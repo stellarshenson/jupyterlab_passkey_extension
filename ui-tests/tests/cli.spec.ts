@@ -147,6 +147,46 @@ function runCli(args: string[]): Promise<IResult> {
 }
 
 /**
+ * Spawn the real binary for `copy`, feeding it a secret on stdin.
+ *
+ * Separate from runCli because runCli appends --timeout to every call, and `copy`
+ * rejects one unless --block makes it mean something - so the shared helper cannot
+ * spawn this command at all. Callers that want a timeout pass both flags themselves.
+ *
+ * Mind which contract you are testing. Without --block this promise resolves BEFORE
+ * the click, so awaiting it first is correct rather than a deadlock; with --block it
+ * resolves only once the browser has collected the secret, so awaiting it before
+ * clicking deadlocks until the CLI's own timeout.
+ */
+function runCopy(secret: string, args: string[] = []): Promise<IResult> {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    JLAB_PASSKEY_RELAY_DIR: RELAY_DIR,
+    JUPYTER_PORT: PORT
+  };
+  for (const name of DISCOVERY_ENV) {
+    delete env[name];
+  }
+
+  const child = spawn('jupyterlab-passkey', ['copy', ...args], { env });
+
+  return new Promise<IResult>(resolve => {
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', d => (stdout += d.toString()));
+    child.stderr.on('data', d => (stderr += d.toString()));
+    child.on('error', e =>
+      resolve({ code: null, stdout, stderr: `${stderr}spawn failed: ${e}` })
+    );
+    child.on('close', code => resolve({ code, stdout, stderr }));
+    // No trailing newline: the CLI strips exactly one, and this way the test
+    // asserts on the bytes it actually handed over.
+    child.stdin.write(secret);
+    child.stdin.end();
+  });
+}
+
+/**
  * Click the toast raised by THIS invocation - the WebAuthn user gesture - and return
  * only once the screen is clear again.
  *
@@ -315,4 +355,171 @@ test('passphrase relays the typed value to a raw 0600 file and prints only its p
   expect(fs.readFileSync(relayPath, 'utf-8')).toBe(PASSPHRASE);
   expect(fs.statSync(relayPath).mode & 0o777).toBe(0o600);
   fs.rmSync(relayPath, { force: true });
+});
+
+test('copy hands a piped secret to the clipboard through the real binary', async ({
+  page
+}) => {
+  // The rung that mocks nothing: the shipped console script stages the relay itself,
+  // the real ingest raises the real toast, the real click runs passkey:copy, and the
+  // secret lands on a real clipboard. Every other copy test stubs one of those ends.
+  await page.page
+    .context()
+    .grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto();
+
+  const SECRET = 'ghp_real_binary_token_value';
+
+  // Unlike every other subcommand this returns before the click - copy is fire and
+  // forget, so awaiting it first is the correct order, not a deadlock.
+  const { code, stdout, stderr } = await runCopy(SECRET, [
+    '--label',
+    'GitHub token'
+  ]);
+  expect(code, `stderr: ${stderr}`).toBe(0);
+  // Nothing but the path-free confirmation may reach the terminal.
+  expect(stdout).not.toContain(SECRET);
+  expect(stderr).not.toContain(SECRET);
+
+  // Wait for the toast before reading it. The CLI has already exited by here -
+  // that is what fire-and-forget means - but the notification still has to reach
+  // the page over the WebSocket, so asserting on its text first finds nothing.
+  const buttons = page.locator('.jp-toast-button');
+  await expect
+    .poll(() => buttons.count(), { timeout: 45000 })
+    .toBeGreaterThan(0);
+
+  // The label is the only thing telling two staged secrets apart.
+  await expect(page.locator('.jp-toast-message').first()).toContainText(
+    'GitHub token'
+  );
+  await buttons.first().click();
+
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()), {
+      timeout: 15000
+    })
+    .toBe(SECRET);
+
+  // One shot: collected means spent, so nothing outlives the click.
+  expect(stagedSecrets()).toEqual([]);
+});
+
+test('copy --block stays alive until the browser collects the secret', async ({
+  page
+}) => {
+  // The only rung that can prove --block: every unit test stubs either _wait_gone or
+  // the collection, so none of them watches a real process stay alive across a real
+  // click and then exit on a relay a real server unlinked.
+  await page.page
+    .context()
+    .grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto();
+
+  const SECRET = 'ghp_blocking_token_value';
+
+  // NOT awaited: with --block the CLI is still running, waiting for the click that
+  // this test is about to perform. Awaiting first would deadlock until its timeout.
+  const cli = runCopy(SECRET, ['--block', '--timeout', CLI_TIMEOUT]);
+
+  // Still staged and still waiting: the whole point of the flag.
+  await expect.poll(() => stagedSecrets().length, { timeout: 15000 }).toBe(1);
+
+  // clickToast races the CLI's exit, which under --block is exactly right: a CLI that
+  // dies before the click means --block failed, and that is the message worth reading.
+  await clickToast(page, cli);
+
+  const { code, stdout, stderr } = await cli;
+  expect(code, `stderr: ${stderr}`).toBe(0);
+  expect(stdout).not.toContain(SECRET);
+  expect(stderr).not.toContain(SECRET);
+
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()), {
+      timeout: 15000
+    })
+    .toBe(SECRET);
+
+  // The server unlinked it as it read; --block's exit is what says so.
+  expect(stagedSecrets()).toEqual([]);
+});
+
+test('copy --block shreds the secret it gave up on', async ({ page }) => {
+  // A timeout means nobody collected it. Leaving it staged would hand a live button to
+  // whoever clicks next, long after the caller was told the secret never landed.
+  await page.goto();
+
+  // Deliberately never clicked. 3s rather than CLI_TIMEOUT: this test waits out the
+  // whole timeout on purpose, so the shorter the better.
+  const { code, stderr } = await runCopy('ghp_abandoned_token', [
+    '--block',
+    '--timeout',
+    '3'
+  ]);
+
+  expect(code).toBe(1);
+  expect(stderr).toContain('not copied after 3s');
+  expect(stagedSecrets()).toEqual([]);
+});
+
+test('copy rejects a --timeout that would do nothing', async () => {
+  // Without --block nothing waits, so accepting --timeout and ignoring it would tell a
+  // caller they had bounded something they had not.
+  const { code, stderr } = await runCopy('ghp_token', ['--timeout', '5']);
+
+  expect(code).toBe(1);
+  expect(stderr).toContain('--timeout only applies with --block');
+  expect(stagedSecrets()).toEqual([]);
+});
+
+/** The .secret relays currently staged, tolerating a relay dir nothing has made yet. */
+function stagedSecrets(): string[] {
+  if (!fs.existsSync(RELAY_DIR)) {
+    return [];
+  }
+  return fs.readdirSync(RELAY_DIR).filter((f: string) => f.endsWith('.secret'));
+}
+
+test('copy stages nothing when the trigger cannot reach a server', async () => {
+  // The bug this whole flow nearly shipped with: the secret is staged BEFORE the
+  // trigger, so a trigger that dies leaves a plaintext secret whose nonce died with
+  // the process - uncollectable, not merely uncollected, and one more copy per
+  // retry. Driven through the real binary against a port with nothing on it.
+  const before = stagedSecrets();
+
+  // An EMPTY runtime dir, not the suite's own: the test server registers itself in
+  // that one, so `jupyter server list` finds it and JUPYTER_PORT is never consulted.
+  // Emptying the list is what arms cli.py's env fallback, and only then does
+  // pointing it at a dead port actually fail the trigger.
+  const emptyRuntime = path.resolve(__dirname, '..', '.tmp-runtime-empty');
+  fs.mkdirSync(emptyRuntime, { recursive: true });
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    JLAB_PASSKEY_RELAY_DIR: RELAY_DIR,
+    JUPYTER_RUNTIME_DIR: emptyRuntime,
+    // Nothing listens here, so the trigger POST dies on connection refused.
+    JUPYTER_PORT: '1'
+  };
+  for (const name of DISCOVERY_ENV) {
+    delete env[name];
+  }
+
+  const child = spawn('jupyterlab-passkey', ['copy'], { env });
+  const result = await new Promise<IResult>(resolve => {
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', d => (stdout += d.toString()));
+    child.stderr.on('data', d => (stderr += d.toString()));
+    child.on('error', e =>
+      resolve({ code: null, stdout, stderr: `${stderr}spawn failed: ${e}` })
+    );
+    child.on('close', code => resolve({ code, stdout, stderr }));
+    child.stdin.write('a-secret-nobody-can-ever-collect');
+    child.stdin.end();
+  });
+
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain('cannot reach');
+  expect(stagedSecrets()).toEqual(before);
 });

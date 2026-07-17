@@ -136,5 +136,9 @@ ui-tests/.tmp-passkey-relay/
 # the server the suite started and never a developer's own lab
 ui-tests/.tmp-runtime/
 
+# passkey ui-tests: a deliberately EMPTY runtime dir, which is what makes discovery
+# miss and arms the env fallback the trigger-failure test points at a dead port
+ui-tests/.tmp-runtime-empty/
+
 # jest junit reporter artifact
 junit.xml

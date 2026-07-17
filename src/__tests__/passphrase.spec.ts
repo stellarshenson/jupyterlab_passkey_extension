@@ -197,6 +197,16 @@ describe('runPassphrase', () => {
     await runPassphrase({ nonce: NONCE }, serverSettings);
   });
 
+  it('titles the dialog and prompts for a passphrase by default', async () => {
+    acceptWith('a-passphrase', 'a-passphrase');
+    await runPassphrase({ nonce: NONCE }, serverSettings);
+
+    expect(dialogOptions().title).toBe('Passphrase');
+    expect(dialogOptions().body.node.textContent).toContain(
+      'Enter the passphrase twice'
+    );
+  });
+
   it('reports match state only once the confirm field has content, without resizing', async () => {
     mockLaunch.mockImplementation(async (opts: any) => {
       const body = opts.body;
@@ -218,5 +228,175 @@ describe('runPassphrase', () => {
     });
 
     await runPassphrase({ nonce: NONCE }, serverSettings);
+  });
+
+  it('announces match state through a live region that is always in the a11y tree', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      const body = opts.body;
+      const status = body.node.querySelector('.jp-PassphraseDialog-status');
+      const announce = body.node.querySelector('.jp-PassphraseDialog-announce');
+
+      // The visible row is presentational only. It keeps its text at every state so
+      // its line box - and the dialog's height - never collapses, which is exactly
+      // why it must not be the thing that gets read out.
+      expect(status.getAttribute('aria-hidden')).toBe('true');
+
+      // The announced row is a separate node that never leaves the tree: a live
+      // region inserted with its text already in place is not reliably announced,
+      // and `visibility: hidden` removes a node from the tree altogether.
+      expect(announce.getAttribute('role')).toBe('status');
+      expect(announce.textContent).toBe('');
+
+      fill(body, 'hunter2-correct', 'hunter2-typo');
+      expect(announce.textContent).toBe('Passphrases do not match');
+
+      fill(body, 'hunter2-correct', 'hunter2-correct');
+      expect(announce.textContent).toBe('Passphrases match');
+
+      return { button: { accept: false } };
+    });
+
+    await runPassphrase({ nonce: NONCE }, serverSettings);
+  });
+
+  it('rewrites the live region only on a real transition, not once per keystroke', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      const body = opts.body;
+      const announce = body.node.querySelector('.jp-PassphraseDialog-announce');
+
+      // Assigning textContent replaces the text node even when the string is
+      // identical, and a live region announces that. _validate runs twice per
+      // keystroke (bubble listeners plus the capture one), so an unguarded write
+      // would queue "Passphrases do not match" ~40 times over a 20-character
+      // field. Count real mutations, not calls.
+      let mutations = 0;
+      const observer = new MutationObserver(m => (mutations += m.length));
+      observer.observe(announce, {
+        childList: true,
+        characterData: true,
+        subtree: true
+      });
+      // MutationObserver delivers on a microtask, so the count is only true after
+      // a flush - reading it straight after a fill reads zero and proves nothing.
+      const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+
+      fill(body, 'hunter2-correct', 'x');
+      await flush();
+      const afterTransition = mutations;
+      // The transition itself must speak, or the guard has silenced everything.
+      expect(afterTransition).toBeGreaterThan(0);
+
+      // Still mismatched, so there is nothing new to say - and saying it again
+      // is what a screen-reader user would hear on every keystroke.
+      fill(body, 'hunter2-correct', 'xy');
+      fill(body, 'hunter2-correct', 'xyz');
+      await flush();
+
+      expect(mutations).toBe(afterTransition);
+      observer.disconnect();
+
+      return { button: { accept: false } };
+    });
+
+    await runPassphrase({ nonce: NONCE }, serverSettings);
+  });
+});
+
+/** Type into the single field of a `once` dialog, firing the input listeners. */
+function fillOnce(body: any, value: string): void {
+  body.first.value = value;
+  body.first.dispatchEvent(new Event('input'));
+}
+
+describe('runPassphrase with once', () => {
+  it('relays a single entry, with no confirm field to match against', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      // The whole point: a secret pasted from a password manager is not typed
+      // twice, so there is nothing to confirm it against.
+      expect(opts.body.second).toBeNull();
+      fillOnce(opts.body, 'ghp_pasted_token');
+      return { button: { accept: true } };
+    });
+
+    await expect(
+      runPassphrase({ nonce: NONCE, once: true }, serverSettings)
+    ).resolves.toBe(true);
+
+    expect(JSON.parse(mockRequestAPI.mock.calls[0][2]!.body as string)).toEqual(
+      {
+        nonce: NONCE,
+        passphrase: 'ghp_pasted_token'
+      }
+    );
+  });
+
+  it('gates Submit on the one field being non-empty', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      const body = opts.body;
+
+      // With no confirm field the gate moves onto the only field there is.
+      expect(body.first.checkValidity()).toBe(false);
+
+      fillOnce(body, 'ghp_pasted_token');
+      expect(body.first.checkValidity()).toBe(true);
+
+      fillOnce(body, '');
+      expect(body.first.checkValidity()).toBe(false);
+
+      return { button: { accept: false } };
+    });
+
+    await runPassphrase({ nonce: NONCE, once: true }, serverSettings);
+  });
+
+  it('shows no match status, having nothing to report a match about', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      fillOnce(opts.body, 'ghp_pasted_token');
+      expect(
+        opts.body.node.querySelector('.jp-PassphraseDialog-status')
+      ).toBeNull();
+      return { button: { accept: false } };
+    });
+
+    await runPassphrase({ nonce: NONCE, once: true }, serverSettings);
+  });
+
+  it('titles the dialog and prompts for a secret, not a passphrase', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      fillOnce(opts.body, 'x');
+      return { button: { accept: false } };
+    });
+
+    await runPassphrase({ nonce: NONCE, once: true }, serverSettings);
+
+    expect(dialogOptions().title).toBe('Secret');
+    expect(dialogOptions().body.node.textContent).toContain('Enter the secret');
+  });
+
+  it('still takes an explicit prompt', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      fillOnce(opts.body, 'x');
+      return { button: { accept: false } };
+    });
+
+    await runPassphrase(
+      { nonce: NONCE, once: true, prompt: 'GitHub token' },
+      serverSettings
+    );
+
+    expect(dialogOptions().body.node.textContent).toContain('GitHub token');
+  });
+
+  it('keeps the single field a password input that never autofills', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      fillOnce(opts.body, 'x');
+      return { button: { accept: false } };
+    });
+
+    await runPassphrase({ nonce: NONCE, once: true }, serverSettings);
+
+    const body = dialogOptions().body;
+    expect(body.first.type).toBe('password');
+    expect(body.first.autocomplete).toBe('new-password');
   });
 });
