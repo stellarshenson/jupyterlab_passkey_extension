@@ -139,13 +139,19 @@ function offerRecovery(value: string, label?: string): void {
   const message = label
     ? `The clipboard needs another click - the secret is still waiting: ${label}`
     : 'The clipboard needs another click - the secret is still waiting.';
-  Notification.emit(message, 'warning', {
+  const id = Notification.emit(message, 'warning', {
     autoClose: false,
     actions: [
       {
         label: 'Copy to clipboard',
         displayType: 'accent',
         callback: () => {
+          // Native Notification actions do NOT auto-dismiss their toast. Left
+          // up, a spent offer keeps a live button whose closure still holds
+          // the secret - and a refused attempt would stack a second offer
+          // beside it, one stale and one real. Every attempt consumes its
+          // offer; only a fresh offer ever carries the value onward.
+          Notification.dismiss(id);
           navigator.clipboard.writeText(value).catch(again => {
             console.warn(`[passkey:copy] recovery write refused: ${again}`);
             offerRecovery(value, label);

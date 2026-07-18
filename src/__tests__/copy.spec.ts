@@ -8,7 +8,7 @@ import { ServerConnection } from '@jupyterlab/services';
 
 jest.mock('@jupyterlab/services', () => ({ ServerConnection: {} }));
 jest.mock('@jupyterlab/apputils', () => ({
-  Notification: { emit: jest.fn() }
+  Notification: { emit: jest.fn(), dismiss: jest.fn() }
 }));
 jest.mock('../request');
 
@@ -18,6 +18,9 @@ import { runCopy } from '../copy';
 
 const mockEmit = Notification.emit as jest.MockedFunction<
   typeof Notification.emit
+>;
+const mockDismiss = Notification.dismiss as jest.MockedFunction<
+  typeof Notification.dismiss
 >;
 
 const mockRequestAPI = requestAPI as jest.MockedFunction<typeof requestAPI>;
@@ -174,6 +177,7 @@ describe('runCopy', () => {
       mockRequestAPI.mockResolvedValue({ value: SECRET } as any);
       writeText.mockRejectedValue(new Error('Document is not focused'));
 
+      mockEmit.mockReturnValue('offer-1' as any);
       const run = runCopy({ nonce: NONCE }, serverSettings);
       await jest.advanceTimersByTimeAsync(20000);
       await run;
@@ -184,6 +188,9 @@ describe('runCopy', () => {
       (mockEmit.mock.calls[0][2] as any).actions[0].callback();
       await jest.advanceTimersByTimeAsync(0);
       expect(mockEmit).toHaveBeenCalledTimes(2);
+      // And the SPENT offer is dismissed as it is clicked - otherwise a stale
+      // button holding the secret stacks up beside every fresh offer.
+      expect(mockDismiss).toHaveBeenCalledWith('offer-1');
     } finally {
       jest.useRealTimers();
     }
