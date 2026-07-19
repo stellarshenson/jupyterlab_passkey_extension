@@ -19,18 +19,18 @@ The way in is the **CLI** (`jupyterlab-passkey`, shipped with the package). Behi
 - **Passkeys from a terminal** - Windows Hello, Touch ID, or a security key, reachable from a process that has no browser. The user approves in their open tab; the result returns to the caller as a blocking call
 - **Enroll and unlock** - register a passkey (`create`) and assert it later (`get`)
 - **Key material without a stored key** - `get --prf-salt` yields a deterministic 32-byte WebAuthn PRF. The same credential and salt always return the same bytes, so a vault can derive its key from it and store none
-- **Take a secret from the user, without it entering the transcript** - `passphrase` prompts in the browser and prints only the _path_ of a `0600` file. The value never crosses the terminal, the shell history, or a process argument
+- **Take a secret from the user, without it entering the transcript** - `passphrase` prompts in the browser and prints only a _reference_ to the staged value (`keyctl:...` or `file:...`), never the value. It never crosses the terminal, the shell history, a process argument, or the CLI itself
 - **Hand a secret to the user, without leaving one behind** - `copy` puts a value on the user's clipboard via a notification button. It rides a one-shot relay the server deletes as it reads, and never enters the notification itself
 - **Purpose-agnostic** - no cryptography, no stored secret, no opinion about what the passkey unlocks
 
 ### Working with an AI agent
 
-The last two features are what make this usable when an AI agent is at the keyboard. An agent can run `jupyterlab-passkey passphrase --once --prompt "GitHub token"`; the user types the token into a browser dialog, and the agent receives a filesystem path it hands to a consumer - so the token never appears in the agent's output, its context, or the session transcript. In the other direction, `pass-cli get github/api ... | jupyterlab-passkey copy` moves a secret from a vault to the user's clipboard through a pipe between two processes, so the bytes never pass through the agent either.
+The last two features are what make this usable when an AI agent is at the keyboard. An agent can run `jupyterlab-passkey passphrase --once --prompt "GitHub token"`; the user types the token into a browser dialog, and the agent receives a reference it hands to a consumer - so the token never appears in the agent's output, its context, or the session transcript. In the other direction, `pass-cli get github/api ... | jupyterlab-passkey copy` moves a secret from a vault to the user's clipboard through a pipe between two processes, so the bytes never pass through the agent either.
 
 Both CLI and subcommand `--help` are written to be read by an agent: every flag states its default and its failure mode, and each subcommand carries worked examples.
 
 > [!IMPORTANT]
-> This is not a sandbox, and it is not a defence against a hostile caller. Any process that can run the CLI can also read the relay file it points at. What it buys is that a secret is never _incidentally_ captured - not echoed to a terminal, not printed into a transcript, not left in `~/.bash_history` or a process argument, and not broadcast in a notification payload.
+> This is not a sandbox, and it is not a defence against a hostile caller. Any process running as your uid can also read the relay it points at (a kernel key or a `0600` file). What it buys is that a secret is never _incidentally_ captured - not echoed to a terminal, not printed into a transcript, not left in `~/.bash_history` or a process argument, and not broadcast in a notification payload.
 
 ## How it works
 
@@ -51,7 +51,7 @@ flowchart LR
     subgraph SERVER["Jupyter server"]
         direction TB
         EP["POST /result<br/>authenticated"]
-        RELAY[("atomic 0600 relay<br/>/dev/shm/jlab-passkey-uid")]
+        RELAY[("relay<br/>keyctl key or 0600 file")]
         EP --> RELAY
     end
     LOCAL["local client<br/>terminal / CLI / API"]
@@ -76,7 +76,7 @@ flowchart LR
     subgraph SERVER2["Jupyter server"]
         direction TB
         ING["notifications ingest<br/>separate extension"]
-        RELAY2[("0600 relay<br/>nonce.secret")]
+        RELAY2[("relay<br/>keyctl key or 0600 file")]
         EP2["POST /secret<br/>authenticated"]
         RELAY2 -->|"reads, then unlinks"| EP2
     end
@@ -110,14 +110,14 @@ pip install jupyterlab_passkey_extension
 
 ## Command line
 
-`jupyterlab-passkey` ships with the package and is the intended way in. It turns a browser ceremony into a blocking local call: it posts the notification carrying the request, waits for your click, and prints the result. A caller needs to know none of the relay contract below, beyond the path `passphrase` hands it.
+`jupyterlab-passkey` ships with the package and is the intended way in. It turns a browser ceremony into a blocking local call: it posts the notification carrying the request, waits for your click, and prints the result. A caller needs to know none of the relay contract below, beyond the reference `passphrase` hands it.
 
-| Command      | Does                                    | Prints                                         |
-| ------------ | --------------------------------------- | ---------------------------------------------- |
-| `create`     | registers a new passkey                 | its `cred_id`                                  |
-| `get`        | asserts a passkey                       | the PRF (with `--prf-salt`) or the `cred_id`   |
-| `passphrase` | prompts you for a secret in the browser | the **path** of a `0600` file, never the value |
-| `copy`       | puts a secret on your clipboard         | nothing - it posts a button and returns        |
+| Command      | Does                                    | Prints                                                        |
+| ------------ | --------------------------------------- | ------------------------------------------------------------- |
+| `create`     | registers a new passkey                 | its `cred_id`                                                 |
+| `get`        | asserts a passkey                       | the PRF (with `--prf-salt`) or the `cred_id`                  |
+| `passphrase` | prompts you for a secret in the browser | a **reference** (`keyctl:...` or `file:...`), never the value |
+| `copy`       | puts a secret on your clipboard         | nothing - it posts a button and returns                       |
 
 Exit status is the contract: `0` succeeded, `1` refused, timed out, or could not reach the server. Only the result goes to stdout, so `$(...)` captures it clean.
 
@@ -219,11 +219,12 @@ Full argument, relay, and endpoint reference in [docs/commands-reference.md](doc
 ## Security
 
 - All four endpoints are gated by `@tornado.web.authenticated` - a caller needs the Jupyter token or session
-- The relay is created with `mkstemp` + `os.replace`: a fresh `0600` file with no world-readable window, renamed onto its `<nonce>` name atomically. A reader never sees a partial write, and the file is never appended to
-- Single-read is the consumer's responsibility for `<nonce>.json` and `<nonce>.pass` - the server does not delete those, so a consumer must `shred -u` what it reads. `<nonce>.secret` is the exception: the server reads it and unlinks it together, so collection is a server-enforced one shot
+- A secret is staged in one of two relay backends, chosen per process. The preferred is a uid-scoped kernel `keyctl` key: it never swaps to disk and the kernel destroys it at a TTL, so nothing survives a crash. The fallback is a `/dev/shm` `0600` file, created `mkstemp` + `os.replace` (a fresh file with no world-readable window, renamed onto its `<nonce>` name atomically, never appended to). Force the choice with `JLAB_PASSKEY_RELAY_BACKEND=keyctl|shm|auto`
+- **Neither backend isolates a secret from your own processes.** `--alswrv` grants your uid on the key, and the file is `0600` under your uid, so any process you run can read either. keyctl's win is no swap, self-destruct and no disk artifact, not access control; the same-uid exposure is unchanged from the file
+- Single-read is the consumer's responsibility for the ceremony and passphrase relays - the server does not destroy those, so a consumer reads once and (shm) shreds. The `copy` relay is the exception: the server reads and destroys it together, so collection is a server-enforced one shot
 - A secret never enters a notification. The notifications extension pushes every payload to each connected socket and holds it in an in-memory queue until a client drains it, so what travels there is a nonce - useless without the Jupyter token that collects it
-- The relay directory's path is uid-scoped but predictable, and `/dev/shm` is world-writable (`1777`), so squatting it is checked rather than assumed away: before any read or write, the directory must be a real directory (not a symlink) owned by the current uid - anything foreign raises instead of falling back, so a co-tenant who gets there first is refused, not followed. A loose mode on a directory that is ours is tightened to `0700`, not refused
-- The result body, the passphrase, and any PRF value are never written to logs
+- On the shm fallback the relay directory's path is uid-scoped but predictable, and `/dev/shm` is world-writable (`1777`), so squatting it is checked rather than assumed away: before any read or write, the directory must be a real directory (not a symlink) owned by the current uid - anything foreign raises instead of falling back, so a co-tenant who gets there first is refused, not followed. A loose mode on a directory that is ours is tightened to `0700`, not refused. The keyctl path has no filesystem to squat
+- The result body, the passphrase, and any PRF value are never written to logs, and a keyctl payload rides stdin, never a process argument
 - The extension performs no cryptography and stores no secret; every parameter and all key handling belong to the caller
 - Once a secret reaches the clipboard it is an OS-wide value, readable by any application until overwritten - inherent to `copy`'s purpose, and the reason nothing else here touches the clipboard
 

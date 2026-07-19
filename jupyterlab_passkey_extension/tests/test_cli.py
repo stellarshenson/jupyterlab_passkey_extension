@@ -18,10 +18,9 @@ import sys
 
 import pytest
 
-from jupyterlab_passkey_extension import cli
+from jupyterlab_passkey_extension import cli, relay
 from jupyterlab_passkey_extension.routes import (
     NONCE_RE,
-    ensure_relay_dir as server_ensure_relay_dir,
     relay_dir as server_relay_dir,
 )
 
@@ -46,7 +45,7 @@ def no_wait(monkeypatch):
     fake_trigger writes the relay before the poll starts - so stubbing here keeps them
     honest about which side they are exercising, and keeps a real sleep out of the loop.
     """
-    monkeypatch.setattr(cli, "_wait", lambda path, timeout, on_timeout: None)
+    monkeypatch.setattr(cli, "_wait", lambda nonce, kind, timeout, on_timeout: None)
 
 
 @pytest.fixture
@@ -78,18 +77,19 @@ def posted(monkeypatch):
     return sent
 
 
-def test_cli_and_server_resolve_the_same_relay_dir(monkeypatch):
+def test_cli_and_server_resolve_the_same_relay(monkeypatch):
     # The one coupling that makes the bridge work. Every other test overrides the env
     # var, so a divergent default would sail through the whole suite and strand every
-    # real relay - the CLI polling one path while the server writes another.
+    # real relay - the CLI staging under one key or path while the server reads another.
     monkeypatch.delenv("JLAB_PASSKEY_RELAY_DIR", raising=False)
 
-    # The identity is the assertion: one function, so the two cannot disagree about
-    # either the path OR the ownership check that now guards it.
-    assert cli.ensure_relay_dir is server_ensure_relay_dir
-    # ...and the default it resolves. Asserted through relay_dir, not ensure_relay_dir,
-    # because ensure_relay_dir would mkdir the real /dev/shm path as a side effect of a
-    # unit test - the env var is deliberately unset here.
+    # Identity is the assertion: both sides drive the ONE relay module, so they cannot
+    # disagree about the backend choice, the key description, or the shm path and its
+    # ownership check.
+    assert cli.relay is relay
+    # ...and its shm default. Asserted through relay_dir, not ensure_relay_dir, because
+    # ensure_relay_dir would mkdir the real /dev/shm path as a side effect of a unit
+    # test - the env var is deliberately unset here.
     assert server_relay_dir() == f"/dev/shm/jlab-passkey-{os.getuid()}"
 
 
@@ -240,8 +240,9 @@ def test_create_prints_cred_id_and_sends_a_user(relay_dir, capsys, monkeypatch, 
     assert seen["user"]["name"] == "alice"
 
 
-def test_passphrase_prints_the_path_never_the_value(relay_dir, capsys, monkeypatch, no_wait):
+def test_passphrase_prints_a_reference_never_the_value(relay_dir, capsys, monkeypatch, no_wait):
     # The whole point of the passphrase relay: the secret must not transit the terminal.
+    # On shm the reference is `file:<path>`; the consumer reads the value itself.
     SECRET = "correct horse battery staple"
 
     def fake_trigger(command_id, args_obj, label, message):
@@ -255,9 +256,12 @@ def test_passphrase_prints_the_path_never_the_value(relay_dir, capsys, monkeypat
     out = capsys.readouterr().out
     assert rc == 0
     assert SECRET not in out
-    assert out.strip().endswith(".pass")
+    ref = out.strip()
+    assert ref.startswith("file:")
+    path = ref[len("file:"):]
+    assert path.endswith(".pass")
     # Left in place for the consumer to read - unlike a ceremony relay.
-    assert os.path.exists(out.strip())
+    assert os.path.exists(path)
 
 
 def test_passphrase_passes_the_prompt_through(relay_dir, monkeypatch, no_wait):
@@ -637,7 +641,7 @@ def test_copy_block_shreds_the_secret_it_gave_up_on(relay_dir, tmp_path, monkeyp
     monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: None)
     # Stub the wait rather than drive its clock: what is under test here is cmd_copy's
     # finally, not the deadline arithmetic - which the _wait_gone tests below own.
-    def timed_out(path, timeout, on_timeout):
+    def timed_out(nonce, kind, timeout, on_timeout):
         raise SystemExit(f"not copied after {timeout:.0f}s - {on_timeout}")
 
     monkeypatch.setattr(cli, "_wait_gone", timed_out)
@@ -669,62 +673,63 @@ def test_copy_block_through_main_waits_and_defaults_its_timeout(relay_dir, monke
     monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: None)
     monkeypatch.setattr(
         cli, "_wait_gone",
-        lambda path, timeout, on_timeout: waited.update(path=path, timeout=timeout),
+        lambda nonce, kind, timeout, on_timeout: waited.update(kind=kind, timeout=timeout),
     )
     monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "copy", "--block"])
 
     assert cli.main() == 0
     assert waited["timeout"] == cli.CLICK_TIMEOUT
-    assert waited["path"].endswith(".secret")
+    assert waited["kind"] == "secret"
 
 
 def test_wait_gone_returns_the_moment_the_relay_disappears(relay_dir):
-    relay = relay_dir / "n.secret"
-    relay.write_text("x")
+    relay_file = relay_dir / "n.secret"
+    relay_file.write_text("x")
 
     # Already gone: the fast path, and the one --block hits whenever the user is
     # quicker than the first poll.
-    relay.unlink()
-    cli._wait_gone(str(relay), 5.0, "why")
+    relay_file.unlink()
+    cli._wait_gone("n", "secret", 5.0, "why")
 
 
 def test_wait_gone_takes_a_last_look_after_the_deadline(relay_dir, monkeypatch):
     # The mirror of _wait's final check. The last sleep straddles the deadline, so a
     # click landing in that window would be reported as a timeout - and cmd_copy would
     # then shred the secret it had just delivered, and exit 1 on a success.
-    relay = relay_dir / "n.secret"
-    relay.write_text("x")
+    relay_file = relay_dir / "n.secret"
+    relay_file.write_text("x")
 
     # deadline = 0 + 5. The poll at 0.1 still sees the file; the click lands during the
     # sleep; the next read of the clock is already past the deadline, so the loop ends
     # without ever having seen it gone. Only the check after the loop can notice.
     clock = iter([0.0, 0.1, 100.0])
     monkeypatch.setattr(cli.time, "monotonic", lambda: next(clock))
-    monkeypatch.setattr(cli.time, "sleep", lambda _: relay.unlink())
+    monkeypatch.setattr(cli.time, "sleep", lambda _: relay_file.unlink())
 
-    cli._wait_gone(str(relay), 5.0, "why")
+    cli._wait_gone("n", "secret", 5.0, "why")
 
-    assert not relay.exists()
+    assert not relay_file.exists()
 
 
 def test_wait_gone_gives_up_on_a_relay_nobody_collects(relay_dir, monkeypatch):
-    relay = relay_dir / "n.secret"
-    relay.write_text("x")
+    relay_file = relay_dir / "n.secret"
+    relay_file.write_text("x")
 
     clock = iter([0.0, 0.1, 100.0])
     monkeypatch.setattr(cli.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(cli.time, "sleep", lambda _: None)
 
     with pytest.raises(SystemExit, match="not copied after 5s"):
-        cli._wait_gone(str(relay), 5.0, "was the button clicked?")
+        cli._wait_gone("n", "secret", 5.0, "was the button clicked?")
 
 
 def test_a_squatted_relay_dir_answers_with_a_line_not_a_traceback(tmp_path, monkeypatch):
     """A co-tenant squatting /dev/shm is a real, fixable condition - diagnose it.
 
-    ensure_relay_dir raises PermissionError out of os.lstat. Unwrapped, that reaches the
-    user as a traceback on the invocation the README documents, which is precisely the
-    failure quality every other error path here exists to avoid.
+    On the shm backend, ensure_relay_dir raises PermissionError out of os.lstat.
+    Unwrapped, that reaches the user as a traceback on the invocation the README
+    documents, which is precisely the failure quality every other error path here
+    exists to avoid. cmd_copy catches it at the stage and answers with a line.
     """
     attacker = tmp_path / "attacker"
     attacker.mkdir()
@@ -734,7 +739,7 @@ def test_a_squatted_relay_dir_answers_with_a_line_not_a_traceback(tmp_path, monk
     monkeypatch.setattr(cli.sys, "stdin", _FakeStdin("s3cret\n"))
     monkeypatch.setattr(cli, "_trigger", _never_triggered)
 
-    with pytest.raises(SystemExit, match="refusing to use the relay directory"):
+    with pytest.raises(SystemExit, match="cannot stage the secret"):
         cli.cmd_copy(_copy_ns(file="-", label=None))
 
     # The diagnosis is secondary; not handing the attacker the secret is the point.
@@ -768,7 +773,7 @@ def test_nonces_satisfy_the_server_guard(relay_dir, monkeypatch, no_wait):
 
 def test_wait_times_out_when_nothing_is_relayed(relay_dir):
     with pytest.raises(SystemExit, match="no relay"):
-        cli._wait(str(relay_dir / "never.json"), timeout=0.01, on_timeout="was it clicked?")
+        cli._wait("never0123456789abcd", "json", timeout=0.01, on_timeout="was it clicked?")
 
 
 def _server_list(monkeypatch, record, argv_sink=None):
@@ -870,12 +875,12 @@ def test_server_falls_back_to_the_jupyterhub_prefix(monkeypatch):
 def _drive_main(monkeypatch, argv, seen):
     """Run main() far enough to see what timeout reached the wait, then let it die.
 
-    A ceremony subcommand dies on the relay that never appears (FileNotFoundError);
-    passphrase just prints a path. An argparse rejection raises SystemExit, which is
-    deliberately NOT suppressed - that is the failure this test exists to catch.
+    A ceremony subcommand dies on the relay that never appears; passphrase just prints
+    a reference. An argparse rejection raises SystemExit, which is deliberately NOT
+    suppressed - that is the failure this test exists to catch.
     """
     monkeypatch.setattr(cli, "_trigger", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "_wait", lambda path, timeout, on_timeout: seen.update(timeout=timeout))
+    monkeypatch.setattr(cli, "_wait", lambda nonce, kind, timeout, on_timeout: seen.update(timeout=timeout))
     monkeypatch.setattr(cli.sys, "argv", ["jupyterlab-passkey", *argv])
     try:
         cli.main()
@@ -916,12 +921,12 @@ def test_wait_accepts_a_relay_that_lands_in_the_final_sleep(relay_dir):
     in time, the ceremony is failed anyway, and the PRF is stranded because the caller
     that would have consumed it is the one raising.
     """
-    relay = relay_dir / "landed.json"
-    relay.write_text("{}")
+    relay_file = relay_dir / "landed.json"
+    relay_file.write_text("{}")
 
     # Already past the deadline - the loop body never runs, only the final look can save
     # it. Deliberately not a sleep race: the assertion is that the check exists at all.
-    cli._wait(str(relay), 0.0, "never seen")
+    cli._wait("landed", "json", 0.0, "never seen")
 
 
 def test_a_relay_that_lands_as_we_give_up_is_not_left_on_disk(relay_dir, monkeypatch):
@@ -932,11 +937,11 @@ def test_a_relay_that_lands_as_we_give_up_is_not_left_on_disk(relay_dir, monkeyp
     """
     monkeypatch.setattr(cli, "_trigger", lambda *a, **k: None)
     nonce = "n" * 20
-    relay = relay_dir / f"{nonce}.json"
+    relay_file = relay_dir / f"{nonce}.json"
 
-    def wait_then_strand(path, timeout, on_timeout):
+    def wait_then_strand(nonce, kind, timeout, on_timeout):
         # The relay lands, then we give up on it - the exact ordering that stranded it.
-        relay.write_text(json.dumps({"ok": True, "prf": "KEY_MATERIAL"}))
+        relay_file.write_text(json.dumps({"ok": True, "prf": "KEY_MATERIAL"}))
         raise SystemExit("no relay")
 
     monkeypatch.setattr(cli, "_wait", wait_then_strand)
@@ -944,7 +949,7 @@ def test_a_relay_that_lands_as_we_give_up_is_not_left_on_disk(relay_dir, monkeyp
     with pytest.raises(SystemExit):
         cli._run({"nonce": nonce}, "label", "message", 1.0)
 
-    assert not relay.exists(), "timing out left the PRF on disk"
+    assert not relay_file.exists(), "timing out left the PRF on disk"
 
 
 def test_a_base64url_value_starting_with_a_dash_survives_argv(relay_dir, capsys, monkeypatch, no_wait):

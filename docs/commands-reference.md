@@ -4,14 +4,17 @@ The JupyterLab commands the extension registers, and the server contract behind 
 
 - **Commands** - `passkey:run` (ceremony), `passkey:passphrase` (secret capture), `passkey:copy` (secret to clipboard)
 - **Trigger** - a `jupyterlab-notify` action button bound to the command id
-- **Return path** - the frontend POSTs to the server, which writes an atomic relay file
-- **Relay dir** - `/dev/shm/jlab-passkey-$(id -u)`, mode `0700`; override with `JLAB_PASSKEY_RELAY_DIR`. Verified before every read and write the extension or CLI makes: a real directory owned by the current uid - a symlink or a co-tenant's directory squatting the path raises rather than being used; a loose mode on a directory that is ours is tightened to `0700`
-- **Relay file** - `<nonce>.json` for a ceremony, raw `<nonce>.pass` for a captured secret, raw `<nonce>.secret` for one going out to the clipboard
-- **File mode** - `0600`, written mkstemp-then-rename, never logged
-- **Nonce** - `[A-Za-z0-9_-]{16,128}`, and it is the filename - anything else is `400`
-- **Lifecycle** - the server writes for `run` and `passphrase` and the consumer shreds; `copy` inverts it - a local client writes and the server reads once, deleting as it goes
+- **Return path** - the frontend POSTs to the server, which stages the value in a relay
+- **Relay backend** - a uid-scoped kernel `keyctl` key (preferred, no swap, self-destructs at a TTL) or a `/dev/shm` `0600` file (fallback); chosen once per process, forced with `JLAB_PASSKEY_RELAY_BACKEND=keyctl|shm|auto`
+- **keyctl key** - type `user`, description `jlab-passkey:<nonce>.<kind>`, keyring `@u`, TTL by kind (ceremony/passphrase 300s, copy 900s)
+- **shm dir** - `/dev/shm/jlab-passkey-$(id -u)`, mode `0700`; override with `JLAB_PASSKEY_RELAY_DIR`. Verified before every read and write the extension or CLI makes: a real directory owned by the current uid - a symlink or a co-tenant's directory squatting the path raises rather than being used; a loose mode on a directory that is ours is tightened to `0700`
+- **shm file** - `<nonce>.json` for a ceremony, raw `<nonce>.pass` for a captured secret, raw `<nonce>.secret` for one going out to the clipboard; mode `0600`, written mkstemp-then-rename, never logged
+- **Nonce** - `[A-Za-z0-9_-]{16,128}`, and it becomes the key description or the filename - anything else is `400`
+- **Lifecycle** - the server stages for `run` and `passphrase` and the consumer reads; `copy` inverts it - a local client stages and the server reads once, destroying as it goes
 
-Secrets move both ways. `passkey:passphrase` takes one **from** the user and leaves it on disk for a local client; `passkey:copy` takes one a local client already holds and puts it **on the user's clipboard**. Both keep the value out of the notification itself, which the notifications extension broadcasts to every connected socket and parks in an in-memory queue until a client drains it - so a notification carries a nonce, never a secret.
+Secrets move both ways. `passkey:passphrase` takes one **from** the user and stages it for a local client; `passkey:copy` takes one a local client already holds and puts it **on the user's clipboard**. Both keep the value out of the notification itself, which the notifications extension broadcasts to every connected socket and parks in an in-memory queue until a client drains it - so a notification carries a nonce, never a secret.
+
+Neither backend isolates a secret from the user's own processes: a same-uid process can read the `0600` file or `keyctl search @u`. keyctl buys no-swap, self-destruct and no disk artifact, not access control.
 
 ## `passkey:run`
 
@@ -35,30 +38,37 @@ jupyterlab-notify --now --no-auto-close -t info \
   --cmd passkey:run \
   --command-args "{\"op\":\"get\",\"nonce\":\"$NONCE\",\"rp_id\":\"your.host\",\"cred_id\":\"<b64url>\",\"prf_salt\":\"<b64url>\"}"
 
+# shm backend - the server wrote a file:
 RELAY="/dev/shm/jlab-passkey-$(id -u)/$NONCE.json"
 until [ -f "$RELAY" ]; do sleep 0.4; done
 prf=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['prf'])" "$RELAY")
 shred -u "$RELAY"
+
+# keyctl backend - the server staged a key; there is no file:
+DESC="jlab-passkey:$NONCE.json"
+until keyctl search @u user "$DESC" >/dev/null 2>&1; do sleep 0.4; done
+prf=$(keyctl pipe "$(keyctl search @u user "$DESC")" | python3 -c "import json,sys;print(json.load(sys.stdin)['prf'])")
+keyctl unlink "$(keyctl search @u user "$DESC")" @u
 ```
 
 > [!NOTE]
-> The squat verification above covers the extension's and CLI's own file operations - this hand-rolled read is not guarded, and the nonce rides on a command line, which `/proc` makes readable to co-tenants. The nonce is a collection ticket, not a secret, but on a multi-user host prefer `jupyterlab-passkey get`, which guards the read and keeps the nonce off argv.
+> Which of the two reads applies depends on the live backend (`JLAB_PASSKEY_RELAY_BACKEND`); the CLI hides that difference, this hand-rolled flow does not. The squat verification covers the extension's and CLI's own operations - neither hand-rolled read is guarded. The nonce is a collection ticket, not a secret, but on a multi-user host prefer `jupyterlab-passkey get`, which picks the backend for you and keeps the nonce out of your shell history and off the notify command line (under keyctl it does spawn `keyctl` with the key description, briefly visible in `/proc` to your own uid - which can read the key regardless).
 
 ## `passkey:passphrase`
 
-Prompts for a secret in a dialog and writes it **raw** to `<relay_dir>/<nonce>.pass`. No JSON envelope and no trailing newline, so the file is usable as-is. Entered twice and relayed only on a match by default; `once` asks for a single entry.
+Prompts for a secret in a dialog and stages it **raw** - no JSON envelope, no trailing newline. Entered twice and staged only on a match by default; `once` asks for a single entry. The CLI prints the consumer a scheme-prefixed reference (`keyctl:jlab-passkey:<nonce>.pass` or `file:<path>`), never the value.
 
 | Arg      | Required | Meaning                                                            |
 | -------- | -------- | ------------------------------------------------------------------ |
-| `nonce`  | yes      | relay filename; same guard as above                                |
+| `nonce`  | yes      | relay key/filename; same guard as above                            |
 | `prompt` | no       | dialog prompt text; defaults per mode (see below)                  |
 | `once`   | no       | `true` asks once, with no confirm field - for a value being pasted |
 
-- **Path** - browser → server → tmpfs; never the terminal, shell history, or a process argument
-- **Confirmation** - the two entries must match before anything is relayed; `once` only requires non-empty
+- **Path** - browser → server → kernel key or tmpfs; never the terminal, shell history, a process argument, or the bridge CLI
+- **Confirmation** - the two entries must match before anything is staged; `once` only requires non-empty
 - **Default prompt** - `Enter the passphrase twice`, or `Enter the secret` under `once`
-- **Cancel or mismatch** - relays nothing, so the file never appears and a consumer's wait loop times out
-- **Consumer** - point `PASS_RECOVERY_FILE` (or `PASS_SECRET_FILE`, or anything else) at the file directly, no parsing
+- **Cancel or mismatch** - stages nothing, so the reference never resolves and a consumer's wait loop times out
+- **Consumer** - a keyctl-aware consumer branches on the reference scheme: `keyctl pipe $(keyctl search @u user <desc>)` or read the `file:` path; the value never passes through the bridge
 
 Double entry catches a typo in a passphrase being **set**, where nothing else will - get it wrong and the mistake surfaces at the next unlock, by which time the right value is forgotten. It earns nothing for a token being **pasted** out of a password manager, which is what `once` is for.
 

@@ -2,6 +2,26 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.0.35] - 2026-07-19
+
+Stages every relayed secret in a kernel keyring key when available, so the value never swaps to disk and self-destructs at a TTL, with the `/dev/shm` file relay as a fallback.
+
+### Added
+
+- keyctl relay backend: the ceremony PRF, the passphrase, and the copy secret are staged in a uid-scoped kernel `user` key that never swaps to disk and the kernel destroys at a TTL, chosen automatically when a `keyctl` add/search/read round-trip works. It closes two gaps the file relay left: the value could swap to disk, and a crashed consumer orphaned a plaintext file
+- `JLAB_PASSKEY_RELAY_BACKEND=auto|keyctl|shm` forces the backend; `auto` (default) prefers keyctl and falls back to the `/dev/shm` `0600` file with a one-line stderr warning advising `keyutils`
+
+### Changed
+
+- `passphrase` now prints a scheme-prefixed reference (`keyctl:jlab-passkey:<nonce>.pass` or `file:<path>`) instead of a bare file path, so one keyctl-aware consumer resolves it whichever backend is live and the value never transits the CLI. This is a breaking change for consumers that read the printed value as a path
+- Server handlers answer a relay-backend failure (a keyctl quota, a missing binary, a squatted directory) with a clean 500 rather than a traceback in the Jupyter log
+
+### Fixed
+
+- The keyctl payload rides stdin, never a process argument, so a secret is not exposed in the process list
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.0.32] - 2026-07-17
 
 Adds copy-to-clipboard for local secrets, makes it survive Chrome's clipboard gating in every tested condition, and hardens the `/dev/shm` relay directory against squatting.
@@ -22,8 +42,6 @@ Adds copy-to-clipboard for local secrets, makes it survive Chrome's clipboard ga
 - The relay directory under the world-writable `/dev/shm` is now guarded against squatting: symlink, ownership, and mode are checked before every relay read and write, a foreign-owned or loose-permissioned directory is refused, and a self-owned loose one is tightened to `0700`
 - A ceremony relay missing `cred_id` exits with a one-line message instead of a `KeyError` traceback
 - Relay reads pin `utf-8` regardless of locale
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.15] - 2026-07-16
 

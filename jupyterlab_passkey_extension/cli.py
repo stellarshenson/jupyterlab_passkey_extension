@@ -8,22 +8,23 @@ writes and returns the result - turning a browser ceremony into a blocking call.
 
     cred_id=$(jupyterlab-passkey create --rp-id lab.example)
     prf=$(jupyterlab-passkey get --rp-id lab.example --cred-id "$cred_id" --prf-salt "$salt")
-    pass_file=$(jupyterlab-passkey passphrase) || exit 1
-    PASS_RECOVERY_FILE=$pass_file pass-cli-open --ensure
+    pass_ref=$(jupyterlab-passkey passphrase) || exit 1
+    PASS_RECOVERY_REF=$pass_ref pass-cli-open --ensure
 
-Secrets move both ways. `passphrase` takes one FROM you in a dialog and leaves it in a
+Secrets move both ways. `passphrase` takes one FROM you in a dialog and stages it in a
 relay for a vault or a .env to read; `copy` sends one TO the clipboard of the browser
 you are sitting in front of, to paste wherever it is wanted:
 
-    tok_file=$(jupyterlab-passkey passphrase --once --prompt "GitHub token") || exit 1
-    PASS_SECRET_FILE=$tok_file pass-cli-save github/api -u me -c infrastructure
+    tok_ref=$(jupyterlab-passkey passphrase --once --prompt "GitHub token") || exit 1
+    PASS_SECRET_REF=$tok_ref pass-cli-save github/api -u me -c infrastructure
 
     pass-cli get github/api --field password --quiet --no-clipboard | jupyterlab-passkey copy
 
-Take the `|| exit 1` seriously: a prefix assignment does not propagate the exit status
-of a command substitution, so `PASS_RECOVERY_FILE=$(jupyterlab-passkey passphrase)
-pass-cli-open` would run the consumer with an EMPTY passphrase file after a timeout or
-a cancel.
+`passphrase` prints a scheme-prefixed reference (keyctl:... or file:...), never the
+value; the consumer resolves it. Take the `|| exit 1` seriously: a prefix assignment
+does not propagate the exit status of a command substitution, so
+`PASS_RECOVERY_REF=$(jupyterlab-passkey passphrase) pass-cli-open` would run the consumer
+with an EMPTY reference after a timeout or a cancel.
 
 Run it in a terminal on the same Jupyter server, keep a JupyterLab tab open, and click
 the button when it pops.
@@ -40,7 +41,7 @@ import time
 import urllib.error
 import urllib.request
 
-from .routes import ensure_relay_dir, write_relay
+from . import relay
 
 INGEST = "jupyterlab-notifications-extension/ingest"
 RUN_COMMAND = "passkey:run"
@@ -75,7 +76,7 @@ def _say(message: str) -> None:
     That is not cosmetic here. `copy` answers a failed trigger by destroying the
     secret it staged, precisely so a retry cannot strand another copy; a caller
     that reads 120 as "the trigger failed" retries, and strands one anyway. And
-    `passphrase` prints a path its caller captures with `|| exit 1`, which a 120
+    `passphrase` prints a reference its caller captures with `|| exit 1`, which a 120
     throws away while the relay stays on disk.
 
     Dropping the stream takes the poisoned buffer with it, so shutdown has nothing
@@ -196,45 +197,33 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
     _say(f"click '{label}' in your JupyterLab tab")
 
 
-def _relay_dir() -> str:
-    """`ensure_relay_dir`, with its refusal rendered as a sentence.
+def _wait(nonce: str, kind: str, timeout: float, on_timeout: str) -> None:
+    """Block until the relay is staged.
 
-    It raises PermissionError when the relay path is a symlink or belongs to another
-    uid - a co-tenant squatting /dev/shm, which is world-writable. That is a real
-    condition a user can hit and fix, so it deserves the same one-line diagnosis every
-    other failure here gets rather than a traceback out of os.lstat.
-    """
-    try:
-        return ensure_relay_dir()
-    except OSError as e:
-        raise SystemExit(f"refusing to use the relay directory: {e}")
-
-
-def _wait(path: str, timeout: float, on_timeout: str) -> None:
-    """Block until the relay appears.
-
-    Existence is enough: the write lands atomically, so the value is whole - see
-    `routes.write_relay`.
+    Existence is enough: a relay is staged atomically (the file lands via
+    os.replace, the key via a single padd), so what a reader then finds is whole -
+    see `relay.stage`. The poll reads nothing, so a squatted shm dir cannot raise
+    here; that check fires at collect time.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if os.path.exists(path):
+        if relay.relay_exists(nonce, kind):
             return
         time.sleep(0.4)
     # One last look. The final sleep straddles the deadline, so a relay landing in that
-    # window would otherwise be declared missing while sitting on disk - failing a
+    # window would otherwise be declared missing while it is really there - failing a
     # ceremony the user completed in time AND stranding its PRF, since the caller that
-    # would have consumed the file is the one raising here.
-    if os.path.exists(path):
+    # would have consumed it is the one raising here.
+    if relay.relay_exists(nonce, kind):
         return
     raise SystemExit(f"no relay after {timeout:.0f}s - {on_timeout}")
 
 
-def _wait_gone(path: str, timeout: float, on_timeout: str) -> None:
+def _wait_gone(nonce: str, kind: str, timeout: float, on_timeout: str) -> None:
     """Block until the relay is consumed.
 
-    The mirror of `_wait`. The `secret` endpoint reads its relay and unlinks it in
-    the same breath, so the file DISAPPEARING is the signal - there is nothing else
+    The mirror of `_wait`. The `secret` endpoint reads its relay and destroys it in
+    the same breath, so the relay DISAPPEARING is the signal - there is nothing else
     to watch. Nothing is posted back from the page, so this is as close to "the
     secret arrived" as the caller can get.
 
@@ -245,46 +234,52 @@ def _wait_gone(path: str, timeout: float, on_timeout: str) -> None:
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not os.path.exists(path):
+        if not relay.relay_exists(nonce, kind):
             return
         time.sleep(0.4)
     # One last look, for the same reason `_wait` takes one: the final sleep straddles
     # the deadline, and a click landing in that window is a success we would
-    # otherwise report as a timeout - and then shred the secret it just delivered.
-    if not os.path.exists(path):
+    # otherwise report as a timeout - and then destroy the secret it just delivered.
+    if not relay.relay_exists(nonce, kind):
         return
     raise SystemExit(f"not copied after {timeout:.0f}s - {on_timeout}")
 
 
 def _run(args_obj: dict, label: str, message: str, timeout: float) -> dict:
-    """Drive passkey:run and consume its relay, deleting it on every path out of here.
+    """Drive passkey:run and consume its relay, destroying it on every path out of here.
 
-    The relay carries the PRF, so the unlink sits in a finally that also covers the
+    The relay carries the PRF, so the destroy sits in a finally that also covers the
     timeout - `_wait` is inside the try for exactly that reason. A malformed body, or a
-    relay that landed just as we gave up, would otherwise leave key material on disk
+    relay that landed just as we gave up, would otherwise leave key material staged
     precisely when nobody is left to collect it.
 
     It is best effort and cannot be more: the server writes whenever the ceremony
     finishes, so a click that lands after this process has exited strands a relay no
-    matter what we do here. That residue is bounded by the relay dir living in /dev/shm
-    (tmpfs, gone at reboot) and is why shredding is documented as the consumer's job.
+    matter what we do here. That residue is bounded either way - a keyctl key by its
+    TTL, a shm file by the tmpfs it lives in - which is why shredding is documented as
+    the consumer's job.
     """
-    relay = os.path.join(_relay_dir(), f"{args_obj['nonce']}.json")
+    nonce = args_obj["nonce"]
     _trigger(RUN_COMMAND, args_obj, label, message)
     try:
-        _wait(relay, timeout, "was the button clicked and the prompt approved?")
-        # utf-8 pinned like every other relay boundary: the writer is the server
-        # process with its own locale. json.dumps is ASCII today, which is luck,
-        # not a contract.
-        with open(relay, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        raise SystemExit(f"unreadable relay {relay}: {e}")
+        _wait(nonce, "json", timeout, "was the button clicked and the prompt approved?")
+        # collect destroys the relay as it reads it.
+        raw = relay.collect(nonce, "json")
+        if raw is None:
+            # _wait saw it a tick ago; gone now means it expired or lost a race.
+            raise SystemExit("the ceremony relay vanished before it could be read")
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"unreadable relay: {e}")
+    except OSError as e:
+        # A squatted shm dir surfaces here (PermissionError is an OSError) rather
+        # than as a traceback out of the guard.
+        raise SystemExit(f"cannot read the relay: {e}")
     finally:
-        try:
-            os.unlink(relay)
-        except OSError:
-            pass
+        # A relay that landed in the final wait window, or after a timeout, is key
+        # material nobody is left to collect - destroy it whichever way we leave. A
+        # no-op when collect already took it.
+        relay.unstage(nonce, "json")
     if not data.get("ok"):
         raise SystemExit(f"ceremony failed: {data.get('error')}")
     return data
@@ -334,18 +329,19 @@ def cmd_get(a) -> int:
 
 
 def cmd_passphrase(a) -> int:
-    """Capture a secret in the browser and leave it in a 0600 relay.
+    """Capture a secret in the browser and stage it for an external consumer.
 
-    Prints the file's path, never the value - the secret must reach its consumer (a
-    vault, a .env, a keystore) without passing through the terminal, shell history, or
-    a process argument.
+    Prints a scheme-prefixed REFERENCE, never the value - `keyctl:jlab-passkey:<nonce>.pass`
+    when the kernel keyring is live, `file:<path>` on the shm fallback. A keyctl-aware
+    consumer branches on the scheme and reads the value itself, so the secret reaches
+    a vault, a .env or a keystore without passing through this terminal, the shell
+    history, a process argument, or this process at all.
 
     The prompt is left out of the args unless given, so the frontend can pick a default
     that suits the mode rather than being told "Enter the passphrase twice" about a
     single field.
     """
     nonce = secrets.token_urlsafe(24)
-    relay = os.path.join(_relay_dir(), f"{nonce}.pass")
     args_obj = {"nonce": nonce}
     if a.prompt:
         args_obj["prompt"] = a.prompt
@@ -362,8 +358,8 @@ def cmd_passphrase(a) -> int:
     refused = "cancelled or the button was never clicked" if a.once else (
         "cancelled, the two entries differed, or the button was never clicked"
     )
-    _wait(relay, a.timeout, refused)
-    print(relay)
+    _wait(nonce, "pass", a.timeout, refused)
+    print(relay.reference(nonce, "pass"))
     return 0
 
 
@@ -432,18 +428,17 @@ def cmd_copy(a) -> int:
         raise SystemExit("nothing to copy - the input was empty")
 
     nonce = secrets.token_urlsafe(24)
-    filename = f"{nonce}.secret"
-    relay = os.path.join(_relay_dir(), filename)
     message = (
         f"A secret is waiting: {a.label}" if a.label
         else "A secret is waiting - click to copy it to the clipboard."
     )
 
     try:
-        write_relay(nonce, filename, secret)
+        relay.stage(nonce, "secret", secret)
     except OSError as e:
-        # A full /dev/shm is the realistic one. Every other failure here answers with
-        # a line; this should not be the one that answers with a traceback.
+        # A full /dev/shm or an exhausted keyctl quota is the realistic one. Every
+        # other failure here answers with a line; this should not answer with a
+        # traceback. A squatted shm dir (PermissionError) also lands here.
         raise SystemExit(f"cannot stage the secret: {e}")
 
     # The label rides along so the frontend can name the secret if it has to ask
@@ -454,31 +449,25 @@ def cmd_copy(a) -> int:
     except BaseException:
         # The nonce dies with this process, so a relay left behind here is not
         # "uncollected" but uncollectable: no button was ever raised, nothing can
-        # ever ask for it, and it would sit in tmpfs until reboot while the CLI told
-        # the user it had failed. A 404 from a lab without the notifications
-        # extension is a first-run failure, not an exotic one, and every retry would
-        # strand another copy.
+        # ever ask for it, and it would linger to its TTL (or to reboot on shm)
+        # while the CLI told the user it had failed. A 404 from a lab without the
+        # notifications extension is a first-run failure, not an exotic one, and
+        # every retry would strand another copy.
         #
         # BaseException, not Exception: _trigger raises SystemExit, and a Ctrl+C
-        # between the write above and the POST strands the secret identically.
-        try:
-            os.unlink(relay)
-        except OSError:
-            pass
+        # between the stage above and the POST strands the secret identically.
+        relay.unstage(nonce, "secret")
         raise
 
     if a.block:
         try:
-            _wait_gone(relay, timeout, "was the button clicked?")
+            _wait_gone(nonce, "secret", timeout, "was the button clicked?")
         finally:
             # Whatever happened, this secret is ours to clean up: on a timeout nobody
             # collected it, and leaving it would hand a live button to whoever clicks
             # next, long after the caller gave up and moved on. Already gone on the
-            # success path, where the unlink is a no-op.
-            try:
-                os.unlink(relay)
-            except OSError:
-                pass
+            # success path, where the unstage is a no-op.
+            relay.unstage(nonce, "secret")
         return 0
 
     # _trigger has just said "click ...", which after every other command is followed
@@ -540,8 +529,8 @@ Every subcommand has its own --help with examples: `jupyterlab-passkey copy --he
 
 Exit status is the contract: 0 succeeded, 1 refused, timed out, or could not reach the
 server (the reason is one line on stderr). Only the result goes to stdout - a cred_id,
-a PRF, or a relay path - so `$(...)` captures it clean and progress chatter cannot
-contaminate it.
+a PRF, or a passphrase reference - so `$(...)` captures it clean and progress chatter
+cannot contaminate it.
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -613,30 +602,38 @@ example:
     g.set_defaults(func=cmd_get)
 
     s = _sub(
-        sub, "passphrase", "capture a secret from a dialog; prints the relay file's path",
+        sub, "passphrase", "capture a secret from a dialog; prints a reference to it",
         """
-Open a dialog in the browser, take a secret, and print the PATH of the 0600 file it was
-relayed to - never the value. The secret reaches its consumer without passing through
-this terminal, the shell history, or any process argument, which is the point.
+Open a dialog in the browser, take a secret, and print a REFERENCE to it - never the
+value. The secret reaches its consumer without passing through this terminal, the shell
+history, any process argument, or this CLI itself, which is the point.
+
+The reference is scheme-prefixed so one consumer handles either relay backend:
+  keyctl:jlab-passkey:<nonce>.pass   read with: keyctl pipe $(keyctl search @u user <desc>)
+  file:<path>                        read the 0600 file at <path>
 
 Use it to get a secret out of a head and into something else: a vault entry, a .env, a
-keystore's recovery slot. An AI agent can run this and pipe the path onward without the
-secret ever entering its transcript.
+keystore's recovery slot. An AI agent can run this and pipe the reference onward without
+the secret ever entering its transcript. The consumer resolves the scheme itself.
 
 The value is entered twice and Submit stays disabled until the two match. --once drops
-the confirm field for a secret being pasted rather than typed. Cancelling relays
-nothing, so the command times out and exits 1. Shred the file when done - it is left in
-place for the consumer to read.
+the confirm field for a secret being pasted rather than typed. Cancelling stages
+nothing, so the command times out and exits 1.
 """,
         """
 examples:
-  # a passphrase being set - typed twice, confirmed
-  pass_file=$(jupyterlab-passkey passphrase --prompt "Recovery passphrase") || exit 1
-  PASS_RECOVERY_FILE="$pass_file" pass-cli-open --ensure
-  shred -u "$pass_file"
+  # a passphrase being set - typed twice, confirmed. The consumer resolves the ref:
+  pass_ref=$(jupyterlab-passkey passphrase --prompt "Recovery passphrase") || exit 1
+  PASS_RECOVERY_REF="$pass_ref" pass-cli-open --ensure
 
   # a token being pasted - once is enough
-  tok_file=$(jupyterlab-passkey passphrase --once --prompt "GitHub token") || exit 1
+  tok_ref=$(jupyterlab-passkey passphrase --once --prompt "GitHub token") || exit 1
+
+  # resolving a reference by hand, either backend:
+  case "$pass_ref" in
+    keyctl:*) keyctl pipe "$(keyctl search @u user "${pass_ref#keyctl:}")" ;;
+    file:*)   cat "${pass_ref#file:}" ;;
+  esac
 """,
         parents=[common],
     )

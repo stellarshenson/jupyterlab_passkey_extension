@@ -329,19 +329,63 @@ async def test_passphrase_not_logged(jp_fetch, relay_dir, caplog):
 async def test_write_relay_leaves_no_partial_secret_when_the_write_fails(relay_dir, monkeypatch):
     # A full /dev/shm would otherwise leave the mkstemp temp behind holding a PARTIAL
     # secret at 0600 - under a dot-name nothing collects and nothing cleans. Guarded
-    # in routes.write_relay, and without this the guard could be deleted tomorrow
+    # in relay.write_relay, and without this the guard could be deleted tomorrow
     # with every other test still green.
-    import jupyterlab_passkey_extension.routes as routes
+    import jupyterlab_passkey_extension.relay as relay_mod
 
     def boom(*args, **kwargs):
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(routes.os, "replace", boom)
+    monkeypatch.setattr(relay_mod.os, "replace", boom)
 
     with pytest.raises(OSError):
         write_relay(VALID_NONCE, f"{VALID_NONCE}.secret", "a-partial-secret")
 
     assert os.listdir(relay_dir) == []
+
+
+async def test_result_handler_answers_a_relay_failure_with_a_clean_500(jp_fetch, monkeypatch):
+    # A keyctl quota, a missing keyctl binary, or a squatted shm dir raises OSError out
+    # of stage. The CLI turns that into a one-line message; the server must answer with
+    # a handled 500, not a Tornado traceback in the Jupyter log.
+    import jupyterlab_passkey_extension.relay as relay_mod
+
+    def boom(*a, **k):
+        raise OSError("relay backend down")
+
+    monkeypatch.setattr(relay_mod, "stage", boom)
+
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await jp_fetch(
+            "jupyterlab-passkey-extension", "result",
+            method="POST", body=json.dumps({"nonce": VALID_NONCE, "ok": True}),
+        )
+    assert exc.value.code == 500
+    # The HANDLED body, which an unhandled exception's default 500 page would not carry -
+    # this is what distinguishes a caught failure from a Tornado traceback. The detail
+    # (and certainly no secret) is never in it.
+    body = exc.value.response.body.decode()
+    assert "relay backend unavailable" in body
+    assert "relay backend down" not in body
+
+
+async def test_secret_handler_answers_a_relay_failure_with_a_clean_500(jp_fetch, monkeypatch):
+    import jupyterlab_passkey_extension.relay as relay_mod
+
+    def boom(*a, **k):
+        raise OSError("relay backend down")
+
+    monkeypatch.setattr(relay_mod, "collect", boom)
+
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await jp_fetch(
+            "jupyterlab-passkey-extension", "secret",
+            method="POST", body=json.dumps({"nonce": VALID_NONCE}),
+        )
+    assert exc.value.code == 500
+    body = exc.value.response.body.decode()
+    assert "relay backend unavailable" in body
+    assert "relay backend down" not in body
 
 
 # --- secret: the one handler that reads a relay out rather than writing one in ---

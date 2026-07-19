@@ -34,5 +34,13 @@ os.environ["JLAB_PASSKEY_RELAY_DIR"] = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), ".tmp-passkey-relay"
 )
 
+# Pin the shm backend for the whole suite. The tests assert on the file the server
+# writes, which the keyctl backend never produces, and keyctl is absent on some CI
+# runners - so a deterministic file backend is what makes these assertions portable.
+# cli.spec.ts forces the same value into the CLI's environment; both ends must agree
+# on the backend just as they must agree on the relay dir. The keyctl backend is
+# covered by the pytest suite (test_relay.py), not here.
+os.environ["JLAB_PASSKEY_RELAY_BACKEND"] = "shm"
+
 # Uncomment to set server log level to debug level
 # c.ServerApp.log_level = "DEBUG"

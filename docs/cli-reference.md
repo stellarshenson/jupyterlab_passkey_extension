@@ -63,28 +63,39 @@ prf=$(jupyterlab-passkey get --rp-id lab.example.com --cred-id "$cred_id" --prf-
 
 ## `passphrase`
 
-Opens a dialog that takes a secret and relays it. Prints the **path** of the `0600` relay file, never the value - the secret reaches its consumer without passing through the terminal, shell history, or a process argument. This is the command for getting a secret **out of your head and into something else**: a vault entry, a `.env`, a keystore's recovery slot.
+Opens a dialog that takes a secret and stages it. Prints a **reference** to it, never the value - the secret reaches its consumer without passing through the terminal, shell history, a process argument, or this CLI itself. This is the command for getting a secret **out of your head and into something else**: a vault entry, a `.env`, a keystore's recovery slot.
 
 | Flag       | Required | Meaning                                          |
 | ---------- | -------- | ------------------------------------------------ |
 | `--prompt` | no       | dialog prompt text; defaults per mode            |
 | `--once`   | no       | ask once instead of twice, with no confirm field |
 
-By default the value is entered twice and Submit stays disabled until they match, so a mismatch cannot be submitted. `--once` drops the confirm field for a secret you are pasting rather than typing - the source of truth is already on your clipboard, and asking twice only invites two pastes of the same mistake. Either way Cancel and Submit are the only ways out, and Escape cancels; cancelling relays nothing, so the call times out and exits `1`. The file is left in place for the consumer to read; shred it when done.
+By default the value is entered twice and Submit stays disabled until they match, so a mismatch cannot be submitted. `--once` drops the confirm field for a secret you are pasting rather than typing - the source of truth is already on your clipboard, and asking twice only invites two pastes of the same mistake. Either way Cancel and Submit are the only ways out, and Escape cancels; cancelling stages nothing, so the call times out and exits `1`.
+
+The reference is **scheme-prefixed** (see [Relay backend](#relay-backend)), so one consumer handles both backends:
+
+- `keyctl:jlab-passkey:<nonce>.pass` - the value is a kernel key; read it with `keyctl pipe $(keyctl search @u user <desc>)`
+- `file:<path>` - the value is a `0600` file; read the path, and shred it when done
+
+The value never passes through this CLI on the way out - a keyctl-aware consumer resolves the reference and reads the secret itself.
 
 ```bash
-# a passphrase you are setting - typed twice, confirmed
-pass_file=$(jupyterlab-passkey passphrase --prompt "Recovery passphrase") || exit 1
-PASS_RECOVERY_FILE="$pass_file" pass-cli-open --ensure
-shred -u "$pass_file"
+# a passphrase you are setting - typed twice, confirmed. The consumer resolves the ref:
+pass_ref=$(jupyterlab-passkey passphrase --prompt "Recovery passphrase") || exit 1
+PASS_RECOVERY_REF="$pass_ref" pass-cli-open --ensure
 
 # a token you are pasting - once is enough
-tok_file=$(jupyterlab-passkey passphrase --once --prompt "GitHub token") || exit 1
-PASS_SECRET_FILE="$tok_file" pass-cli-save github/api -u stellarshenson -c infrastructure
-shred -u "$tok_file"
+tok_ref=$(jupyterlab-passkey passphrase --once --prompt "GitHub token") || exit 1
+PASS_SECRET_REF="$tok_ref" pass-cli-save github/api -u stellarshenson -c infrastructure
+
+# resolving a reference by hand, either backend:
+case "$pass_ref" in
+  keyctl:*) keyctl pipe "$(keyctl search @u user "${pass_ref#keyctl:}")" ;;
+  file:*)   cat "${pass_ref#file:}" ;;
+esac
 ```
 
-Take the `|| exit 1` seriously here too - a cancel or a timeout otherwise feeds the consumer an empty path.
+Take the `|| exit 1` seriously here too - a cancel or a timeout otherwise feeds the consumer an empty reference. The consumer (`pass-cli`) must understand the reference scheme; that side is updated separately from this extension.
 
 ## `copy`
 
@@ -99,10 +110,10 @@ Reads a secret from `FILE` or stdin and raises a notification whose button copie
 
 - **Fire and forget by default** - it posts the notification and returns; it does not wait for the click, so exit `0` means _posted_, not _copied_
 - **One shot** - the click collects the secret and the relay is deleted in the same breath. Click twice and the second finds nothing
-- **Never in the notification** - the secret is staged in a `0600` relay and the notification carries only a nonce, which is useless without your Jupyter token
+- **Never in the notification** - the secret is staged in a one-shot relay (a kernel key or a `0600` file, see [Relay backend](#relay-backend)) and the notification carries only a nonce, which is useless without your Jupyter token
 - **Trailing newline** - exactly one is stripped, as `$(...)` would; a multi-line secret survives intact
 - **No terminal input** - it refuses a stdin that is a terminal, which would echo the secret into your scrollback. Pipe it in, pass a `FILE`, or use `passphrase --once` to type one
-- **Uncollected** - a secret nobody clicks sits in tmpfs until reboot. A secret whose notification never posted is unstaged on the way out, since nothing could ever collect it
+- **Uncollected** - a secret nobody clicks self-destructs at its TTL on keyctl, or sits in tmpfs until reboot on shm. A secret whose notification never posted is unstaged on the way out, since nothing could ever collect it
 
 ### Waiting for the click
 
@@ -129,6 +140,17 @@ pass-cli get db/prod --field password --quiet --no-clipboard | jupyterlab-passke
 Nothing is reported back to the terminal. In the browser, a click that copies cleanly closes the notification and says nothing - but a clipboard write the browser refuses (the window was not focused, or the click's user activation had expired) is retried quietly for 15 seconds, and if it still cannot land, a second notification appears: "The clipboard needs another click". Its button finishes the copy under a fresh click, with the value held in the page's memory - never re-staged anywhere - until then. A secret is only lost by closing or reloading the tab before that click.
 
 Once it is on the clipboard it is an OS-wide value - any application, and any page you grant clipboard read to, can read it until you overwrite it. That is inherent to wanting to paste it somewhere.
+
+## Relay backend
+
+Every secret this bridge moves lives briefly in a relay between the browser and a local client. There are two backends, chosen once per process:
+
+- **keyctl** (preferred) - a uid-scoped kernel `user` key the kernel destroys at a TTL. The value never swaps to disk and nothing survives a crash
+- **shm** (fallback) - the `0600` file under `/dev/shm/jlab-passkey-$(id -u)`, guarded against a co-tenant squatting the path
+
+The choice is automatic: if a `keyctl` add/search/read round-trip works, keyctl is used; otherwise the CLI falls back to shm and prints one line to **stderr** advising `keyutils`. Force it with `JLAB_PASSKEY_RELAY_BACKEND=keyctl|shm|auto` (default `auto`); `keyctl` fails loud if the keyring is not functional.
+
+keyctl is a durability improvement, not an access-control one: `--alswrv` grants your uid, so any process of yours can read the key - the same exposure as the `0600` file. What it buys is no swap, self-destruct at a TTL, and no disk artifact. The server and CLI must share a uid (both do on a normal single-user server); a server running as another user must use `shm`.
 
 ## Keystore use
 

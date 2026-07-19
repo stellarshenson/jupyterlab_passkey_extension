@@ -114,6 +114,9 @@ function runCli(args: string[]): Promise<IResult> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     JLAB_PASSKEY_RELAY_DIR: RELAY_DIR,
+    // Pin shm so the CLI and the test server agree on the backend, and the tests can
+    // read back the file the server writes. The server config pins the same value.
+    JLAB_PASSKEY_RELAY_BACKEND: 'shm',
     // Pointed at the suite's own port rather than deleted. cli.py's fallback defaults to
     // 8888 when JUPYTER_PORT is absent, which is the single likeliest port for the
     // developer's real lab - and a tokenless lab there would ACCEPT the ingest and pop
@@ -162,6 +165,9 @@ function runCopy(secret: string, args: string[] = []): Promise<IResult> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     JLAB_PASSKEY_RELAY_DIR: RELAY_DIR,
+    // Pin shm so the CLI and the test server agree on the backend, and the tests can
+    // read back the file the server writes. The server config pins the same value.
+    JLAB_PASSKEY_RELAY_BACKEND: 'shm',
     JUPYTER_PORT: PORT
   };
   for (const name of DISCOVERY_ENV) {
@@ -328,7 +334,7 @@ test('a failed ceremony exits non-zero and prints nothing to stdout', async ({
   expect(stderr).toContain('not-allowed');
 });
 
-test('passphrase relays the typed value to a raw 0600 file and prints only its path', async ({
+test('passphrase relays the typed value to a raw 0600 file and prints only a reference', async ({
   page
 }) => {
   await page.goto();
@@ -346,9 +352,12 @@ test('passphrase relays the typed value to a raw 0600 file and prints only its p
   const { code, stdout, stderr } = await done;
   expect(code, `stderr: ${stderr}`).toBe(0);
 
-  const relayPath = stdout.trim();
+  // Under the pinned shm backend the reference is `file:<path>`; the consumer strips
+  // the scheme and reads the file. The value must never transit the terminal.
+  const ref = stdout.trim();
+  expect(ref.startsWith('file:')).toBe(true);
+  const relayPath = ref.slice('file:'.length);
   expect(relayPath.endsWith('.pass')).toBe(true);
-  // The secret must never transit the terminal - only its path may.
   expect(stdout).not.toContain(PASSPHRASE);
   expect(stderr).not.toContain(PASSPHRASE);
 
@@ -497,6 +506,9 @@ test('copy stages nothing when the trigger cannot reach a server', async () => {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     JLAB_PASSKEY_RELAY_DIR: RELAY_DIR,
+    // Pin shm so the CLI and the test server agree on the backend, and the tests can
+    // read back the file the server writes. The server config pins the same value.
+    JLAB_PASSKEY_RELAY_BACKEND: 'shm',
     JUPYTER_RUNTIME_DIR: emptyRuntime,
     // Nothing listens here, so the trigger POST dies on connection refused.
     JUPYTER_PORT: '1'
