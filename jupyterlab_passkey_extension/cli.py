@@ -33,6 +33,7 @@ the button when it pops.
 import argparse
 import base64
 import json
+import math
 import os
 import secrets
 import subprocess
@@ -58,6 +59,18 @@ TRIGGER_TIMEOUT = 10
 # commands wait for the same thing - a human noticing a notification and clicking it -
 # and a second literal would drift from this one the first time anybody retunes it.
 CLICK_TIMEOUT = 120.0
+
+# In --block mode the copy key's TTL is set past the wait deadline by this margin, so
+# the key cannot self-destruct while the wait is still running (on keyctl that would
+# read as a collection - see cmd_copy). It only has to cover the gap between staging
+# the key and the first wait poll, i.e. the trigger POST, so it is generous.
+_COPY_BLOCK_TTL_MARGIN = 60
+
+# Upper bound on a --block --timeout. keyctl stores a key timeout in a 32-bit unsigned
+# int, so a TTL at or beyond 2**32 wraps to something SHORTER than the wait - the key
+# would self-destruct mid-wait and be misread as a collection. This cap sits far below
+# that wrap (and far beyond any real click wait), keeping the staged TTL faithful.
+_MAX_BLOCK_TIMEOUT = 10**8
 
 
 def b64url(data: bytes) -> str:
@@ -358,8 +371,14 @@ def cmd_passphrase(a) -> int:
     refused = "cancelled or the button was never clicked" if a.once else (
         "cancelled, the two entries differed, or the button was never clicked"
     )
-    _wait(nonce, "pass", a.timeout, refused)
-    print(relay.reference(nonce, "pass"))
+    try:
+        _wait(nonce, "pass", a.timeout, refused)
+        print(relay.reference(nonce, "pass"))
+    except OSError as e:
+        # An operator who forced JLAB_PASSKEY_RELAY_BACKEND=keyctl on a host whose
+        # keyring is not functional gets a clean line here, not a traceback - the same
+        # bar the other commands hold. (A missing/quota'd backend surfaces the same way.)
+        raise SystemExit(f"relay backend unavailable: {e}")
     return 0
 
 
@@ -392,6 +411,16 @@ def cmd_copy(a) -> int:
         # something. Refuse rather than lie.
         raise SystemExit("--timeout only applies with --block - without it, copy waits for nothing")
     timeout = CLICK_TIMEOUT if a.timeout is None else a.timeout
+    if a.block and not (0 < timeout <= _MAX_BLOCK_TIMEOUT):
+        # argparse(type=float) accepts inf/nan/negatives/huge values; one range test
+        # rejects them all (nan/inf fail the comparison too). A non-positive or non-
+        # finite deadline is meaningless and would crash the ceil() below or drive the
+        # key TTL to 0/negative (`keyctl timeout 0` clears the expiry - a permanent
+        # secret key); a value beyond the cap would wrap the 32-bit keyctl TTL below the
+        # wait. Refuse before staging so the staged TTL always outlives the wait.
+        raise SystemExit(
+            f"--timeout must be a positive, finite number of seconds (at most {_MAX_BLOCK_TIMEOUT})"
+        )
 
     if a.file == "-" and sys.stdin.isatty():
         # Reading a terminal echoes the secret onto the screen and into the
@@ -433,8 +462,16 @@ def cmd_copy(a) -> int:
         else "A secret is waiting - click to copy it to the clipboard."
     )
 
+    # With --block the CLI itself waits for and cleans up the key, but the key must
+    # outlive that wait: on keyctl a key that self-destructs at its TTL mid-wait looks
+    # exactly like a collection (`keyctl search` fails either way), so --block would
+    # report a secret delivered that nobody collected. Give it a TTL past the wait
+    # deadline so within the wait it can only vanish by being collected. Without
+    # --block the click-whenever default stands; shm files never expire, so this is a
+    # no-op there.
+    stage_ttl = math.ceil(timeout) + _COPY_BLOCK_TTL_MARGIN if a.block else None
     try:
-        relay.stage(nonce, "secret", secret)
+        relay.stage(nonce, "secret", secret, ttl=stage_ttl)
     except OSError as e:
         # A full /dev/shm or an exhausted keyctl quota is the realistic one. Every
         # other failure here answers with a line; this should not answer with a

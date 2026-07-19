@@ -18,12 +18,12 @@ Neither backend isolates a secret from the user's own processes: a same-uid proc
 
 ## `passkey:run`
 
-Runs a WebAuthn ceremony and relays the result to `<relay_dir>/<nonce>.json`.
+Runs a WebAuthn ceremony and relays the result under the nonce (a kernel key on keyctl, a `<relay_dir>/<nonce>.json` file on shm).
 
 | Arg        | Required | Meaning                                            |
 | ---------- | -------- | -------------------------------------------------- |
 | `op`       | yes      | `create` (register) or `get` (assert)              |
-| `nonce`    | yes      | relay filename; `[A-Za-z0-9_-]{16,128}`            |
+| `nonce`    | yes      | relay key/filename; `[A-Za-z0-9_-]{16,128}`        |
 | `rp_id`    | yes      | WebAuthn RP ID - your JupyterLab hostname          |
 | `cred_id`  | `get`    | base64url credential id from a prior `create`      |
 | `prf_salt` | no       | base64url 32-byte salt; evaluates PRF when present |
@@ -74,11 +74,11 @@ Double entry catches a typo in a passphrase being **set**, where nothing else wi
 
 ## `passkey:copy`
 
-Collects the secret a local client staged at `<relay_dir>/<nonce>.secret` and writes it to the user's clipboard. The only command that carries a value **out** to the browser rather than in.
+Collects the secret a local client staged under the nonce (a kernel key on keyctl, a `<relay_dir>/<nonce>.secret` file on shm) and writes it to the user's clipboard. The only command that carries a value **out** to the browser rather than in.
 
 | Arg     | Required | Meaning                                                          |
 | ------- | -------- | ---------------------------------------------------------------- |
-| `nonce` | yes      | relay filename; same guard as above                              |
+| `nonce` | yes      | relay key/filename; same guard as above                          |
 | `label` | no       | names the secret if the page must ask for a second click (below) |
 
 - **Staging** - the local client writes the relay itself (`0600`, atomic); the server never creates one here

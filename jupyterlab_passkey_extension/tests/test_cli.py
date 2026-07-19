@@ -240,6 +240,24 @@ def test_create_prints_cred_id_and_sends_a_user(relay_dir, capsys, monkeypatch, 
     assert seen["user"]["name"] == "alice"
 
 
+def test_ceremony_under_forced_broken_keyctl_exits_one_line_not_a_traceback(monkeypatch):
+    # Forced keyctl on a host whose keyring is non-functional: `backend()` raises OSError
+    # on the first relay touch inside `_wait`, caught into a clean SystemExit. The trap
+    # is `_run`'s `finally: unstage`, which re-enters `backend()` - a raise there would
+    # REPLACE the SystemExit with a raw OSError traceback, breaking the "never a
+    # traceback" contract. unstage is best-effort, so the SystemExit must survive.
+    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
+    monkeypatch.setattr(cli.relay, "_backend_cache", None)
+    monkeypatch.setattr(cli.relay, "_keyctl_probe", lambda: False)
+    monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: None)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_get(_ns(rp_id="h", cred_id="CID", prf_salt=None, timeout=1.0))
+    # A clean one-line message, not a raw OSError bubbling out of the finally.
+    assert not isinstance(exc.value, OSError)
+    assert "relay" in str(exc.value)
+
+
 def test_passphrase_prints_a_reference_never_the_value(relay_dir, capsys, monkeypatch, no_wait):
     # The whole point of the passphrase relay: the secret must not transit the terminal.
     # On shm the reference is `file:<path>`; the consumer reads the value itself.
@@ -649,6 +667,52 @@ def test_copy_block_shreds_the_secret_it_gave_up_on(relay_dir, tmp_path, monkeyp
     with pytest.raises(SystemExit, match="not copied after"):
         cli.cmd_copy(_copy_ns(file=str(src), label=None, block=True, timeout=5.0))
 
+    assert list(relay_dir.iterdir()) == []
+
+
+def test_copy_block_gives_the_key_a_ttl_that_outlives_the_wait(relay_dir, monkeypatch):
+    # On keyctl a key that self-destructs at its TTL mid-wait is indistinguishable from
+    # a collection (`keyctl search` fails either way), so --block would falsely report
+    # delivery. cmd_copy must stage the copy key with a TTL past the wait deadline, so
+    # within the wait it can only vanish by being collected.
+    staged = {}
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(COPY_SECRET + "\n"))
+    monkeypatch.setattr(cli.relay, "stage", lambda n, k, c, ttl=None: staged.update(ttl=ttl))
+    monkeypatch.setattr(cli.relay, "unstage", lambda n, k: None)
+    monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: None)
+    monkeypatch.setattr(cli, "_wait_gone", lambda *a, **kw: None)
+
+    assert cli.cmd_copy(_copy_ns(file="-", label=None, block=True, timeout=5.0)) == 0
+    assert staged["ttl"] is not None and staged["ttl"] > 5.0
+
+
+def test_copy_without_block_uses_the_default_key_ttl(relay_dir, monkeypatch):
+    # No --block means click-whenever: the key keeps its per-kind default expiry (the
+    # wide 900s window), not a wait-scoped one, so it survives for the eventual click.
+    staged = {}
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(COPY_SECRET + "\n"))
+    monkeypatch.setattr(cli.relay, "stage", lambda n, k, c, ttl=None: staged.update(ttl=ttl))
+    monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: None)
+
+    assert cli.cmd_copy(_copy_ns(file="-", label=None)) == 0
+    assert staged["ttl"] is None
+
+
+@pytest.mark.parametrize(
+    "bad", [float("inf"), float("nan"), -60.0, -100.0, 0.0, 1e9, 1e300]
+)
+def test_copy_rejects_a_non_positive_or_non_finite_block_timeout(relay_dir, monkeypatch, bad):
+    # argparse(type=float) accepts inf/nan/negatives/zero/huge. inf/nan would blow up the
+    # ceil() that sets the key TTL (uncaught traceback, not the promised one line); a
+    # value <= -60 would drive that TTL to 0/negative, and `keyctl timeout 0` clears the
+    # expiry - a permanent secret key; a value past the cap would wrap the 32-bit keyctl
+    # TTL below the wait, so the key self-destructs mid-wait and reads as collected.
+    # Refuse the lot before staging.
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(COPY_SECRET + "\n"))
+    monkeypatch.setattr(cli, "_trigger", _never_triggered)
+
+    with pytest.raises(SystemExit, match="positive, finite number of seconds"):
+        cli.cmd_copy(_copy_ns(file="-", label=None, block=True, timeout=bad))
     assert list(relay_dir.iterdir()) == []
 
 

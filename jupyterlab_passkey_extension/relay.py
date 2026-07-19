@@ -212,11 +212,12 @@ def _keyctl_search(desc):
     return r.stdout.decode().strip()
 
 
-def _keyctl_stage(nonce, kind, content):
+def _keyctl_stage(nonce, kind, content, ttl=None):
     desc = _key_desc(nonce, kind)
-    # Drop any stale key of the same description first: padd would otherwise add a
-    # second key of the same name rather than replace it, and search could then
-    # return either.
+    # Defensively clear any key already staged under this exact description before
+    # adding. On @u `keyctl padd` replaces a same-description key in place (the kernel
+    # updates the existing key's payload), so this is belt-and-suspenders - a nonce+kind
+    # is used once - not duplicate-prevention; it just guarantees a clean slate.
     stale = _keyctl_search(desc)
     if stale:
         _keyctl(["unlink", stale, "@u"])
@@ -226,7 +227,18 @@ def _keyctl_stage(nonce, kind, content):
         # traceback, exactly as a full /dev/shm does.
         raise OSError(f"keyctl padd failed: {r.stderr.decode().strip()}")
     kid = r.stdout.decode().strip()
-    _keyctl(["timeout", kid, str(_TTL[kind])])
+    # The TTL is keyctl's whole reason for being here: the key self-destructs even if
+    # the consumer crashes. So a key we cannot give an expiry to must not be left
+    # staged - it would hold the secret until logout, defeating that guarantee, most
+    # sharply for passphrase (never unlinked by us; the TTL is its only backstop).
+    # Check the timeout call and, on failure, unlink and fail loud rather than leave a
+    # no-expiry secret behind. The padd->timeout pair is not atomic; an interrupt
+    # between them is the one residue this cannot close, and it is no worse than the
+    # shm file the tmpfs bounds anyway.
+    t = _keyctl(["timeout", kid, str(ttl if ttl is not None else _TTL[kind])])
+    if t.returncode != 0:
+        _keyctl(["unlink", kid, "@u"])
+        raise OSError(f"keyctl timeout failed: {t.stderr.decode().strip()}")
 
 
 def _keyctl_collect(nonce, kind):
@@ -269,13 +281,18 @@ def _keyctl_probe():
         r = _keyctl(["padd", "user", desc, "@u"], input_bytes=b"probe")
         if r.returncode != 0:
             return False
-        kid = _keyctl_search(desc)
-        if kid is None:
-            return False
-        piped = _keyctl(["pipe", kid])
-        ok = piped.returncode == 0 and piped.stdout == b"probe"
-        _keyctl(["unlink", kid, "@u"])
-        return ok
+        # Unlink in a finally keyed off padd's own id: a search that fails or a pipe
+        # that raises must not leave the probe key lingering to logout (it holds only
+        # b"probe", so this is a resource leak, not a disclosure).
+        kid = r.stdout.decode().strip()
+        try:
+            found = _keyctl_search(desc)
+            if found is None:
+                return False
+            piped = _keyctl(["pipe", found])
+            return piped.returncode == 0 and piped.stdout == b"probe"
+        finally:
+            _keyctl(["unlink", kid, "@u"])
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -315,7 +332,11 @@ def backend():
         _backend_cache = "shm"
     elif choice == "keyctl":
         if not _keyctl_probe():
-            raise RuntimeError(
+            # OSError, not RuntimeError: every relay-failure path this project surfaces
+            # is an OSError, and the handlers (routes `_relay_unavailable`, the CLI's
+            # `except OSError` lines) catch that family - so a forced-but-broken keyctl
+            # answers with a clean 500 / one line, never a traceback.
+            raise OSError(
                 "JLAB_PASSKEY_RELAY_BACKEND=keyctl but keyctl is not functional here"
             )
         _backend_cache = "keyctl"
@@ -328,10 +349,16 @@ def backend():
     return _backend_cache
 
 
-def stage(nonce, kind, content):
-    """Put `content` where the reader will collect it, under this nonce and kind."""
+def stage(nonce, kind, content, ttl=None):
+    """Put `content` where the reader will collect it, under this nonce and kind.
+
+    `ttl` overrides the per-kind default expiry on the keyctl backend - the copy
+    block-wait uses it so the key always outlives the wait (a key that self-destructs
+    mid-wait would read as a collection). shm files never expire, so it is ignored
+    there.
+    """
     if backend() == "keyctl":
-        _keyctl_stage(nonce, kind, content)
+        _keyctl_stage(nonce, kind, content, ttl)
     else:
         write_relay(nonce, f"{nonce}.{kind}", content)
 
@@ -356,11 +383,21 @@ def relay_exists(nonce, kind):
 
 
 def unstage(nonce, kind):
-    """Best-effort destroy, for unwinding a stage that can no longer be collected."""
-    if backend() == "keyctl":
-        _keyctl_unstage(nonce, kind)
-    else:
-        _shm_unstage(nonce, kind)
+    """Best-effort destroy, for unwinding a stage that can no longer be collected.
+
+    Best-effort means it never raises. It runs only on an unwind path - a `finally`, or
+    an exception handler cleaning up a stage - where a raised OSError would REPLACE the
+    error actually being handled (an exception in a `finally` masks the propagating one).
+    A backend that has since become unavailable, or a relay already gone, is nothing to
+    surface here: there was nothing to collect anyway.
+    """
+    try:
+        if backend() == "keyctl":
+            _keyctl_unstage(nonce, kind)
+        else:
+            _shm_unstage(nonce, kind)
+    except OSError:
+        pass
 
 
 def reference(nonce, kind):

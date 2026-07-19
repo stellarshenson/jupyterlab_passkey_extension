@@ -2,6 +2,21 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.0.36] - 2026-07-19
+
+Hardens the keyctl relay backend against seven defects found in a five-round adversarial review, so a key that cannot self-destruct is never left staged and no failure path leaks a secret or masks an error.
+
+### Fixed
+
+- A keyctl key that cannot be given a TTL (its self-destruct) is no longer left staged: the failure removes the key and reports an error, instead of holding the secret with no expiry - most sharply for the passphrase key, which the extension never unlinks itself
+- `copy --block` no longer reports success after the kernel key self-expires during a long wait: the key is now given a TTL that outlives the wait
+- A forced-but-broken `JLAB_PASSKEY_RELAY_BACKEND=keyctl` now surfaces as a clean 500 (server) or a one-line message (CLI) rather than a traceback
+- A relay failure on an unwind path no longer masks the error actually propagating: relay teardown is best-effort and never raises
+- `copy --block --timeout` rejects a non-positive, non-finite, or out-of-range value instead of minting a no-expiry key or wrapping the kernel's 32-bit timeout
+- The keyctl backend probe no longer leaks the probe key it stages
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.0.35] - 2026-07-19
 
 Stages every relayed secret in a kernel keyring key when available, so the value never swaps to disk and self-destructs at a TTL, with the `/dev/shm` file relay as a fallback.
@@ -19,8 +34,6 @@ Stages every relayed secret in a kernel keyring key when available, so the value
 ### Fixed
 
 - The keyctl payload rides stdin, never a process argument, so a secret is not exposed in the process list
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.32] - 2026-07-17
 

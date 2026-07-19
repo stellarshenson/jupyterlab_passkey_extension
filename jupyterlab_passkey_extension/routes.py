@@ -23,8 +23,9 @@ NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
 def _relay_unavailable(handler):
     """Answer a relay-backend failure with a clean 500, never a traceback.
 
-    A keyctl quota, a missing keyctl binary, or a squatted shm dir raises OSError out
-    of stage/collect. The CLI turns the same errors into a one-line message; the
+    A keyctl quota, a missing keyctl binary, a squatted shm dir, or a forced-but-broken
+    `JLAB_PASSKEY_RELAY_BACKEND=keyctl` raises OSError out of stage/collect. The CLI
+    turns the same errors into a one-line message; the
     server must not answer with a stack trace in the Jupyter log. No secret is ever in
     the exception - the value rides stdin or the file, never an argument - but the
     response stays generic regardless.

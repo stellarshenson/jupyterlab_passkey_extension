@@ -388,6 +388,29 @@ async def test_secret_handler_answers_a_relay_failure_with_a_clean_500(jp_fetch,
     assert "relay backend down" not in body
 
 
+async def test_passphrase_handler_answers_a_relay_failure_with_a_clean_500(jp_fetch, monkeypatch):
+    # The third staging handler, guarded identically: a forced-but-broken keyctl (or a
+    # quota / squatted dir) raising OSError out of stage must answer with the handled
+    # 500, never a Tornado traceback carrying the passphrase.
+    import jupyterlab_passkey_extension.relay as relay_mod
+
+    def boom(*a, **k):
+        raise OSError("relay backend down")
+
+    monkeypatch.setattr(relay_mod, "stage", boom)
+
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await jp_fetch(
+            "jupyterlab-passkey-extension", "passphrase",
+            method="POST", body=json.dumps({"nonce": VALID_NONCE, "passphrase": PASSPHRASE}),
+        )
+    assert exc.value.code == 500
+    body = exc.value.response.body.decode()
+    assert "relay backend unavailable" in body
+    assert "relay backend down" not in body
+    assert PASSPHRASE not in body
+
+
 # --- secret: the one handler that reads a relay out rather than writing one in ---
 
 SECRET_VALUE = "s3cr3t-token-value"

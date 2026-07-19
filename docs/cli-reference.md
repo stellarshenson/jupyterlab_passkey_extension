@@ -79,6 +79,8 @@ The reference is **scheme-prefixed** (see [Relay backend](#relay-backend)), so o
 
 The value never passes through this CLI on the way out - a keyctl-aware consumer resolves the reference and reads the secret itself.
 
+A `keyctl:` reference is **time-bounded**: the kernel key self-destructs at its TTL (300s), so the consumer must resolve it promptly - a resolve more than five minutes after entry reads nothing where the same flow succeeds on shm. A `file:` reference persists until reboot (shred it when done).
+
 ```bash
 # a passphrase you are setting - typed twice, confirmed. The consumer resolves the ref:
 pass_ref=$(jupyterlab-passkey passphrase --prompt "Recovery passphrase") || exit 1

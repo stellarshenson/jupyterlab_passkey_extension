@@ -64,12 +64,14 @@ def test_fallback_warning_fires_once(monkeypatch, capsys):
 
 def test_forced_keyctl_fails_loud_when_broken(monkeypatch):
     # An operator who demanded keyctl must hear that it is not there, not be handed a
-    # silent file relay that lacks the properties they asked for.
+    # silent file relay that lacks the properties they asked for. It is an OSError so the
+    # handlers' `except OSError` guards answer with a clean 500 / one line, not a
+    # traceback.
     monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
     monkeypatch.setattr(relay, "_backend_cache", None)
     monkeypatch.setattr(relay, "_keyctl_probe", lambda: False)
 
-    with pytest.raises(RuntimeError, match="not functional"):
+    with pytest.raises(OSError, match="not functional"):
         relay.backend()
 
 
@@ -90,6 +92,65 @@ def test_reference_scheme_per_backend(monkeypatch):
     monkeypatch.setattr(relay, "_keyctl_probe", lambda: True)
     monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
     assert relay.reference(NONCE, "pass") == f"keyctl:jlab-passkey:{NONCE}.pass"
+
+
+def _fake_keyctl_runner(timeout_rc=0, padd_rc=0, kid=b"4242"):
+    """A subprocess.run stand-in answering each keyctl subcommand, so _keyctl_stage can
+    be driven with no kernel keyring. Records every argv for assertions."""
+    calls = []
+
+    def run(cmd, *a, **kw):
+        calls.append(cmd)
+        op = cmd[1] if len(cmd) > 1 else ""
+        if op == "search":
+            rc, out, err = 1, b"", b""  # no stale key of this description
+        elif op == "padd":
+            rc, out, err = padd_rc, kid + b"\n", b"padd boom"
+        elif op == "timeout":
+            rc, out, err = timeout_rc, b"", b"timeout boom"
+        else:  # unlink, pipe
+            rc, out, err = 0, b"", b""
+        return subprocess.CompletedProcess(cmd, rc, out, err)
+
+    return run, calls
+
+
+def test_keyctl_stage_unlinks_and_raises_when_the_ttl_cannot_be_set(monkeypatch):
+    # A key we cannot give an expiry to must not be left staged: it would hold the
+    # secret with no self-destruct, defeating keyctl's one guarantee over the file -
+    # most sharply for passphrase, which we never unlink ourselves.
+    run, calls = _fake_keyctl_runner(timeout_rc=1)
+    monkeypatch.setattr(relay.subprocess, "run", run)
+
+    with pytest.raises(OSError, match="keyctl timeout failed"):
+        relay._keyctl_stage(NONCE, "secret", "x")
+
+    # Unlinked on the way out - no no-expiry secret left behind.
+    assert ["keyctl", "unlink", "4242", "@u"] in calls
+
+
+def test_unstage_is_best_effort_when_the_backend_is_unavailable(monkeypatch):
+    # unstage runs only on an unwind path (a finally / exception handler). If it raised -
+    # e.g. a forced-but-broken keyctl making backend() raise - it would MASK the error
+    # actually propagating. It must swallow and return, never raise.
+    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
+    monkeypatch.setattr(relay, "_backend_cache", None)
+    monkeypatch.setattr(relay, "_keyctl_probe", lambda: False)
+
+    relay.unstage(NONCE, "json")  # must not raise
+
+
+def test_keyctl_stage_honours_a_ttl_override(monkeypatch):
+    # The copy block-wait passes a TTL past its deadline so the key outlives the wait;
+    # the override must reach `keyctl timeout`, not the per-kind default.
+    run, calls = _fake_keyctl_runner()
+    monkeypatch.setattr(relay.subprocess, "run", run)
+
+    relay._keyctl_stage(NONCE, "secret", "x", ttl=7)
+
+    timeouts = [c for c in calls if len(c) >= 2 and c[1] == "timeout"]
+    assert timeouts and timeouts[0][-1] == "7"
+    assert timeouts[0][-1] != str(relay._TTL["secret"])
 
 
 # --------------------------------------------------------------------------- #

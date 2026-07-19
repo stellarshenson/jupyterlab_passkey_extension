@@ -27,6 +27,7 @@ A kernel-keyring relay backend for the secrets this extension moves, chosen auto
 
 - [x] **Probe, not presence** - keyctl is chosen only when a full add -> search -> pipe -> unlink round-trip on `@u` succeeds, not merely when the binary is on PATH (the session-keyring linking caveat can make a present binary non-functional)
   - log: 2026-07-18 criterion added
+  - log: 2026-07-19 probe key now unlinked in a `finally` keyed off padd's id, so a post-padd failure cannot leak it (review finding)
 - [x] **Cross-session reach** - every keyctl op names `@u` explicitly, which resolves across sessions on its own; no `keyctl link @u @s` is needed and none is done. The probe proves the round-trip end to end, so a host where `@u` were unreachable falls back to shm rather than staging into a key the reader cannot find
   - log: 2026-07-18 criterion added
   - log: 2026-07-19 implemented as explicit `@u` naming, not session linking - simpler and probe-verified; cross-process handoff tested
@@ -34,6 +35,8 @@ A kernel-keyring relay backend for the secrets this extension moves, chosen auto
   - log: 2026-07-18 criterion added
 - [x] **Override** - `JLAB_PASSKEY_RELAY_BACKEND` = `auto` (default) / `keyctl` / `shm`; `keyctl` fails loud if the probe fails, `shm` forces the file relay, `auto` prefers keyctl and falls back
   - log: 2026-07-18 criterion added
+  - log: 2026-07-19 forced-but-broken `keyctl` raises `OSError` (not `RuntimeError`), so the handlers' `except OSError` guards answer with a clean 500 / one line, never a traceback (review finding); passphrase's wait/reference now guarded too
+  - log: 2026-07-19 `unstage` made best-effort (never raises): `_run`'s `finally: unstage` re-enters `backend()`, and a raise in a `finally` would MASK the clean `SystemExit` with an `OSError` traceback on `create`/`get` (review finding); `test_ceremony_under_forced_broken_keyctl_exits_one_line_not_a_traceback`, `test_unstage_is_best_effort_when_the_backend_is_unavailable`
 - [x] **Fallback warning** - on fallback to shm, one warning on **stderr** (never stdout - it carries the result): "keyctl unavailable; using /dev/shm relay (swappable, orphaned on crash) - install keyutils for kernel-keyring relays"
   - log: 2026-07-18 criterion added
 - [x] **Warning once** - the warning fires once per process, not once per relay
@@ -63,6 +66,12 @@ Writer and reader per relay, and whether keyctl is transparent to the caller.
 - [x] **TTL** - ceremony `json` and passphrase `pass` keys expire at 300s; copy `secret` at 900s, since the user may not click its notification at once; all via `keyctl timeout`
   - log: 2026-07-18 criterion added
   - log: 2026-07-19 TTLs set to json/pass 300s, secret 900s (was proposed 120/300); copy widened for the click-whenever window
+- [x] **TTL set is checked** - the `keyctl timeout` return code is checked; a key that cannot be given an expiry is unlinked and the stage fails loud, never left holding a secret with no self-destruct (the padd->timeout window is non-atomic and accepted as no-worse-than-shm)
+  - log: 2026-07-19 criterion added + implemented (review finding); `test_keyctl_stage_unlinks_and_raises_when_the_ttl_cannot_be_set`
+- [x] **Copy `--block` outlives the wait** - in `--block` the copy key's TTL is set past the wait deadline (`ceil(timeout)` + margin), so a key vanishing during the wait can only mean collection, never expiry - otherwise `--block` would report a secret delivered that TTL-expired uncollected (keyctl only; shm files never expire)
+  - log: 2026-07-19 criterion added + implemented (review finding); `test_copy_block_gives_the_key_a_ttl_that_outlives_the_wait`
+  - log: 2026-07-19 `--block --timeout` must be positive and finite - inf/nan would crash `ceil()`, and `<= -60` would drive the TTL to 0/negative (`keyctl timeout 0` clears the expiry); rejected before staging (review finding); `test_copy_rejects_a_non_positive_or_non_finite_block_timeout`
+  - log: 2026-07-19 also capped at 1e8s - keyctl stores the TTL in a 32-bit unsigned int, so a value at/beyond 2^32 wraps below the wait, re-opening the mid-wait self-destruct (review finding); one range test `0 < timeout <= 1e8` subsumes non-finite/non-positive/oversized
 
 ## Passphrase consumer contract
 
@@ -76,6 +85,8 @@ The passphrase value must reach a tool outside this extension. The CLI prints a 
   - log: 2026-07-18 criterion added
 - [x] **Consumer stays one-shot-optional** - keyctl passphrase is not unlinked on read (mirrors the file the consumer shreds today); the kernel TTL is the backstop, and the consumer may unlink after use
   - log: 2026-07-18 criterion added
+- [x] **Reference is time-bounded on keyctl** - a `keyctl:` reference resolves only until its 300s TTL; the consumer must resolve promptly, where the `file:` form persists until reboot - documented in cli-reference.md as a backend asymmetry, not silently different
+  - log: 2026-07-19 criterion added (review finding); documented, TTL unchanged (deliberate)
 - [x] **Docs: worked example** - cli-reference.md passphrase examples show the keyctl consumer form beside the file form, and the `pass-cli` integration the vault side must match
   - log: 2026-07-18 criterion added
 
