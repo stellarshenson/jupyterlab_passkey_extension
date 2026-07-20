@@ -2,6 +2,18 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.0.37] - 2026-07-21
+
+Makes the relay handoff survive a backend split between the writer and the reader, so a Jupyter server still running an older build (which stages the secret as a `/dev/shm` file) can hand off to a newer keyctl-preferring client without the secret stranding uncollected.
+
+### Fixed
+
+- A keyctl-preferring reader now also checks the `/dev/shm` file relay when its kernel key is empty, so a secret staged by a writer on the other backend is still collected instead of stranding under the same nonce in a store the reader never looked at. Covers the ceremony result, the copy secret, the passphrase reference, and cleanup
+- The `passphrase` reference now names the file when the value actually landed in `/dev/shm` under that split, instead of printing a `keyctl:` handle that resolves to an empty keyring
+- A relay directory found to be squatted during the fallback read is surfaced once to stderr rather than silently swallowed
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.0.36] - 2026-07-19
 
 Hardens the keyctl relay backend against seven defects found in a five-round adversarial review, so a key that cannot self-destruct is never left staged and no failure path leaks a secret or masks an error.
@@ -14,8 +26,6 @@ Hardens the keyctl relay backend against seven defects found in a five-round adv
 - A relay failure on an unwind path no longer masks the error actually propagating: relay teardown is best-effort and never raises
 - `copy --block --timeout` rejects a non-positive, non-finite, or out-of-range value instead of minting a no-expiry key or wrapping the kernel's 32-bit timeout
 - The keyctl backend probe no longer leaks the probe key it stages
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.35] - 2026-07-19
 

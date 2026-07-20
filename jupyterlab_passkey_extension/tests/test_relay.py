@@ -246,3 +246,114 @@ def test_keyctl_sets_a_ttl(monkeypatch):
     timeouts = [c for c in calls if len(c) >= 2 and c[1] == "timeout"]
     assert timeouts, "no keyctl timeout was set on the staged key"
     assert timeouts[0][-1] == str(relay._TTL["secret"])
+
+
+# --------------------------------------------------------------------------- #
+# Cross-backend read - a keyctl reader still collects a relay a shm writer staged.
+# The writer and the reader are different processes and can split (a server still on
+# the pre-keyctl file relay, a newer keyctl-preferred CLI); the keyctl reader must
+# fall back to the file store or the handoff strands silently.
+# --------------------------------------------------------------------------- #
+
+
+def test_keyctl_reader_falls_back_to_the_shm_relay(monkeypatch, tmp_path):
+    # The version-skew split that stranded a real unlock: a Jupyter server still on the
+    # pre-keyctl code stages the ceremony result as a /dev/shm file while a newer,
+    # keyctl-preferred CLI reads. No real keyring needed - the keyctl store is mocked
+    # empty and the value is placed in shm; the reader must cross-read it.
+    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setattr(relay, "_backend_cache", "keyctl")
+    monkeypatch.setattr(relay, "_keyctl_collect", lambda n, k: None)
+    monkeypatch.setattr(relay, "_keyctl_exists", lambda n, k: False)
+
+    relay.write_relay(NONCE, f"{NONCE}.json", "from-a-shm-server")
+
+    assert relay.backend() == "keyctl"
+    assert relay.relay_exists(NONCE, "json")  # the wait loop sees the shm store
+    assert relay.collect(NONCE, "json") == "from-a-shm-server"  # and cross-reads it
+    # One-shot across the split: the file is unlinked, a second collect finds nothing.
+    assert relay.collect(NONCE, "json") is None
+    assert not relay.relay_exists(NONCE, "json")
+
+
+def test_keyctl_unstage_also_clears_the_shm_relay(monkeypatch, tmp_path):
+    # unstage runs on an unwind path; a stage that landed on the OTHER backend must not
+    # be left behind. A keyctl-primary unstage clears the file relay too.
+    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setattr(relay, "_backend_cache", "keyctl")
+    monkeypatch.setattr(relay, "_keyctl_unstage", lambda n, k: None)  # keyring side no-op
+
+    relay.write_relay(NONCE, f"{NONCE}.secret", "orphan")
+    assert relay._shm_exists(NONCE, "secret")
+    relay.unstage(NONCE, "secret")
+    assert not relay._shm_exists(NONCE, "secret")
+
+
+def test_keyctl_cross_read_is_best_effort_on_a_squatted_shm(monkeypatch, tmp_path):
+    # A co-tenant squatting the predictable shm path must not become a crash on a keyctl
+    # reader that would otherwise never touch shm. The cross-read swallows the squat
+    # guard's error and reports nothing staged.
+    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setattr(relay, "_backend_cache", "keyctl")
+    monkeypatch.setattr(relay, "_keyctl_collect", lambda n, k: None)
+    relay.write_relay(NONCE, f"{NONCE}.json", "irrelevant")  # a file is plainly present
+
+    def boom(n, k):
+        raise PermissionError("relay dir is owned by someone else")
+
+    monkeypatch.setattr(relay, "_shm_collect", boom)  # ...but reading it raises
+    assert relay.collect(NONCE, "json") is None  # swallowed, not propagated
+
+
+@needs_keyctl
+def test_keyctl_reader_collects_a_real_shm_staged_relay(monkeypatch, tmp_path):
+    # End to end on a real keyring: a shm-staged relay is collected by a genuine
+    # keyctl-primary process (its own kernel key empty), exercising the real cross-read.
+    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "shm")
+    monkeypatch.setattr(relay, "_backend_cache", None)
+    relay.stage(NONCE, "json", "real-cross-read")
+
+    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
+    monkeypatch.setattr(relay, "_backend_cache", None)
+    assert relay.backend() == "keyctl"
+    assert relay.collect(NONCE, "json") == "real-cross-read"
+
+
+def test_reference_names_the_shm_file_when_a_shm_writer_staged_the_pass(
+    monkeypatch, tmp_path
+):
+    # passphrase resolves OUT of process via reference(), not collect(). On the skew split
+    # (old shm server stages the pass file, new keyctl CLI prints the handle), a keyctl:
+    # handle resolves to an empty keyring and hands the consumer nothing while the secret
+    # orphans in the file. reference() must point at the file where the value actually is.
+    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setattr(relay, "_backend_cache", "keyctl")
+    monkeypatch.setattr(relay, "_keyctl_exists", lambda n, k: False)  # keyring empty
+    relay.write_relay(NONCE, f"{NONCE}.pass", "the-passphrase")  # value in shm
+
+    ref = relay.reference(NONCE, "pass")
+    assert ref.startswith("file:")
+    assert ref.endswith(f"{NONCE}.pass")
+
+    # When the kernel key IS present it still prefers the keyctl handle.
+    monkeypatch.setattr(relay, "_keyctl_exists", lambda n, k: True)
+    assert relay.reference(NONCE, "pass") == f"keyctl:jlab-passkey:{NONCE}.pass"
+
+
+def test_keyctl_cross_read_warns_once_on_a_squatted_shm(monkeypatch, tmp_path, capsys):
+    # The swallowed squat is a real security signal; a keyctl reader that only touches
+    # shm as a fallback must not crash, but it must not bury the squat in a bare timeout
+    # either - it surfaces one stderr line and reports nothing staged.
+    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setattr(relay, "_backend_cache", "keyctl")
+    monkeypatch.setattr(relay, "_keyctl_collect", lambda n, k: None)
+    relay.write_relay(NONCE, f"{NONCE}.json", "irrelevant")  # a file is plainly present
+
+    def squat(n, k):
+        raise PermissionError("owned by uid 9999, not ours")
+
+    monkeypatch.setattr(relay, "_shm_collect", squat)
+    assert relay.collect(NONCE, "json") is None  # swallowed, not propagated
+    err = capsys.readouterr().err
+    assert "shm relay dir unreadable" in err  # ...but surfaced once

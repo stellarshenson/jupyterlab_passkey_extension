@@ -10,9 +10,17 @@ Two backends, one chosen per process at first use:
   the predictable path. The fallback when keyctl is not functional.
 
 The writer and the reader are different processes (the Jupyter server and the
-CLI), so the backend must be a property of the environment, not a per-call
-choice: both probe independently and, being same-uid on one host, agree. A
-reader that somehow guessed wrong finds nothing rather than the wrong value.
+CLI), so the backend is a property of the environment, not a per-call choice:
+each probes independently. They usually agree, but they can split - a server
+still running the pre-keyctl code stages a /dev/shm file while a newer,
+keyctl-preferred CLI reads the keyring. So a keyctl reader also cross-reads the
+file relay when its kernel key is empty (`collect`, `relay_exists`, `reference`,
+`unstage`); a wrong guess still never reads the wrong value, and the handoff no
+longer strands silently on that split. Only the READ side is made tolerant: the
+writer stays single-backend so keyctl keeps its never-on-disk guarantee. So the
+mirror split - a keyctl writer staging a kernel key for a reader that cannot read
+keyctl, an old shm-only server on the `copy` path - is an unrecoverable miss, a
+clean failure and never a wrong value, not something a read-side fix can close.
 
 This module has no tornado dependency: the CLI imports it too.
 """
@@ -183,6 +191,33 @@ def _shm_unstage(nonce, kind):
         os.unlink(os.path.join(relay_dir(), f"{nonce}.{kind}"))
     except OSError:
         pass
+
+
+def _shm_collect_opportunistic(nonce, kind):
+    """Best-effort cross-read of the shm relay for a keyctl-primary reader.
+
+    A writer on the other backend - a server still on the file relay - may have staged
+    here. Read it only if a file is plainly present, and treat a squatted or vanished
+    store as simply nothing rather than raising: this is a fallback, not the primary
+    path, so a co-tenant's stray file at the predictable name must not turn into a crash
+    on a keyctl reader that would otherwise never touch shm at all.
+    """
+    if not _shm_exists(nonce, kind):
+        return None
+    try:
+        return _shm_collect(nonce, kind)
+    except PermissionError as e:
+        # A squatted relay dir raises here (ensure_relay_dir's ownership check). The
+        # shm-PRIMARY path lets this same condition fail loud; a keyctl reader touching
+        # shm only as a fallback must not crash, but a squat is a real security signal,
+        # so surface it to stderr (collect runs once per flow, not in a poll loop)
+        # rather than bury it in a bare timeout.
+        print(f"jlab-passkey: shm relay dir unreadable ({e}); ignoring", file=sys.stderr)
+        return None
+    except OSError:
+        # A benign race - the file vanished between the exists check and the open - is
+        # simply "nothing staged here".
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -371,14 +406,23 @@ def collect(nonce, kind):
     cannot leave it for a second collector.
     """
     if backend() == "keyctl":
-        return _keyctl_collect(nonce, kind)
+        v = _keyctl_collect(nonce, kind)
+        # Cross-read the file relay when the kernel key is empty: the writer may be on
+        # the other backend - a Jupyter server still running the pre-keyctl code stages
+        # the ceremony result as a /dev/shm file while this keyctl-preferred reader
+        # watches the keyring. Without this the handoff strands silently (same nonce,
+        # two stores) and the caller just waits out its timeout.
+        return v if v is not None else _shm_collect_opportunistic(nonce, kind)
     return _shm_collect(nonce, kind)
 
 
 def relay_exists(nonce, kind):
     """Whether a value is staged - for the CLI's wait loops. Reads nothing."""
     if backend() == "keyctl":
-        return _keyctl_exists(nonce, kind)
+        # OR the shm store: the wait loop must SEE a relay staged by a writer on the
+        # other backend before collect can cross-read it. _shm_exists is a bare path
+        # check - no squat guard, no mkdir - so it stays cheap on every 0.4s tick.
+        return _keyctl_exists(nonce, kind) or _shm_exists(nonce, kind)
     return _shm_exists(nonce, kind)
 
 
@@ -392,12 +436,21 @@ def unstage(nonce, kind):
     surface here: there was nothing to collect anyway.
     """
     try:
-        if backend() == "keyctl":
-            _keyctl_unstage(nonce, kind)
-        else:
-            _shm_unstage(nonce, kind)
+        primary = backend()
     except OSError:
-        pass
+        # A forced-but-broken keyctl backend - nothing was staged, nothing to clear.
+        return
+    if primary == "keyctl":
+        try:
+            _keyctl_unstage(nonce, kind)
+        except OSError:
+            pass
+    # Clear the file relay for BOTH backends, and independently of the keyctl side above:
+    # on a keyctl unwind it removes a relay a shm writer left behind, and it must still
+    # run if the keyctl unlink just raised (a keyctl binary that vanished mid-process is
+    # exactly when the shm relay would otherwise be stranded). _shm_unstage swallows its
+    # own OSError, so this is the best-effort tail the docstring promises.
+    _shm_unstage(nonce, kind)
 
 
 def reference(nonce, kind):
@@ -412,7 +465,15 @@ def reference(nonce, kind):
 
     The value itself never passes through this process on the way out - the
     consumer reads the key or the file directly.
+
+    Cross-backend aware, symmetric with `collect`: a keyctl process names the file
+    when the value actually landed in shm (a writer still on the file relay). Without
+    this the `passphrase` skew would print a `keyctl:` handle for a secret sitting in
+    /dev/shm, and the consumer would resolve an empty keyring - handed nothing while
+    the secret orphaned in the file, worse than the clean timeout it replaced.
     """
     if backend() == "keyctl":
+        if not _keyctl_exists(nonce, kind) and _shm_exists(nonce, kind):
+            return f"file:{os.path.join(relay_dir(), f'{nonce}.{kind}')}"
         return f"keyctl:{_key_desc(nonce, kind)}"
     return f"file:{os.path.join(relay_dir(), f'{nonce}.{kind}')}"
