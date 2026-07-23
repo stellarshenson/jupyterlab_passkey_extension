@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.0.38] - 2026-07-23
+
+Makes the copy-recovery integration test deterministic so the Build workflow's Galata job is no longer flaky. No runtime behaviour changes.
+
+### Fixed
+
+- The `copy re-offers the click when even the recovery write is refused` Galata test no longer fails intermittently under slow CI. It now waits for the dismissed recovery toast to fully detach from the DOM before clicking the re-offer, instead of relying on toast ordering or a settle count, so exactly one clipboard button exists at click time
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.0.37] - 2026-07-21
 
 Makes the relay handoff survive a backend split between the writer and the reader, so a Jupyter server still running an older build (which stages the secret as a `/dev/shm` file) can hand off to a newer keyctl-preferring client without the secret stranding uncollected.
@@ -11,8 +21,6 @@ Makes the relay handoff survive a backend split between the writer and the reade
 - A keyctl-preferring reader now also checks the `/dev/shm` file relay when its kernel key is empty, so a secret staged by a writer on the other backend is still collected instead of stranding under the same nonce in a store the reader never looked at. Covers the ceremony result, the copy secret, the passphrase reference, and cleanup
 - The `passphrase` reference now names the file when the value actually landed in `/dev/shm` under that split, instead of printing a `keyctl:` handle that resolves to an empty keyring
 - A relay directory found to be squatted during the fallback read is surfaced once to stderr rather than silently swallowed
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.36] - 2026-07-19
 

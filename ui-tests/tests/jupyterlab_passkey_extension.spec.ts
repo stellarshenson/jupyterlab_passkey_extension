@@ -610,19 +610,35 @@ test('copy re-offers the click when even the recovery write is refused', async (
     nonce
   );
 
-  // First offer up; click it while the clipboard is STILL refusing.
+  // First offer up. Pin it so we can wait it fully out of the DOM before
+  // touching the re-offer: a refused recovery click dismisses its own toast and
+  // emits a fresh one (see copy.ts offerRecovery), so the spent offer animates
+  // out while the new one is already up. That overlap is incidental to what this
+  // test asserts, and coping with it by timing (settle-count / pick-newest) only
+  // trades one race for another. Click it while the clipboard is STILL refusing.
   const button = page.locator('.jp-toast-button', {
     hasText: 'Copy to clipboard'
   });
   await expect(button).toHaveCount(1);
+  const spentOffer = await page
+    .locator('.jp-toast-message', { hasText: 'needs another click' })
+    .elementHandle();
   await button.first().click();
 
-  // Below this rung there is nothing, so the offer must come back.
+  // Wait for the spent toast to leave the DOM entirely (detached, not merely
+  // mid-exit-animation and still matchable). Below this rung there is nothing, so
+  // the offer must have come back - once the spent one is gone, exactly one
+  // recovery offer remains and it is the live re-offer.
+  await page.waitForFunction(
+    node => node === null || !node.isConnected,
+    spentOffer
+  );
   await expect(
     page.locator('.jp-toast-message', { hasText: 'needs another click' })
-  ).toHaveCount(1, { timeout: 15000 });
+  ).toHaveCount(1);
 
-  // And the returned offer still works once the refusal clears.
+  // And the returned offer still works once the refusal clears. With the spent
+  // toast gone there is a single, unambiguous button to click.
   await page.evaluate(() => ((window as any).__clipAllowed = true));
   await page.locator('.jp-toast-button[title="Copy to clipboard"]').click();
   await expect
