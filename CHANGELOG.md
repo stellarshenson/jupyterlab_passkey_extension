@@ -2,6 +2,22 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.0.43] - 2026-07-24
+
+Makes the kernel-keyring relay actually available inside a container, tells the truth when it is not, and ends the wait as soon as a passphrase dialog is dismissed.
+
+### Added
+
+- `--debug` on every subcommand, reporting the relay backend decision on stderr - which backend was chosen, where `keyctl` was found, and, when keyctl was rejected, the exact step that failed with the kernel's own message. stdout still carries only the result
+
+### Fixed
+
+- The keyctl relay is no longer silently downgraded to the `/dev/shm` file inside a container. A kernel `user` key grants read to the key's **possessor**, and a process possesses a key only when it is reachable from its session keyring - which container-spawned processes (a `docker exec`, a JupyterHub spawner, a JupyterLab terminal) never get, because `pam_keyinit` does not run for them. Staging and searching both succeeded and only the read was refused, so the probe rejected a keyctl that was installed and working. It now links the user keyring into the session before testing, establishing possession for the server and the CLI alike
+- The fallback warning named the wrong cause. It said "install keyutils" whatever went wrong - useless advice on a host where keyutils is installed and the kernel is refusing the syscall. It now distinguishes a sandbox refusal (a rootless or user-namespaced container, where no package helps), a possession failure, and a genuinely missing binary, which is the only case that still asks for keyutils
+- Dismissing the passphrase dialog no longer leaves the CLI waiting out its full timeout. Cancel and Escape relayed nothing, which is indistinguishable from a button nobody has clicked, so `passphrase` polled for 120s before reporting a refusal made instantly. The dialog now signals the cancel through a marker that carries no secret, and the command exits at once
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.0.41] - 2026-07-24
 
 Adds `show`, a command that displays a code in a popup rendered so a screen scraper cannot read it, and makes every command keep working when the calling process is detached from its terminal.
@@ -11,8 +27,6 @@ Adds `show`, a command that displays a code in a popup rendered so a screen scra
 - `show` command, `passkey:show` frontend command, and an authenticated one-shot `render` endpoint: a local client stages a code (an authenticator enrolment code, a pairing code) and the browser shows it as a server-rendered, distorted image. The code never reaches the page as text - it is absent from the notification broadcast, the page DOM, and the accessibility tree - and CAPTCHA-style distortion means an OCR pass on a screenshot still has to beat it. The dialog image carries empty `alt` text by design
 - `Pillow>=10.1` as a dependency, used by the `render` endpoint to draw the code (no font file ships - it uses Pillow's scalable default)
 - Every subcommand now ignores `SIGHUP`, so a notification, popup or query raised by a backgrounded process keeps waiting for its click after the terminal that launched it has closed - notifications, popups and queries work the same detached as attached
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.38] - 2026-07-23
 

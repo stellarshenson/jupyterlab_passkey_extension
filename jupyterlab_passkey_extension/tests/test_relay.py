@@ -46,7 +46,12 @@ def test_auto_falls_back_to_shm_with_one_warning(monkeypatch, capsys):
     assert relay.backend() == "shm"
     err = capsys.readouterr().err
     assert "keyctl unavailable" in err
-    assert "keyutils" in err
+    # The warning carries the recorded cause and points at --debug for the rest. It must
+    # NOT tell every operator to install keyutils: where the kernel refuses the syscall
+    # (a rootless container) keyutils is already installed and that advice sends them
+    # after a package that changes nothing.
+    assert "the probe round-trip failed" in err
+    assert "--debug" in err
     # Nothing to stdout - it carries the CLI result.
     assert capsys.readouterr().out == ""
 
@@ -357,3 +362,65 @@ def test_keyctl_cross_read_warns_once_on_a_squatted_shm(monkeypatch, tmp_path, c
     assert relay.collect(NONCE, "json") is None  # swallowed, not propagated
     err = capsys.readouterr().err
     assert "shm relay dir unreadable" in err  # ...but surfaced once
+
+
+def test_probe_detail_names_the_sandbox_on_eperm(monkeypatch):
+    """An EPERM from the kernel must not be reported as a missing package.
+
+    This is the rootless / user-namespaced container case: keyutils is installed and
+    working, and the kernel refuses the keyring syscall outright. Telling the operator
+    to install keyutils there sends them after a package they already have.
+    """
+    detail = relay._explain_keyctl_failure("padd", b"add_key: Operation not permitted")
+    assert "kernel refused" in detail
+    assert "rootless" in detail
+    assert "install keyutils" not in detail
+
+
+def test_probe_detail_distinguishes_unpossessed_keyring(monkeypatch):
+    detail = relay._explain_keyctl_failure(
+        "search", b"keyctl_search: Required key not available"
+    )
+    assert "not reachable from this session" in detail
+    assert "rootless" not in detail
+
+
+def test_probe_detail_reports_a_missing_binary(monkeypatch):
+    monkeypatch.setattr(relay.shutil, "which", lambda _: None)
+    assert relay._keyctl_probe() is False
+    assert "not on PATH" in relay._probe_detail
+    assert "install keyutils" in relay._probe_detail
+
+
+def test_probe_possesses_the_user_keyring_before_testing_it(monkeypatch):
+    """`search @u` reads possession, and possession reaches a child only through the
+    session keyring - so the probe must link @u into @s before the round-trip, or a
+    fresh session silently downgrades to the file relay."""
+    calls = []
+
+    def fake(args, input_bytes=None):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1, b"", b"nope")
+
+    monkeypatch.setattr(relay.shutil, "which", lambda _: "/usr/bin/keyctl")
+    monkeypatch.setattr(relay, "_keyctl", fake)
+    relay._keyctl_probe()
+    assert calls[0] == ["link", "@u", "@s"]
+
+
+def test_debug_report_names_the_backend_and_never_a_secret(monkeypatch):
+    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "shm")
+    monkeypatch.setattr(relay, "_backend_cache", None)
+    report = relay.debug_report()
+    assert "relay: backend=shm" in report
+    assert "JLAB_PASSKEY_RELAY_BACKEND=shm" in report
+
+
+def test_probe_detail_names_possession_on_read_denied():
+    """The field failure: padd and search both succeed, only the read is refused,
+    because a user key grants READ to the possessor alone. It must not be reported as
+    a sandbox or a missing package - the remedy is linking @u into the session."""
+    detail = relay._explain_keyctl_failure("pipe", b"keyctl_read_alloc: Permission denied")
+    assert "does not possess the @u keyring" in detail
+    assert "rootless" not in detail
+    assert "install keyutils" not in detail

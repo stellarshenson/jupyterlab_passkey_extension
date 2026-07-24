@@ -238,18 +238,28 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
     _say(f"click '{label}' in your JupyterLab tab")
 
 
-def _wait(nonce: str, kind: str, timeout: float, on_timeout: str) -> None:
+def _wait(nonce: str, kind: str, timeout: float, on_timeout: str,
+          watch_cancel: bool = False) -> None:
     """Block until the relay is staged.
 
     Existence is enough: a relay is staged atomically (the file lands via
     os.replace, the key via a single padd), so what a reader then finds is whole -
     see `relay.stage`. The poll reads nothing, so a squatted shm dir cannot raise
     here; that check fires at collect time.
+
+    With `watch_cancel`, a `cancel` marker staged by a dismissed dialog ends the wait
+    at once. Without it a refusal is indistinguishable from an unclicked button, so
+    the user waits out the full timeout to be told what they already decided.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if relay.relay_exists(nonce, kind):
             return
+        if watch_cancel and relay.relay_exists(nonce, "cancel"):
+            # Consume the marker: it is one-shot like every other relay, and leaving it
+            # would strand a key until its TTL for a nonce nothing will use again.
+            relay.unstage(nonce, "cancel")
+            raise SystemExit("cancelled")
         time.sleep(0.4)
     # One last look. The final sleep straddles the deadline, so a relay landing in that
     # window would otherwise be declared missing while it is really there - failing a
@@ -400,7 +410,7 @@ def cmd_passphrase(a) -> int:
         "cancelled, the two entries differed, or the button was never clicked"
     )
     try:
-        _wait(nonce, "pass", a.timeout, refused)
+        _wait(nonce, "pass", a.timeout, refused, watch_cancel=True)
         print(relay.reference(nonce, "pass"))
     except OSError as e:
         # An operator who forced JLAB_PASSKEY_RELAY_BACKEND=keyctl on a host whose
@@ -679,6 +689,15 @@ cannot contaminate it.
         metavar="SECONDS",
         help=f"how long to wait for the click before giving up and exiting 1 (default {CLICK_TIMEOUT:.0f})",
     )
+    # --debug rides its own parent so EVERY subcommand takes it, including the two that
+    # want no --timeout. It reports which relay backend was chosen and, when keyctl was
+    # rejected, exactly which step the kernel refused - the question that otherwise costs
+    # a manual keyctl round-trip to answer. stderr only: stdout carries the result.
+    debugp = argparse.ArgumentParser(add_help=False)
+    debugp.add_argument(
+        "--debug", action="store_true",
+        help="report the relay backend decision on stderr before running",
+    )
     sub = p.add_subparsers(dest="op", required=True, metavar="COMMAND")
 
     c = _sub(
@@ -694,7 +713,7 @@ whatever this passkey unlocks.
 example:
   cred_id=$(jupyterlab-passkey create --rp-id lab.example.com) || exit 1
 """,
-        parents=[common],
+        parents=[common, debugp],
     )
     c.add_argument(
         "--rp-id", required=True, metavar="HOSTNAME",
@@ -722,7 +741,7 @@ example:
   prf=$(jupyterlab-passkey get --rp-id lab.example.com --cred-id "$cred_id" \\
           --prf-salt "$salt") || exit 1
 """,
-        parents=[common],
+        parents=[common, debugp],
     )
     g.add_argument(
         "--rp-id", required=True, metavar="HOSTNAME",
@@ -772,7 +791,7 @@ examples:
     file:*)   cat "${pass_ref#file:}" ;;
   esac
 """,
-        parents=[common],
+        parents=[common, debugp],
     )
     s.add_argument(
         "--prompt", metavar="TEXT",
@@ -826,6 +845,7 @@ examples:
   # wait for it to land before moving on, and leave nothing behind if it does not
   ... | jupyterlab-passkey copy --label "DB password" --block || exit 1
 """,
+        parents=[debugp],
     )
     cp.add_argument(
         "file", nargs="?", default="-", metavar="FILE",
@@ -872,6 +892,7 @@ examples:
   # from a file
   jupyterlab-passkey show ~/pairing-code.txt
 """,
+        parents=[debugp],
     )
     sh.add_argument(
         "file", nargs="?", default="-", metavar="FILE",
@@ -894,6 +915,10 @@ examples:
         return 2
 
     a = p.parse_args(argv)
+    if getattr(a, "debug", False):
+        # Before the command runs, so the backend is on the record even if what follows
+        # times out. _say, not print: a closed stderr must not fail the command.
+        _say(relay.debug_report())
     return a.func(a)
 
 

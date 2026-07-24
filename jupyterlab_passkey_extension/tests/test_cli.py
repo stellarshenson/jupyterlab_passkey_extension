@@ -16,6 +16,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -46,7 +47,7 @@ def no_wait(monkeypatch):
     fake_trigger writes the relay before the poll starts - so stubbing here keeps them
     honest about which side they are exercising, and keeps a real sleep out of the loop.
     """
-    monkeypatch.setattr(cli, "_wait", lambda nonce, kind, timeout, on_timeout: None)
+    monkeypatch.setattr(cli, "_wait", lambda *a, **kw: None)
 
 
 @pytest.fixture
@@ -945,7 +946,7 @@ def _drive_main(monkeypatch, argv, seen):
     suppressed - that is the failure this test exists to catch.
     """
     monkeypatch.setattr(cli, "_trigger", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "_wait", lambda nonce, kind, timeout, on_timeout: seen.update(timeout=timeout))
+    monkeypatch.setattr(cli, "_wait", lambda *a, **kw: seen.update(timeout=a[2]))
     monkeypatch.setattr(cli.sys, "argv", ["jupyterlab-passkey", *argv])
     try:
         cli.main()
@@ -1258,3 +1259,45 @@ def test_show_accepts_a_code_at_the_length_limit(relay_dir, monkeypatch):
     monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: seen.update(a))
     assert cli.cmd_show(_show_ns(file="-", label=None)) == 0
     assert (relay_dir / f"{seen['nonce']}.code").read_text() == "x" * relay.MAX_CODE_CHARS
+
+
+CANCEL_NONCE = "cancel_nonce_0123456789"
+
+
+def test_wait_ends_at_once_on_a_cancel_marker(relay_dir):
+    """A dismissed dialog must not cost the caller its whole timeout.
+
+    Without the marker a refusal is indistinguishable from an unclicked button, so
+    the CLI polls to the deadline and only then reports what the user decided
+    immediately. The timeout here is far longer than the test may take: it passes on
+    the marker being seen, not on the clock.
+    """
+    relay.stage(CANCEL_NONCE, "cancel", "1")
+
+    started = time.monotonic()
+    with pytest.raises(SystemExit) as e:
+        cli._wait(CANCEL_NONCE, "pass", 300.0, "unused", watch_cancel=True)
+
+    assert "cancelled" in str(e.value)
+    assert time.monotonic() - started < 5
+    # One-shot like every other relay: nothing left staged under a dead nonce.
+    assert not relay.relay_exists(CANCEL_NONCE, "cancel")
+
+
+def test_wait_ignores_a_cancel_marker_unless_asked(relay_dir):
+    # Only passphrase watches for it; the ceremony waits must keep their old shape.
+    relay.stage(CANCEL_NONCE, "cancel", "1")
+
+    with pytest.raises(SystemExit) as e:
+        cli._wait(CANCEL_NONCE, "json", 0.5, "timed out")
+
+    assert "no relay after" in str(e.value)
+
+
+def test_wait_prefers_the_value_over_a_cancel_marker(relay_dir):
+    # Both staged: the value wins. A dialog that submitted must never be reported as
+    # cancelled because a stale marker outlived a previous attempt.
+    relay.stage(CANCEL_NONCE, "cancel", "1")
+    relay.stage(CANCEL_NONCE, "pass", "secret")
+
+    cli._wait(CANCEL_NONCE, "pass", 5.0, "unused", watch_cancel=True)  # must not raise

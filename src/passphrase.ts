@@ -257,10 +257,24 @@ export async function runPassphrase(
     document.removeEventListener('keydown', onEscape, true);
   }
 
-  // Submit is gated on a match, but re-check rather than trust the gate: this is
-  // the last point before a value the user never confirmed reaches disk.
+  if (!result.button.accept) {
+    // Say so, rather than saying nothing. The relay is the only channel back to the
+    // waiting CLI, so a silent dismissal is indistinguishable from a button nobody
+    // has clicked - and the caller sits out its whole timeout before reporting a
+    // refusal the user made at once. The marker carries no secret.
+    await requestAPI<void>('passphrase', serverSettings, {
+      method: 'POST',
+      body: JSON.stringify({ nonce: args.nonce, cancelled: true })
+    });
+    return false;
+  }
+
+  // Submit is gated on a match, but re-check rather than trust the gate: this is the
+  // last point before a value the user never confirmed reaches disk. Nothing is
+  // signalled here - an accepted dialog with no value is a bug in the gate, not a
+  // decision the user made, and it must not be reported to the caller as a refusal.
   const passphrase = body.value;
-  if (!result.button.accept || passphrase === null) {
+  if (passphrase === null) {
     return false;
   }
 

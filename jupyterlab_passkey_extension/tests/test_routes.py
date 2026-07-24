@@ -755,3 +755,43 @@ async def test_render_400s_a_code_too_long_to_render(jp_fetch, relay_dir):
     assert "too long" in exc.value.response.body.decode()
     # Consumed even on rejection (one-shot), so a retry cannot re-trigger the render.
     assert not (relay_dir / f"{VALID_NONCE}.code").exists()
+
+
+async def test_passphrase_cancel_stages_a_marker_not_a_secret(jp_fetch, relay_dir):
+    # A dismissed dialog must say so. The relay is the only channel back to the waiting
+    # CLI, so a cancel that stages nothing reads as a button nobody clicked yet.
+    body = {"nonce": VALID_NONCE, "cancelled": True}
+
+    response = await jp_fetch(
+        "jupyterlab-passkey-extension", "passphrase",
+        method="POST", body=json.dumps(body),
+    )
+
+    assert response.code == 204
+    # The marker, and NOT a passphrase relay - a consumer must never mistake a refusal
+    # for a secret.
+    assert (relay_dir / f"{VALID_NONCE}.cancel").exists()
+    assert not (relay_dir / f"{VALID_NONCE}.pass").exists()
+
+
+async def test_passphrase_cancel_still_validates_the_nonce(jp_fetch, relay_dir):
+    with pytest.raises(tornado.httpclient.HTTPClientError) as e:
+        await jp_fetch(
+            "jupyterlab-passkey-extension", "passphrase",
+            method="POST",
+            body=json.dumps({"nonce": "../../etc/passwd", "cancelled": True}),
+        )
+    assert e.value.code == 400
+
+
+async def test_passphrase_cancel_needs_the_flag_to_be_true(jp_fetch, relay_dir):
+    # Only an explicit true cancels; a falsy or absent flag with no passphrase is still
+    # the client bug it always was.
+    with pytest.raises(tornado.httpclient.HTTPClientError) as e:
+        await jp_fetch(
+            "jupyterlab-passkey-extension", "passphrase",
+            method="POST",
+            body=json.dumps({"nonce": VALID_NONCE, "cancelled": False}),
+        )
+    assert e.value.code == 400
+    assert not (relay_dir / f"{VALID_NONCE}.cancel").exists()

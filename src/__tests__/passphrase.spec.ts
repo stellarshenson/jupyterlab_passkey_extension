@@ -110,7 +110,11 @@ describe('runPassphrase', () => {
     expect(mockRequestAPI).not.toHaveBeenCalled();
   });
 
-  it('relays nothing when the user cancels', async () => {
+  it('signals the cancel without ever relaying the passphrase', async () => {
+    // The relay is the only channel back to the waiting CLI. A silent cancel is
+    // indistinguishable from a button nobody clicked, so the caller waits out its
+    // whole timeout to be told what the user decided at once. The marker says so -
+    // and must carry no secret, even though the fields were filled.
     mockLaunch.mockImplementation(async (opts: any) => {
       fill(opts.body, 'hunter2-correct', 'hunter2-correct');
       return { button: { accept: false } };
@@ -119,7 +123,12 @@ describe('runPassphrase', () => {
     await expect(runPassphrase({ nonce: NONCE }, serverSettings)).resolves.toBe(
       false
     );
-    expect(mockRequestAPI).not.toHaveBeenCalled();
+
+    expect(mockRequestAPI).toHaveBeenCalledTimes(1);
+    expect(mockRequestAPI.mock.calls[0][0]).toBe('passphrase');
+    const sent = mockRequestAPI.mock.calls[0][2]!.body as string;
+    expect(JSON.parse(sent)).toEqual({ nonce: NONCE, cancelled: true });
+    expect(sent).not.toContain('hunter2-correct');
   });
 
   it('uses password inputs that never autofill, and the given prompt', async () => {

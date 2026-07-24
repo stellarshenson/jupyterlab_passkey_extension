@@ -42,7 +42,7 @@ _KEY_PREFIX = "jlab-passkey:"
 # collecting it, plus a margin - `copy` gets the widest window because the user
 # may not click its notification at once. An uncollected key self-destructs at
 # its TTL, which is the whole point over the file that lingers until reboot.
-_TTL = {"json": 300, "pass": 300, "secret": 900, "code": 900}
+_TTL = {"json": 300, "pass": 300, "secret": 900, "code": 900, "cancel": 60}
 
 # A `show` code is a short human-readable value (an authenticator code, a pairing
 # code), and rendering it to a PNG costs time and memory that grow with its length
@@ -53,6 +53,13 @@ MAX_CODE_CHARS = 256
 
 _backend_cache = None
 _warned = False
+
+# Why the last keyctl probe said no, in the operator's terms. "keyctl unavailable,
+# install keyutils" is the wrong answer when keyutils IS installed and the kernel is
+# refusing the syscall - a rootless or user-namespaced container cannot use keyrings
+# at all, and no package fixes that. The probe records what it actually saw here so
+# the fallback warning and --debug can name the real cause instead of guessing.
+_probe_detail = None
 
 
 # --------------------------------------------------------------------------- #
@@ -308,6 +315,39 @@ def _keyctl_unstage(nonce, kind):
         _keyctl(["unlink", kid, "@u"])
 
 
+def _explain_keyctl_failure(step, stderr):
+    """Turn a failed keyctl step into a line that names the actual cause.
+
+    The two failures look identical to the caller and have opposite remedies:
+    EPERM means the kernel refused the syscall outright, which is the sandbox and
+    not the package - installing keyutils on a rootless / user-namespaced container
+    changes nothing. ENOKEY ("Required key not available") instead means the keyring
+    is reachable but @u is not possessed by this session.
+    """
+    msg = stderr.decode(errors="replace").strip()
+    if "Operation not permitted" in msg:
+        return (
+            f"the kernel refused the keyring syscall at `{step}` ({msg}) - keyutils is "
+            "installed, so this is the sandbox, not a missing package: a rootless or "
+            "user-namespaced container cannot use kernel keyrings"
+        )
+    if "Permission denied" in msg:
+        # A user key grants READ to the POSSESSOR only (perm mask 3f010000: the owning
+        # uid gets view, not read). A process possesses a key when it is reachable from
+        # its session keyring, so where @u is not linked into @s the add and the search
+        # both succeed and only the read is refused - which is what makes this one look
+        # like a working keyctl right up to the moment it matters.
+        return (
+            f"the key could not be read at `{step}` ({msg}) - this session does not "
+            "possess the @u keyring, and linking it in failed"
+        )
+    if "Required key not available" in msg:
+        return (
+            f"the @u user keyring is not reachable from this session at `{step}` ({msg})"
+        )
+    return f"keyctl `{step}` failed: {msg or 'no message'}"
+
+
 def _keyctl_probe():
     """True only when a full add -> search -> pipe -> unlink round-trip works on @u.
 
@@ -316,26 +356,47 @@ def _keyctl_probe():
     itself. Everything here explicitly names @u, which sidesteps the session-keyring
     resolution the linking caveat is about.
     """
+    global _probe_detail
+    _probe_detail = None
     if shutil.which("keyctl") is None:
+        _probe_detail = "keyctl is not on PATH - install keyutils"
         return False
+    # Possess @u before testing it. Possession is what the keyring permission check
+    # actually reads, each _keyctl call is its own process, and possession reaches a
+    # child only through the SESSION keyring it inherits - so on a session whose @u is
+    # not linked in (a fresh login, a service, anything under setsid) `search @u` fails
+    # even though `padd @u` just succeeded, and the backend silently downgrades to the
+    # swappable file relay. Best-effort: where keyrings are refused outright this fails
+    # too, and the round-trip below is still the thing that decides.
+    _keyctl(["link", "@u", "@s"])
     desc = f"{_KEY_PREFIX}probe.{os.getpid()}"
     try:
         r = _keyctl(["padd", "user", desc, "@u"], input_bytes=b"probe")
         if r.returncode != 0:
+            _probe_detail = _explain_keyctl_failure("padd", r.stderr)
             return False
         # Unlink in a finally keyed off padd's own id: a search that fails or a pipe
         # that raises must not leave the probe key lingering to logout (it holds only
         # b"probe", so this is a resource leak, not a disclosure).
         kid = r.stdout.decode().strip()
         try:
-            found = _keyctl_search(desc)
-            if found is None:
+            s = _keyctl(["search", "@u", "user", desc])
+            if s.returncode != 0:
+                _probe_detail = _explain_keyctl_failure("search", s.stderr)
                 return False
+            found = s.stdout.decode().strip()
             piped = _keyctl(["pipe", found])
-            return piped.returncode == 0 and piped.stdout == b"probe"
+            if piped.returncode != 0:
+                _probe_detail = _explain_keyctl_failure("pipe", piped.stderr)
+                return False
+            if piped.stdout != b"probe":
+                _probe_detail = "the probe key read back the wrong payload"
+                return False
+            return True
         finally:
             _keyctl(["unlink", kid, "@u"])
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as e:
+        _probe_detail = f"could not run keyctl: {e}"
         return False
 
 
@@ -353,10 +414,26 @@ def _warn_shm_fallback():
     # relay reference), and a warning there would contaminate a `$(...)` capture. In
     # the server this lands in the Jupyter log, which is the right place for it.
     print(
-        "keyctl unavailable; using /dev/shm relay (swappable, orphaned on crash) - "
-        "install keyutils for kernel-keyring relays",
+        f"keyctl unavailable ({_probe_detail or 'the probe round-trip failed'}); "
+        "using the /dev/shm file relay instead - swappable, orphaned on crash. "
+        "Run any subcommand with --debug for the full backend decision.",
         file=sys.stderr,
     )
+
+
+def debug_report():
+    """The relay backend decision, as text for --debug. Names no secret and no nonce."""
+    forced = os.environ.get("JLAB_PASSKEY_RELAY_BACKEND", "auto")
+    lines = [
+        f"relay: JLAB_PASSKEY_RELAY_BACKEND={forced}",
+        f"relay: keyctl binary={shutil.which('keyctl') or 'not found'}",
+        f"relay: backend={backend()}",
+    ]
+    if _probe_detail:
+        lines.append(f"relay: keyctl unusable - {_probe_detail}")
+    if backend() == "shm":
+        lines.append(f"relay: shm dir={relay_dir()}")
+    return "\n".join(lines)
 
 
 def backend():

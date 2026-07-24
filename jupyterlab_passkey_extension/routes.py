@@ -76,6 +76,21 @@ class PasskeyPassphraseHandler(APIHandler):
         if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
             self.set_status(400)
             return
+
+        # A dismissed dialog says so, rather than saying nothing. The relay is the only
+        # channel back to the waiting CLI, so a cancel that stages nothing is
+        # indistinguishable from a button nobody has clicked yet - and the CLI sits out
+        # its whole timeout before reporting what the user already decided. This marker
+        # carries no secret; it exists to be seen.
+        if body.get("cancelled") is True:
+            try:
+                relay.stage(nonce, "cancel", "1")
+            except OSError:
+                return _relay_unavailable(self)
+            self.set_status(204)
+            self.finish()
+            return
+
         # An empty passphrase is a client bug, not a valid secret
         if not isinstance(passphrase, str) or passphrase == "":
             self.set_status(400)

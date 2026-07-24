@@ -9,6 +9,7 @@
 - **Blocking** - each call waits for you to click the button and approve the prompt; `copy` and `show` are the exceptions and return at once (`copy` unless given `--block`)
 - **Timeout** - `--timeout` seconds, default `120`; exit `1` if no relay arrives. On `copy` it applies only with `--block`, and is rejected without it
 - **Failure** - a failed ceremony exits `1` with the error on stderr, nothing on stdout
+- **Debug** - `--debug` on any subcommand reports the relay backend decision on stderr before running: which backend was chosen, where `keyctl` was found, and, when keyctl was rejected, the step that failed with the kernel's own message
 
 The click is not incidental - WebAuthn requires a user gesture, and a terminal has none. The notification button is the gesture.
 
@@ -70,7 +71,7 @@ Opens a dialog that takes a secret and stages it. Prints a **reference** to it, 
 | `--prompt` | no       | dialog prompt text; defaults per mode            |
 | `--once`   | no       | ask once instead of twice, with no confirm field |
 
-By default the value is entered twice and Submit stays disabled until they match, so a mismatch cannot be submitted. `--once` drops the confirm field for a secret you are pasting rather than typing - the source of truth is already on your clipboard, and asking twice only invites two pastes of the same mistake. Either way Cancel and Submit are the only ways out, and Escape cancels; cancelling stages nothing, so the call times out and exits `1`.
+By default the value is entered twice and Submit stays disabled until they match, so a mismatch cannot be submitted. `--once` drops the confirm field for a secret you are pasting rather than typing - the source of truth is already on your clipboard, and asking twice only invites two pastes of the same mistake. Either way Cancel and Submit are the only ways out, and Escape cancels; cancelling stages no secret and tells the CLI so, which exits `1` at once rather than waiting out its timeout.
 
 The reference is **scheme-prefixed** (see [Relay backend](#relay-backend)), so one consumer handles both backends:
 
