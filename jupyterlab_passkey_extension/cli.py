@@ -36,6 +36,7 @@ import json
 import math
 import os
 import secrets
+import signal
 import subprocess
 import sys
 import time
@@ -48,6 +49,7 @@ INGEST = "jupyterlab-notifications-extension/ingest"
 RUN_COMMAND = "passkey:run"
 PASSPHRASE_COMMAND = "passkey:passphrase"
 COPY_COMMAND = "passkey:copy"
+SHOW_COMMAND = "passkey:show"
 
 # The trigger POST is a local, non-interactive call - only the click it asks for is slow.
 # --timeout governs the wait for the click, never this; without a bound here a wedged
@@ -109,6 +111,32 @@ def _say(message: str) -> None:
             stderr.close()
         except (OSError, ValueError):
             pass
+
+
+def _ignore_hangup() -> None:
+    """Survive the controlling terminal going away, so a detached run still lands.
+
+    Every subcommand raises a browser notification and then waits for a human to
+    click it - a popup, a passphrase query, a copy, a code to show - work that
+    outlives the shell that launched it. Backgrounded with a bare `&` and the
+    terminal then closed, the default SIGHUP disposition kills the process
+    mid-wait; the click afterwards writes (or reads) a relay nobody is left to
+    handle, and for `copy`/`show` it strands one this process staged and can no
+    longer clean up. Ignoring SIGHUP gives every command nohup's behaviour without
+    the caller having to remember nohup, so notifications, popups and queries work
+    the same whether the process is attached or detached.
+
+    POSIX only - Windows has no SIGHUP. Best-effort: on a non-main thread or a
+    platform that refuses, the command still works when launched under nohup/setsid,
+    so a failure here is not fatal.
+    """
+    hup = getattr(signal, "SIGHUP", None)
+    if hup is None:
+        return
+    try:
+        signal.signal(hup, signal.SIG_IGN)
+    except (ValueError, OSError):
+        pass
 
 
 def _server_list() -> dict:
@@ -382,6 +410,47 @@ def cmd_passphrase(a) -> int:
     return 0
 
 
+def _read_stdin_or_file(file_arg, noun, empty_msg, nontext_msg):
+    """Read a text value from FILE or stdin, strict utf-8, one trailing newline dropped.
+
+    Shared by `copy` and `show`: both read a secret the same careful way and differ
+    only in the words of their errors. `noun` names the value in the terminal-refusal
+    message; `empty_msg` and `nontext_msg` (which may reference `{source}`) are the
+    caller's own wording, since copy's strings are pinned by its tests. Keeping the one
+    subtle part - strict decode at the boundary, strip exactly one trailing newline -
+    in a single place is the point: a fix to it must not have to be remembered twice.
+    """
+    if file_arg == "-" and sys.stdin.isatty():
+        # Reading a terminal echoes the value onto the screen and into the scrollback,
+        # the one thing this bridge exists to avoid. Typing one is `passphrase`'s job.
+        raise SystemExit(
+            f"refusing to read a {noun} from a terminal - pipe it in or pass a FILE "
+            "(to type one, use `jupyterlab-passkey passphrase --once`)"
+        )
+    source = "stdin" if file_arg == "-" else file_arg
+    try:
+        if file_arg == "-":
+            # .buffer, decoded here rather than sys.stdin.read(): sys.stdin decodes with
+            # surrogateescape whatever the locale, so bad bytes would not raise here -
+            # they would pass through as lone surrogates and blow up later inside the
+            # relay write. Strict, at the boundary, is where the error belongs.
+            raw = sys.stdin.buffer.read().decode("utf-8")
+        else:
+            with open(file_arg, encoding="utf-8") as f:
+                raw = f.read()
+    except OSError as e:
+        raise SystemExit(f"cannot read {source}: {e}")
+    except UnicodeDecodeError:
+        raise SystemExit(nontext_msg.format(source=source))
+    # `echo t | ...`, `cat token.txt`, and every here-string end in a newline nobody
+    # meant to send, and a trailing one pasted into a field submits it early. Drop
+    # exactly one, as $(...) would - and only one, so a multi-line value survives.
+    value = raw[:-1] if raw.endswith("\n") else raw
+    if value == "":
+        raise SystemExit(empty_msg)
+    return value
+
+
 def cmd_copy(a) -> int:
     """Stage a secret from a file or stdin and offer it to the browser's clipboard.
 
@@ -422,39 +491,12 @@ def cmd_copy(a) -> int:
             f"--timeout must be a positive, finite number of seconds (at most {_MAX_BLOCK_TIMEOUT})"
         )
 
-    if a.file == "-" and sys.stdin.isatty():
-        # Reading a terminal echoes the secret onto the screen and into the
-        # scrollback, which is the one thing this bridge exists to avoid. Typing a
-        # secret is what `passphrase` is for; this command is for piping one.
-        raise SystemExit(
-            "refusing to read a secret from a terminal - pipe it in or pass a FILE "
-            "(to type one, use `jupyterlab-passkey passphrase --once`)"
-        )
-
-    source = "stdin" if a.file == "-" else a.file
-    try:
-        if a.file == "-":
-            # .buffer, decoded here rather than sys.stdin.read(): sys.stdin decodes
-            # with surrogateescape whatever the locale, so bad bytes would not raise
-            # here at all - they would pass through as lone surrogates and blow up
-            # later inside the relay write, as a UnicodeEncodeError nothing catches.
-            # Strict, at the boundary, is where the error belongs.
-            raw = sys.stdin.buffer.read().decode("utf-8")
-        else:
-            with open(a.file, encoding="utf-8") as f:
-                raw = f.read()
-    except OSError as e:
-        raise SystemExit(f"cannot read {source}: {e}")
-    except UnicodeDecodeError:
-        raise SystemExit(f"{source} is not text - a clipboard holds text, not bytes")
-
-    # `echo t | ...`, `cat token.txt`, and every here-string end in a newline nobody
-    # meant to copy, and a trailing newline pasted into a login field submits it
-    # early. Drop exactly one, which is what $(...) would have done anyway - and only
-    # one, so a deliberately multi-line secret (a PEM key) survives intact.
-    secret = raw[:-1] if raw.endswith("\n") else raw
-    if secret == "":
-        raise SystemExit("nothing to copy - the input was empty")
+    secret = _read_stdin_or_file(
+        a.file,
+        "secret",
+        "nothing to copy - the input was empty",
+        "{source} is not text - a clipboard holds text, not bytes",
+    )
 
     nonce = secrets.token_urlsafe(24)
     message = (
@@ -516,6 +558,60 @@ def cmd_copy(a) -> int:
     return 0
 
 
+def cmd_show(a) -> int:
+    """Stage a code and show it in the browser as a scraper-resistant image.
+
+    The mirror of `copy` for a value the user must READ rather than paste - a
+    one-time authenticator code, a pairing code. The click fetches a rendered PNG
+    of the code and shows it in a dialog, so the code never reaches the page as
+    text: not the notifications broadcast, not the DOM, not the accessibility tree,
+    and an OCR pass on a screenshot still has to beat the distortion.
+
+    Fire and forget, like `copy` without --block: the relay is one-shot, the click
+    consumes it by rendering, and nothing here waits. The value never rides the CLI
+    beyond the stage call and is never logged.
+    """
+    code = _read_stdin_or_file(
+        a.file,
+        "code",
+        "nothing to show - the input was empty",
+        "{source} is not text",
+    )
+    if len(code) > relay.MAX_CODE_CHARS:
+        # A code is short by definition; a large value is a mistaken `show` of a file,
+        # and rendering it would tie up the server. Refuse before staging.
+        raise SystemExit(
+            f"code too long ({len(code)} chars, max {relay.MAX_CODE_CHARS}) - `show` is "
+            "for a short code to read on screen, not a file; did you mean `copy`?"
+        )
+
+    nonce = secrets.token_urlsafe(24)
+    message = (
+        f"A code is waiting: {a.label}" if a.label
+        else "A code is waiting - click to show it."
+    )
+    try:
+        relay.stage(nonce, "code", code)
+    except OSError as e:
+        # A full /dev/shm or an exhausted keyctl quota is the realistic one - a line,
+        # not a traceback. A squatted shm dir (PermissionError) lands here too.
+        raise SystemExit(f"cannot stage the code: {e}")
+
+    command_args = {"nonce": nonce, "label": a.label} if a.label else {"nonce": nonce}
+    try:
+        _trigger(SHOW_COMMAND, command_args, "Show the code", message)
+    except BaseException:
+        # The nonce dies with this process, so a relay left behind here is not
+        # uncollected but uncollectable: no button was ever raised. Same reasoning
+        # as cmd_copy - BaseException so a SystemExit from _trigger or a Ctrl+C
+        # between the stage and the POST cleans up too.
+        relay.unstage(nonce, "code")
+        raise
+
+    _say("nothing is reported back here - the click is what shows it")
+    return 0
+
+
 # The values these flags carry are base64url, whose alphabet includes "-", so roughly
 # one in 64 begins with one. argparse reads ANY leading-dash token as an option, so the
 # documented `--cred-id "$cred"` dies with "expected one argument" before the ceremony
@@ -558,6 +654,10 @@ def _sub(sub, name: str, help_: str, description: str, epilog: str, parents=()):
 
 
 def main() -> int:
+    # Before anything else: a command backgrounded and then orphaned by its terminal
+    # must keep waiting for its click, not die on SIGHUP. See _ignore_hangup.
+    _ignore_hangup()
+
     p = argparse.ArgumentParser(
         prog="jupyterlab-passkey",
         description=__doc__,
@@ -744,6 +844,44 @@ examples:
         help=f"with --block: how long to wait before giving up (default {CLICK_TIMEOUT:.0f}); rejected without --block",
     )
     cp.set_defaults(func=cmd_copy)
+
+    # No `common` here either: `show` posts and returns like `copy` without --block,
+    # so there is nothing for a --timeout to bound.
+    sh = _sub(
+        sub, "show", "stage a code from FILE or stdin; a notification button shows it as an image",
+        """
+Read a code from FILE or stdin and raise a notification whose button shows it in a
+dialog as a distorted image. For a value the user must READ off the screen and type
+somewhere else - a one-time authenticator code, a pairing code - rather than paste.
+
+The code never reaches the page as text. It is staged in a 0600 relay, the
+notification carries only a nonce, and the click fetches a PNG the server draws from
+the relay and consumes in the same breath. So the code is absent from the
+notifications broadcast, the DOM, and the accessibility tree; a screen scraper sees
+an image, and an OCR pass still has to beat the distortion.
+
+Fire and forget: it posts and returns, and nothing is reported back - the click is
+what shows it. Exactly one trailing newline is stripped. A stdin that is a terminal
+is refused; pipe it in, pass a FILE, or use `passphrase --once` to type one.
+""",
+        """
+examples:
+  # show a TOTP enrolment code the user must type into their authenticator app
+  printf '%s' "$totp_secret" | jupyterlab-passkey show --label "Authenticator code"
+
+  # from a file
+  jupyterlab-passkey show ~/pairing-code.txt
+""",
+    )
+    sh.add_argument(
+        "file", nargs="?", default="-", metavar="FILE",
+        help="file to read the code from; omit or '-' to read stdin",
+    )
+    sh.add_argument(
+        "--label", metavar="NAME",
+        help="name shown in the notification and above the code image",
+    )
+    sh.set_defaults(func=cmd_show)
 
     argv = _glue_b64url(sys.argv[1:])
     if not argv:

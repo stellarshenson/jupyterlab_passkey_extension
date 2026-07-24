@@ -2,7 +2,7 @@
 
 The JupyterLab commands the extension registers, and the server contract behind them. These run **in the browser** - a consumer reaches them through a notification button, whose click supplies the user gesture WebAuthn requires. For a ready-made local wrapper, see [cli-reference.md](cli-reference.md).
 
-- **Commands** - `passkey:run` (ceremony), `passkey:passphrase` (secret capture), `passkey:copy` (secret to clipboard)
+- **Commands** - `passkey:run` (ceremony), `passkey:passphrase` (secret capture), `passkey:copy` (secret to clipboard), `passkey:show` (code as a scraper-resistant image)
 - **Trigger** - a `jupyterlab-notify` action button bound to the command id
 - **Return path** - the frontend POSTs to the server, which stages the value in a relay
 - **Relay backend** - a uid-scoped kernel `keyctl` key (preferred, no swap, self-destructs at a TTL) or a `/dev/shm` `0600` file (fallback); chosen once per process, forced with `JLAB_PASSKEY_RELAY_BACKEND=keyctl|shm|auto`
@@ -87,6 +87,20 @@ Collects the secret a local client staged under the nonce (a kernel key on keyct
 - **Refused write** - the browser only honours a clipboard write for a focused window within ~5s of a user gesture, so a click followed by an absence can be refused. The relay is already spent, but the value is not lost: the page retries quietly for 15s, then raises a "clipboard needs another click" notification (naming the secret by `label`) whose button finishes the copy under a fresh gesture. The value waits in page memory - never back on disk - and dies with the tab
 - **After the copy** - the value is an OS-wide clipboard entry, readable by any app until overwritten
 
+## `passkey:show`
+
+Collects the code a local client staged under the nonce (a kernel key on keyctl, a `<relay_dir>/<nonce>.code` file on shm), has the server render it to a distorted PNG, and shows that image in a dialog. The counterpart of `copy` for a value the user must **read** rather than paste.
+
+| Arg     | Required | Meaning                                            |
+| ------- | -------- | -------------------------------------------------- |
+| `nonce` | yes      | relay key/filename; same guard as above            |
+| `label` | no       | name shown in the notification and above the image |
+
+- **Staging** - the local client writes the relay itself (`0600`, atomic); the server never creates one here
+- **Rendering** - the command POSTs the nonce to `render`, which reads the relay, unlinks it, and returns only image bytes - the code never leaves the server as text
+- **One shot** - a second call finds nothing and gets `404`; a dismissed dialog cannot be reopened
+- **Image only** - the code is absent from the notification broadcast, the page DOM as text, and the accessibility tree; the dialog image carries empty `alt` text by design
+
 ## Result shapes
 
 `<nonce>.json` always carries `nonce` and `ok`.
@@ -110,6 +124,7 @@ All endpoints sit under `<base_url>/jupyterlab-passkey-extension/` and require J
 | `POST` | `result`     | ceremony result → `<nonce>.json`; `204` on success                         |
 | `POST` | `passphrase` | `{nonce, passphrase}` → raw `<nonce>.pass`; `204` on success               |
 | `POST` | `secret`     | `{nonce}` ← raw `<nonce>.secret`; `{"value": "..."}`, `404` once collected |
+| `POST` | `render`     | `{nonce}` ← raw `<nonce>.code`; `{"png": "<base64>"}`, `404` once rendered |
 | `GET`  | `health`     | `{"ok": true}`                                                             |
 
 Every `POST` endpoint answers `400` on a bad nonce, and touches no file when it does - including `secret`, which is the one that turns a nonce into a path it reads and then unlinks.

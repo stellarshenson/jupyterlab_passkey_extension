@@ -21,11 +21,13 @@ The way in is the **CLI** (`jupyterlab-passkey`, shipped with the package). Behi
 - **Key material without a stored key** - `get --prf-salt` yields a deterministic 32-byte WebAuthn PRF. The same credential and salt always return the same bytes, so a vault can derive its key from it and store none
 - **Take a secret from the user, without it entering the transcript** - `passphrase` prompts in the browser and prints only a _reference_ to the staged value (`keyctl:...` or `file:...`), never the value. It never crosses the terminal, the shell history, a process argument, or the CLI itself
 - **Hand a secret to the user, without leaving one behind** - `copy` puts a value on the user's clipboard via a notification button. It rides a one-shot relay the server deletes as it reads, and never enters the notification itself
+- **Show a code the page cannot be scraped for** - `show` displays a value the user must read and type elsewhere - a one-time authenticator code - as a server-rendered, distorted image. The code is absent from the notification, the page DOM as text, and the accessibility tree, and an OCR pass on a screenshot still has to beat the distortion
+- **Works detached** - every command ignores `SIGHUP`, so a notification, popup or query raised by a backgrounded process keeps waiting for its click after the terminal that launched it has closed
 - **Purpose-agnostic** - no cryptography, no stored secret, no opinion about what the passkey unlocks
 
 ### Working with an AI agent
 
-The last two features are what make this usable when an AI agent is at the keyboard. An agent can run `jupyterlab-passkey passphrase --once --prompt "GitHub token"`; the user types the token into a browser dialog, and the agent receives a reference it hands to a consumer - so the token never appears in the agent's output, its context, or the session transcript. In the other direction, `pass-cli get github/api ... | jupyterlab-passkey copy` moves a secret from a vault to the user's clipboard through a pipe between two processes, so the bytes never pass through the agent either.
+The `passphrase` and `copy` features are what make this usable when an AI agent is at the keyboard. An agent can run `jupyterlab-passkey passphrase --once --prompt "GitHub token"`; the user types the token into a browser dialog, and the agent receives a reference it hands to a consumer - so the token never appears in the agent's output, its context, or the session transcript. In the other direction, `pass-cli get github/api ... | jupyterlab-passkey copy` moves a secret from a vault to the user's clipboard through a pipe between two processes, so the bytes never pass through the agent either.
 
 Both CLI and subcommand `--help` are written to be read by an agent: every flag states its default and its failure mode, and each subcommand carries worked examples.
 
@@ -112,12 +114,13 @@ pip install jupyterlab_passkey_extension
 
 `jupyterlab-passkey` ships with the package and is the intended way in. It turns a browser ceremony into a blocking local call: it posts the notification carrying the request, waits for your click, and prints the result. A caller needs to know none of the relay contract below, beyond the reference `passphrase` hands it.
 
-| Command      | Does                                    | Prints                                                        |
-| ------------ | --------------------------------------- | ------------------------------------------------------------- |
-| `create`     | registers a new passkey                 | its `cred_id`                                                 |
-| `get`        | asserts a passkey                       | the PRF (with `--prf-salt`) or the `cred_id`                  |
-| `passphrase` | prompts you for a secret in the browser | a **reference** (`keyctl:...` or `file:...`), never the value |
-| `copy`       | puts a secret on your clipboard         | nothing - it posts a button and returns                       |
+| Command      | Does                                      | Prints                                                        |
+| ------------ | ----------------------------------------- | ------------------------------------------------------------- |
+| `create`     | registers a new passkey                   | its `cred_id`                                                 |
+| `get`        | asserts a passkey                         | the PRF (with `--prf-salt`) or the `cred_id`                  |
+| `passphrase` | prompts you for a secret in the browser   | a **reference** (`keyctl:...` or `file:...`), never the value |
+| `copy`       | puts a secret on your clipboard           | nothing - it posts a button and returns                       |
+| `show`       | shows a code as a scraper-resistant image | nothing - it posts a button and returns                       |
 
 Exit status is the contract: `0` succeeded, `1` refused, timed out, or could not reach the server. Only the result goes to stdout, so `$(...)` captures it clean.
 
@@ -151,6 +154,14 @@ pass-cli get github/api --field password --quiet --no-clipboard \
 ```
 
 `copy` reads from a file or stdin and returns immediately - the click is what collects it, one time only - so its exit code means _posted_, not _copied_. Add `--block` to wait until the browser collects the secret and delete it if that never happens; even then it means _collected_, not _pasted_, since the page writes the clipboard after the relay is already gone. It refuses a stdin that is a terminal, which would echo the secret into your scrollback.
+
+Show a code the user must read and type elsewhere - an authenticator enrolment code - without the page being scrapeable for it:
+
+```bash
+printf '%s' "$totp_secret" | jupyterlab-passkey show --label "Authenticator code"
+```
+
+`show` renders the code to a distorted image server-side, so it never reaches the page as text - not the notification, the DOM, or the accessibility tree. The click shows the image; nothing is reported back.
 
 Full flags in [docs/cli-reference.md](docs/cli-reference.md), or `jupyterlab-passkey <command> --help`.
 
@@ -191,13 +202,14 @@ Every `POST` answers `400` on a bad nonce and touches no file when it does. The 
 
 ## For extension authors: the frontend commands
 
-Three JupyterLab commands POST to the API above. Reach for them only when writing an extension that triggers a ceremony itself; everything else is better served by the CLI.
+Four JupyterLab commands POST to the API above. Reach for them only when writing an extension that triggers a ceremony itself; everything else is better served by the CLI.
 
 | Command              | Args                                                     | Does                                                                   |
 | -------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------- |
 | `passkey:run`        | `op`, `nonce`, `rp_id`, `cred_id?`, `prf_salt?`, `user?` | runs the ceremony and POSTs the result to `/result`                    |
 | `passkey:passphrase` | `nonce`, `prompt?`, `once?`                              | opens the dialog and POSTs the value to `/passphrase`                  |
 | `passkey:copy`       | `nonce`, `label?`                                        | collects a staged secret from `/secret` and writes it to the clipboard |
+| `passkey:show`       | `nonce`, `label?`                                        | fetches a rendered image of a staged code from `/render` and shows it  |
 
 `passkey:run` reaches `navigator.credentials.*` before any `await`, so the trigger's user gesture survives into the ceremony. The challenge is a random 32-byte value the frontend generates itself - anti-replay plumbing nothing here verifies, so callers never supply it.
 
@@ -218,7 +230,7 @@ Full argument, relay, and endpoint reference in [docs/commands-reference.md](doc
 
 ## Security
 
-- All four endpoints are gated by `@tornado.web.authenticated` - a caller needs the Jupyter token or session
+- All five endpoints are gated by `@tornado.web.authenticated` - a caller needs the Jupyter token or session
 - A secret is staged in one of two relay backends, chosen per process. The preferred is a uid-scoped kernel `keyctl` key: it never swaps to disk and the kernel destroys it at a TTL, so nothing survives a crash. The fallback is a `/dev/shm` `0600` file, created `mkstemp` + `os.replace` (a fresh file with no world-readable window, renamed onto its `<nonce>` name atomically, never appended to). Force the choice with `JLAB_PASSKEY_RELAY_BACKEND=keyctl|shm|auto`
 - **Neither backend isolates a secret from your own processes.** `--alswrv` grants your uid on the key, and the file is `0600` under your uid, so any process you run can read either. keyctl's win is no swap, self-destruct and no disk artifact, not access control; the same-uid exposure is unchanged from the file
 - Single-read is the consumer's responsibility for the ceremony and passphrase relays - the server does not destroy those, so a consumer reads once and (shm) shreds. The `copy` relay is the exception: the server reads and destroys it together, so collection is a server-enforced one shot
@@ -227,13 +239,15 @@ Full argument, relay, and endpoint reference in [docs/commands-reference.md](doc
 - The result body, the passphrase, and any PRF value are never written to logs, and a keyctl payload rides stdin, never a process argument
 - The extension performs no cryptography and stores no secret; every parameter and all key handling belong to the caller
 - Once a secret reaches the clipboard it is an OS-wide value, readable by any application until overwritten - inherent to `copy`'s purpose, and the reason nothing else here touches the clipboard
+- `show` renders a staged code to a distorted PNG server-side and returns only image bytes, so the code is absent from the notification, the page DOM as text, and the accessibility tree (the dialog image carries empty `alt` text by design). This raises the bar against a screen scraper and an OCR pass, but a value shown on screen is inherently visible to whoever can see or screenshot the screen - it is defence in depth, not a secrecy guarantee
+- Every command ignores `SIGHUP`, so a backgrounded process keeps waiting for its click after its terminal closes; a detached run works the same as an attached one, and nothing about detaching weakens the token gate or the relay
 
 ## Requirements
 
 - JupyterLab >= 4.0.0, served over HTTPS or on localhost - WebAuthn needs a secure context
 - An open JupyterLab tab on the same server. The click in it is the user gesture WebAuthn requires, and a terminal has none
 - [`jupyterlab_notifications_extension`](https://github.com/stellarshenson/jupyterlab_notifications_extension) - a hard dependency, installed for you. The CLI posts to its `ingest` endpoint to raise the button
-- A passkey authenticator for `create` and `get`: Windows Hello, Touch ID, a security key, or a browser password manager. `passphrase` and `copy` need none
+- A passkey authenticator for `create` and `get`: Windows Hello, Touch ID, a security key, or a browser password manager. `passphrase`, `copy` and `show` need none
 
 ## Development install
 

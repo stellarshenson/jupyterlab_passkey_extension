@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -1099,3 +1100,161 @@ def test_copy_defaults_match_the_parser(monkeypatch):
     defaults = vars(_copy_ns())
     for name, value in defaults.items():
         assert seen[name] == value, f"copy --{name} defaults to {seen[name]!r}, not {value!r}"
+
+
+# --- show: stage a code, a notification button renders it as an image ---
+
+SHOW_CODE = "authcode-482913"
+
+
+def _show_ns(**kw):
+    """A `show` namespace, defaulted exactly as its subparser defaults it.
+
+    Guarded by test_show_defaults_match_the_parser, which parses a real argv and
+    asserts these still agree with what main() hands cmd_show.
+    """
+    return argparse.Namespace(**{"file": "-", "label": None, **kw})
+
+
+def test_show_defaults_match_the_parser(monkeypatch):
+    """_show_ns must be what argparse actually hands cmd_show for a bare `show`."""
+    seen = {}
+    monkeypatch.setattr(cli, "cmd_show", lambda a: seen.update(vars(a)) or 0)
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "show"])
+    cli.main()
+    for name, value in vars(_show_ns()).items():
+        assert seen[name] == value, f"show --{name} defaults to {seen[name]!r}, not {value!r}"
+
+
+def test_show_stages_the_code_and_triggers_passkey_show(
+    relay_dir, tmp_path, capsys, monkeypatch
+):
+    src = tmp_path / "code.txt"
+    src.write_text(SHOW_CODE)
+    seen = {}
+    monkeypatch.setattr(
+        cli, "_trigger", lambda c, a, l, m: seen.update({"cmd": c, "args": a, "label": l})
+    )
+
+    assert cli.cmd_show(_show_ns(file=str(src), label=None)) == 0
+
+    assert seen["cmd"] == "passkey:show"
+    assert seen["label"] == "Show the code"
+    relay_file = relay_dir / f"{seen['args']['nonce']}.code"
+    assert relay_file.read_text() == SHOW_CODE
+    assert stat.S_IMODE(os.stat(relay_file).st_mode) == 0o600
+    # The code echoed back to the terminal would defeat the whole exercise.
+    assert SHOW_CODE not in capsys.readouterr().out
+
+
+def test_show_never_puts_the_code_in_the_notification(relay_dir, tmp_path, posted):
+    # Same reason as copy: the notifications extension pushes every payload to every
+    # connected socket, so the notification carries only the nonce and the relay
+    # carries the code. Asserted against the real payload `_trigger` builds.
+    src = tmp_path / "code.txt"
+    src.write_text(SHOW_CODE)
+
+    assert cli.cmd_show(_show_ns(file=str(src), label="Authenticator code")) == 0
+
+    payload = posted[0]["payload"]
+    assert SHOW_CODE not in json.dumps(payload)
+    args_obj = payload["actions"][0]["args"]
+    assert set(args_obj) == {"nonce", "label"}
+    assert payload["actions"][0]["commandId"] == "passkey:show"
+    assert NONCE_RE.fullmatch(args_obj["nonce"])
+
+
+def test_show_unstages_the_code_when_the_trigger_fails(relay_dir, tmp_path, monkeypatch):
+    # A relay left behind here is uncollectable - the nonce dies with this process and
+    # no button was ever raised - so a failed trigger must clean it up, like copy.
+    src = tmp_path / "code.txt"
+    src.write_text(SHOW_CODE)
+
+    def boom(*a, **k):
+        raise SystemExit("cannot reach the server")
+
+    monkeypatch.setattr(cli, "_trigger", boom)
+
+    with pytest.raises(SystemExit):
+        cli.cmd_show(_show_ns(file=str(src), label=None))
+
+    assert os.listdir(relay_dir) == []
+
+
+def test_show_reads_stdin_when_no_file_is_given(relay_dir, monkeypatch):
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(SHOW_CODE))
+    seen = {}
+    monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: seen.update(a))
+
+    assert cli.cmd_show(_show_ns(file="-", label=None)) == 0
+
+    assert (relay_dir / f"{seen['nonce']}.code").read_text() == SHOW_CODE
+
+
+def test_show_refuses_empty_input(relay_dir, monkeypatch):
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(b""))
+    with pytest.raises(SystemExit, match="nothing to show"):
+        cli.cmd_show(_show_ns(file="-", label=None))
+
+
+def test_show_refuses_to_read_a_code_from_a_terminal(relay_dir, monkeypatch):
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(SHOW_CODE, tty=True))
+    with pytest.raises(SystemExit, match="refusing to read a code from a terminal"):
+        cli.cmd_show(_show_ns(file="-", label=None))
+
+
+# --- detached: notifications, popups and queries survive the terminal going away ---
+
+
+def test_ignore_hangup_makes_sighup_non_fatal():
+    """After _ignore_hangup, a delivered SIGHUP does not kill the process.
+
+    This is what lets a backgrounded passkey command keep waiting for its click once
+    the launching terminal closes - the whole point of the detached-support ask. Run
+    in a real subprocess: SIGHUP's default disposition IS termination, so proving it
+    non-fatal means the process must actually receive one and live.
+    """
+    prog = (
+        "import signal, os, time\n"
+        "from jupyterlab_passkey_extension import cli\n"
+        "cli._ignore_hangup()\n"
+        "assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN\n"
+        "os.kill(os.getpid(), signal.SIGHUP)\n"
+        "time.sleep(0.2)\n"
+        "print('alive')\n"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", prog], capture_output=True, text=True, timeout=30
+    )
+    assert r.returncode == 0, r.stderr
+    assert "alive" in r.stdout
+
+
+def test_main_installs_the_hangup_ignore_before_dispatch(monkeypatch):
+    """main() must ignore SIGHUP before it runs any command, so every subcommand -
+    get, create, passphrase, copy, show - inherits the detached behaviour."""
+    order = []
+    monkeypatch.setattr(cli, "_ignore_hangup", lambda: order.append("ignore"))
+    monkeypatch.setattr(cli, "cmd_show", lambda a: order.append("dispatch") or 0)
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "show"])
+
+    cli.main()
+
+    assert order == ["ignore", "dispatch"]
+
+
+def test_show_refuses_an_overlong_code(relay_dir, monkeypatch):
+    # A code is short by definition; a large value is a mistaken `show` of a file, and
+    # rendering it server-side would tie up the event loop. Refuse before staging.
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin("x" * (relay.MAX_CODE_CHARS + 1)))
+    with pytest.raises(SystemExit, match="code too long"):
+        cli.cmd_show(_show_ns(file="-", label=None))
+    assert os.listdir(relay_dir) == []
+
+
+def test_show_accepts_a_code_at_the_length_limit(relay_dir, monkeypatch):
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin("x" * relay.MAX_CODE_CHARS))
+    seen = {}
+    monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: seen.update(a))
+    assert cli.cmd_show(_show_ns(file="-", label=None)) == 0
+    assert (relay_dir / f"{seen['nonce']}.code").read_text() == "x" * relay.MAX_CODE_CHARS

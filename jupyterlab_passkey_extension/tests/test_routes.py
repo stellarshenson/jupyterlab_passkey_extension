@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -600,3 +601,157 @@ def test_ensure_relay_dir_creates_a_private_directory_when_absent(tmp_path, monk
 
     assert ensure_relay_dir() == str(d)
     assert stat.S_IMODE(os.stat(d).st_mode) == 0o700
+
+
+# --- render: reads a code relay out and returns only a distorted image of it ---
+
+CODE_VALUE = "authcode-482913"
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def _stage_code(nonce, value):
+    """Put a code where `jupyterlab-passkey show` would have staged it."""
+    write_relay(nonce, f"{nonce}.code", value)
+
+
+async def _render(jp_fetch, nonce):
+    return await jp_fetch(
+        "jupyterlab-passkey-extension", "render",
+        method="POST", body=json.dumps({"nonce": nonce}),
+    )
+
+
+async def test_render_returns_a_png_and_consumes_the_relay(jp_fetch, relay_dir):
+    _stage_code(VALID_NONCE, CODE_VALUE)
+
+    response = await _render(jp_fetch, VALID_NONCE)
+
+    assert response.code == 200
+    png = base64.b64decode(json.loads(response.body)["png"])
+    assert png.startswith(_PNG_MAGIC)
+    # One-shot: rendered is spent, so the code cannot be re-fetched or re-rendered -
+    # what keeps a shown code from outliving the click that wanted it.
+    assert not (relay_dir / f"{VALID_NONCE}.code").exists()
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await _render(jp_fetch, VALID_NONCE)
+    assert exc.value.code == 404
+
+
+async def test_render_never_returns_the_code_as_text(jp_fetch, relay_dir):
+    # The reason the render happens server-side: the value leaves only as image bytes
+    # a scraper still has to OCR, never as text in the response.
+    _stage_code(VALID_NONCE, "PLAINTEXT-CODE-XYZ")
+
+    response = await _render(jp_fetch, VALID_NONCE)
+
+    assert "PLAINTEXT-CODE-XYZ" not in response.body.decode()
+
+
+async def test_render_404s_when_nothing_was_staged(jp_fetch, relay_dir):
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await _render(jp_fetch, VALID_NONCE)
+
+    assert exc.value.code == 404
+
+
+@pytest.mark.parametrize(
+    "bad_nonce", ["../../etc/passwd", "a/b", "../aaaaaaaaaaaaaaaa", "aaaaaaaa aaaaaaaa"]
+)
+async def test_render_rejects_traversal_nonce(jp_fetch, relay_dir, bad_nonce):
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await _render(jp_fetch, bad_nonce)
+
+    assert exc.value.code == 400
+
+
+async def test_render_traversal_neither_reads_nor_unlinks_an_outside_file(
+    jp_fetch, relay_dir, tmp_path
+):
+    # Like the secret handler, this turns a nonce into a path it READS and UNLINKS.
+    # Prove a traversal reaches neither the read nor the unlink, not just the status.
+    outside = tmp_path / "outside_aaaaaaaaaaaa.code"
+    outside.write_text("NOT_YOURS")
+
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await _render(jp_fetch, "../outside_aaaaaaaaaaaa")
+
+    assert exc.value.code == 400
+    assert outside.read_text() == "NOT_YOURS"
+
+
+async def test_render_requires_auth(http_server_client, jp_base_url, relay_dir):
+    _stage_code(VALID_NONCE, CODE_VALUE)
+    path = url_path_join(jp_base_url, "jupyterlab-passkey-extension", "render")
+
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await http_server_client.fetch(
+            path, method="POST", body=json.dumps({"nonce": VALID_NONCE})
+        )
+
+    assert exc.value.code == 403
+    # A rejected caller must not consume it either.
+    assert (relay_dir / f"{VALID_NONCE}.code").read_text() == CODE_VALUE
+
+
+async def test_render_not_logged(jp_fetch, relay_dir, caplog):
+    code = "CODE_MUST_NOT_BE_LOGGED_ZZZ"
+    _stage_code(VALID_NONCE, code)
+
+    with caplog.at_level(logging.DEBUG):
+        response = await _render(jp_fetch, VALID_NONCE)
+
+    assert response.code == 200
+    assert code not in caplog.text
+
+
+async def test_render_answers_a_relay_failure_with_a_clean_500(jp_fetch, monkeypatch):
+    import jupyterlab_passkey_extension.routes as routes_mod
+
+    def boom(nonce, kind):
+        raise OSError("relay down")
+
+    monkeypatch.setattr(routes_mod.relay, "collect", boom)
+
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await _render(jp_fetch, VALID_NONCE)
+
+    assert exc.value.code == 500
+    assert "relay backend unavailable" in exc.value.response.body.decode()
+
+
+async def test_render_answers_a_broken_renderer_with_a_clean_500(
+    jp_fetch, relay_dir, monkeypatch
+):
+    # Pillow is imported inside the handler, so a broken image library degrades this
+    # one endpoint to a 500 instead of failing the whole server extension at load.
+    _stage_code(VALID_NONCE, CODE_VALUE)
+    import jupyterlab_passkey_extension.captcha as captcha_mod
+
+    def boom(text):
+        raise RuntimeError("no font")
+
+    monkeypatch.setattr(captcha_mod, "render_code_png", boom)
+
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await _render(jp_fetch, VALID_NONCE)
+
+    assert exc.value.code == 500
+    # The relay was consumed before the render ran, so it is gone even on failure -
+    # the same one-shot trade the secret handler makes, stated in the handler.
+    assert not (relay_dir / f"{VALID_NONCE}.code").exists()
+
+
+async def test_render_400s_a_code_too_long_to_render(jp_fetch, relay_dir):
+    # Defensive server-side cap: the CLI caps length before staging, but a value staged
+    # by any other writer must not be rendered unbounded on the IOLoop.
+    from jupyterlab_passkey_extension import relay as relay_mod
+
+    _stage_code(VALID_NONCE, "x" * (relay_mod.MAX_CODE_CHARS + 1))
+
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await _render(jp_fetch, VALID_NONCE)
+
+    assert exc.value.code == 400
+    assert "too long" in exc.value.response.body.decode()
+    # Consumed even on rejection (one-shot), so a retry cannot re-trigger the render.
+    assert not (relay_dir / f"{VALID_NONCE}.code").exists()

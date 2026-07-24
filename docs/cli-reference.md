@@ -3,10 +3,10 @@
 `jupyterlab-passkey` turns a browser ceremony into a blocking local call. It is a thin proxy to the [JupyterLab commands](commands-reference.md): it posts the notification that carries the command, waits for the relay the server writes, and prints the result. It deletes the ceremony relay after reading it; the passphrase relay is left for its consumer to shred. A consumer never learns the relay contract.
 
 - **Ships with the package** - `pip install jupyterlab_passkey_extension` puts it on `PATH`
-- **Subcommands** - `create`, `get`, `passphrase`, `copy`, mirroring the commands one-to-one
+- **Subcommands** - `create`, `get`, `passphrase`, `copy`, `show`, mirroring the commands one-to-one
 - **Transport** - HTTP only; it finds the server and token via `jupyter server list --json`, taking the **first** server reported
 - **Where to run it** - a terminal on the same Jupyter server, with a JupyterLab tab open
-- **Blocking** - each call waits for you to click the button and approve the prompt; `copy` is the exception and returns at once, unless given `--block`
+- **Blocking** - each call waits for you to click the button and approve the prompt; `copy` and `show` are the exceptions and return at once (`copy` unless given `--block`)
 - **Timeout** - `--timeout` seconds, default `120`; exit `1` if no relay arrives. On `copy` it applies only with `--block`, and is rejected without it
 - **Failure** - a failed ceremony exits `1` with the error on stderr, nothing on stdout
 
@@ -142,6 +142,34 @@ pass-cli get db/prod --field password --quiet --no-clipboard | jupyterlab-passke
 Nothing is reported back to the terminal. In the browser, a click that copies cleanly closes the notification and says nothing - but a clipboard write the browser refuses (the window was not focused, or the click's user activation had expired) is retried quietly for 15 seconds, and if it still cannot land, a second notification appears: "The clipboard needs another click". Its button finishes the copy under a fresh click, with the value held in the page's memory - never re-staged anywhere - until then. A secret is only lost by closing or reloading the tab before that click.
 
 Once it is on the clipboard it is an OS-wide value - any application, and any page you grant clipboard read to, can read it until you overwrite it. That is inherent to wanting to paste it somewhere.
+
+## `show`
+
+Reads a code from `FILE` or stdin and raises a notification whose button shows it in a dialog **as a distorted image**. For a value the user must read off the screen and type somewhere else - a one-time authenticator code, a pairing code - rather than paste. The mirror of `copy` for the eyes rather than the clipboard.
+
+| Argument / flag | Required | Meaning                                            |
+| --------------- | -------- | -------------------------------------------------- |
+| `FILE`          | no       | file to read the code from; omit or `-` for stdin  |
+| `--label`       | no       | name shown in the notification and above the image |
+
+- **Never as text** - the code is staged in a one-shot relay and the notification carries only a nonce; the click fetches a PNG the server renders from the relay and consumes in the same breath. The code is absent from the notification broadcast, the page DOM, and the accessibility tree
+- **Scraper-resistant** - a screen scraper sees only an image, and CAPTCHA-style distortion (per-character jitter and rotation, colour variation, overlaid noise) means an OCR pass on a screenshot still has to work for it
+- **Fire and forget** - it posts and returns; nothing is reported back, the click is what shows it. The relay is one-shot, so a dismissed dialog cannot be reopened
+- **Trailing newline** - exactly one is stripped. **No terminal input** - a stdin that is a terminal is refused
+
+```bash
+# show a TOTP enrolment code the user must type into their authenticator app
+printf '%s' "$totp_secret" | jupyterlab-passkey show --label "Authenticator code"
+
+# from a file
+jupyterlab-passkey show ~/pairing-code.txt
+```
+
+The dialog's image has empty `alt` text on purpose: the code must not re-enter the accessibility tree the image exists to keep it out of. That closes the channel to a screen reader as well - inherent to the goal, not an oversight.
+
+## Detached use
+
+Every subcommand raises a browser notification and then waits for the click - work that outlives the shell that launched it. The CLI ignores `SIGHUP`, so a command backgrounded with `&` keeps waiting even after its terminal closes; notifications, popups and queries all land the same whether the process is attached, backgrounded, or launched under `nohup`/`setsid`. A detached `copy` or `show` that reads stdin still needs its input piped or a `FILE`, since a detached process has no terminal to type into.
 
 ## Relay backend
 

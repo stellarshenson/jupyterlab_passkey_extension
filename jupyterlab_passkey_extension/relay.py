@@ -42,7 +42,14 @@ _KEY_PREFIX = "jlab-passkey:"
 # collecting it, plus a margin - `copy` gets the widest window because the user
 # may not click its notification at once. An uncollected key self-destructs at
 # its TTL, which is the whole point over the file that lingers until reboot.
-_TTL = {"json": 300, "pass": 300, "secret": 900}
+_TTL = {"json": 300, "pass": 300, "secret": 900, "code": 900}
+
+# A `show` code is a short human-readable value (an authenticator code, a pairing
+# code), and rendering it to a PNG costs time and memory that grow with its length
+# on the server's event loop. Cap it so a mistaken `show` of a large file cannot
+# freeze the server rendering it. Enforced by the CLI (before staging) and the
+# render handler (before rendering) - both import relay, neither imports Pillow.
+MAX_CODE_CHARS = 256
 
 _backend_cache = None
 _warned = False

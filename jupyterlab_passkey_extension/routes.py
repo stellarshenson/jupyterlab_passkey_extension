@@ -1,3 +1,4 @@
+import base64
 import json
 import re
 
@@ -136,6 +137,66 @@ class PasskeySecretHandler(APIHandler):
         self.finish(json.dumps({"value": value}))
 
 
+class PasskeyRenderHandler(APIHandler):
+    """Render a code a local client staged, as a distorted image, once.
+
+    A one-shot reader of a relay the CLI wrote, like the secret handler - but the
+    value is turned into a PNG here and only the image leaves, never the text. So a
+    scraper reading the page, the notifications broadcast, or the accessibility
+    tree never sees the code; an OCR pass on a screenshot still has to beat the
+    distortion. The value is drawn to pixels and dropped: never logged, never
+    returned as text.
+
+    The relay is consumed before the render runs, so a render failure loses the
+    code - the same trade the secret handler makes, and the caller re-runs
+    `jupyterlab-passkey show`. Pillow is imported here rather than at module load so
+    a render-time failure gives this one endpoint a clean 500 rather than a
+    traceback, and an unexpectedly broken Pillow does not fail the whole server
+    extension at import.
+    """
+
+    @tornado.web.authenticated
+    def post(self):
+        body = self.get_json_body()
+        nonce = body.get("nonce") if isinstance(body, dict) else None
+        # Validate the nonce before it becomes a filename (prevents path traversal)
+        if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
+            self.set_status(400)
+            return
+
+        try:
+            value = relay.collect(nonce, "code")
+        except OSError:
+            return _relay_unavailable(self)
+        if value is None:
+            # Never staged, already rendered, or expired - all the same 404.
+            self.set_status(404)
+            return
+
+        # The CLI caps this before staging; guard here too, since the render cost
+        # grows with length and runs on the server's event loop. Belt and braces
+        # against a value staged by any other writer.
+        if len(value) > relay.MAX_CODE_CHARS:
+            self.set_status(400)
+            self.finish(json.dumps({"error": "code too long to render"}))
+            return
+
+        try:
+            from .captcha import render_code_png
+
+            png = render_code_png(value)
+        except Exception:
+            # The value is already consumed; a render failure loses it. Answer
+            # cleanly - the exception carries no secret, but the message is generic
+            # regardless, and the value is never logged.
+            self.set_status(500)
+            self.finish(json.dumps({"error": "could not render the code"}))
+            return
+
+        # Only the image leaves, base64 in JSON - never the code as text.
+        self.finish(json.dumps({"png": base64.b64encode(png).decode("ascii")}))
+
+
 class PasskeyHealthHandler(APIHandler):
     @tornado.web.authenticated
     def get(self):
@@ -152,11 +213,13 @@ def setup_route_handlers(web_app):
         base_url, "jupyterlab-passkey-extension", "passphrase"
     )
     secret_pattern = url_path_join(base_url, "jupyterlab-passkey-extension", "secret")
+    render_pattern = url_path_join(base_url, "jupyterlab-passkey-extension", "render")
     handlers = [
         (result_pattern, PasskeyResultHandler),
         (health_pattern, PasskeyHealthHandler),
         (passphrase_pattern, PasskeyPassphraseHandler),
         (secret_pattern, PasskeySecretHandler),
+        (render_pattern, PasskeyRenderHandler),
     ]
 
     web_app.add_handlers(host_pattern, handlers)

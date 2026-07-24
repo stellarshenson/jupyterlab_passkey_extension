@@ -647,3 +647,46 @@ test('copy re-offers the click when even the recovery write is refused', async (
     })
     .toBe(SECRET);
 });
+
+test('show renders the staged code as an image and never as page text', async ({
+  page
+}) => {
+  test.setTimeout(60000);
+  await page.goto();
+
+  const nonce = 'testshowcode01234567890a';
+  const CODE = 'zealot-482913-code';
+  fs.mkdirSync(RELAY_DIR, { recursive: true, mode: 0o700 });
+  const codeFile = path.join(RELAY_DIR, `${nonce}.code`);
+  fs.writeFileSync(codeFile, CODE, { mode: 0o600 });
+
+  // The command a notification button would run - here driven directly, like the
+  // copy tests, so the frontend command, the render endpoint and the relay are all
+  // real; only the click is stood in for. The promise is NOT awaited: runShow
+  // resolves only when the dialog is closed, so awaiting it here would deadlock
+  // against the assertions below that open on the dialog being up.
+  await page.evaluate((n: string) => {
+    void (window as any).jupyterapp.commands.execute('passkey:show', {
+      nonce: n,
+      label: 'Galata code'
+    });
+  }, nonce);
+
+  // The dialog shows the rendered image, as a PNG data URL. Generous timeout: the
+  // click fires a server render round-trip before the dialog opens, which is slower
+  // than a bare DOM assertion under parallel CI load.
+  const img = page.locator('.jp-PasskeyCode-image');
+  await expect(img).toBeVisible({ timeout: 20000 });
+  await expect(img).toHaveAttribute('src', /^data:image\/png;base64,/);
+  // ...the caller's label is shown...
+  await expect(page.locator('.jp-PasskeyCode-label')).toHaveText('Galata code');
+  // ...but the code itself appears nowhere in the page - not as text, not in any
+  // attribute (the image is pixels, the alt is empty). This is the whole point.
+  const html = await page.evaluate(() => document.documentElement.outerHTML);
+  expect(html).not.toContain(CODE);
+  // The render consumed the relay one-shot, so the code is gone from the server.
+  expect(fs.existsSync(codeFile)).toBe(false);
+
+  // Dismiss the dialog.
+  await page.locator('.jp-Dialog .jp-mod-accept').click();
+});

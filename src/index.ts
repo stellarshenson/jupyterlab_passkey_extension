@@ -11,9 +11,12 @@ import { runPassphrase, IPassphraseArgs } from './passphrase';
 
 import { runCopy, ICopyArgs } from './copy';
 
+import { runShow, IShowArgs } from './show';
+
 const COMMAND_ID = 'passkey:run';
 const PASSPHRASE_COMMAND_ID = 'passkey:passphrase';
 const COPY_COMMAND_ID = 'passkey:copy';
+const SHOW_COMMAND_ID = 'passkey:show';
 
 /**
  * Initialization data for the jupyterlab_passkey_extension extension.
@@ -55,10 +58,19 @@ const plugin: JupyterFrontEndPlugin<void> = {
       }
     });
 
+    app.commands.addCommand(SHOW_COMMAND_ID, {
+      label: 'Show Code',
+      execute: args => {
+        const showArgs = args as unknown as IShowArgs;
+        return runShow(showArgs, app.serviceManager.serverSettings);
+      }
+    });
+
     if (palette) {
       palette.addItem({ command: COMMAND_ID, category: 'Passkey' });
       palette.addItem({ command: PASSPHRASE_COMMAND_ID, category: 'Passkey' });
       palette.addItem({ command: COPY_COMMAND_ID, category: 'Passkey' });
+      palette.addItem({ command: SHOW_COMMAND_ID, category: 'Passkey' });
     }
   }
 };

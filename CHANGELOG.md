@@ -2,6 +2,18 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.0.41] - 2026-07-24
+
+Adds `show`, a command that displays a code in a popup rendered so a screen scraper cannot read it, and makes every command keep working when the calling process is detached from its terminal.
+
+### Added
+
+- `show` command, `passkey:show` frontend command, and an authenticated one-shot `render` endpoint: a local client stages a code (an authenticator enrolment code, a pairing code) and the browser shows it as a server-rendered, distorted image. The code never reaches the page as text - it is absent from the notification broadcast, the page DOM, and the accessibility tree - and CAPTCHA-style distortion means an OCR pass on a screenshot still has to beat it. The dialog image carries empty `alt` text by design
+- `Pillow>=10.1` as a dependency, used by the `render` endpoint to draw the code (no font file ships - it uses Pillow's scalable default)
+- Every subcommand now ignores `SIGHUP`, so a notification, popup or query raised by a backgrounded process keeps waiting for its click after the terminal that launched it has closed - notifications, popups and queries work the same detached as attached
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.0.38] - 2026-07-23
 
 Makes the copy-recovery integration test deterministic so the Build workflow's Galata job is no longer flaky. No runtime behaviour changes.
@@ -9,8 +21,6 @@ Makes the copy-recovery integration test deterministic so the Build workflow's G
 ### Fixed
 
 - The `copy re-offers the click when even the recovery write is refused` Galata test no longer fails intermittently under slow CI. It now waits for the dismissed recovery toast to fully detach from the DOM before clicking the re-offer, instead of relying on toast ordering or a settle count, so exactly one clipboard button exists at click time
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.37] - 2026-07-21
 
