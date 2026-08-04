@@ -332,7 +332,18 @@ def _run(args_obj: dict, label: str, message: str, timeout: float) -> dict:
         # no-op when collect already took it.
         relay.unstage(nonce, "json")
     if not data.get("ok"):
-        raise SystemExit(f"ceremony failed: {data.get('error')}")
+        error = data.get("error")
+        if error == "rp-id-mismatch":
+            # The one ceremony failure the caller can fix without touching the browser,
+            # and the one WebAuthn does NOT hide behind not-allowed: --rp-id must equal
+            # the hostname the JupyterLab tab is open at, or a parent domain of it. A
+            # bare "rp-id-mismatch" leaves the caller guessing which of the two is wrong.
+            raise SystemExit(
+                "ceremony failed: rp-id-mismatch - --rp-id does not match the "
+                "JupyterLab tab's URL. It must be the tab's hostname, or a parent "
+                "domain of it, with no scheme, port or path."
+            )
+        raise SystemExit(f"ceremony failed: {error}")
     return data
 
 

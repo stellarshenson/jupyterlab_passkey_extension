@@ -53,9 +53,17 @@ describe('mapCeremonyError', () => {
     ).toEqual('not-allowed');
   });
 
-  it('maps another DOMException name to error', () => {
+  it('maps a SecurityError to rp-id-mismatch, the fixable URL case', () => {
+    // The RP ID not being a registrable suffix of the tab's origin throws this
+    // synchronously; it is the --rp-id/URL mismatch, and must not collapse to "error".
+    expect(
+      mapCeremonyError(new DOMException('rp id not a suffix', 'SecurityError'))
+    ).toEqual('rp-id-mismatch');
+  });
+
+  it('passes another DOMException name through instead of a bare error', () => {
     expect(mapCeremonyError(new DOMException('boom', 'AbortError'))).toEqual(
-      'error'
+      'error: AbortError'
     );
   });
 

@@ -36,5 +36,18 @@ export function mapCeremonyError(e: unknown): string {
   if (e instanceof DOMException && e.name === 'NotAllowedError') {
     return 'not-allowed';
   }
+  // A SecurityError is thrown synchronously, before any authenticator interaction,
+  // when rpId is not a registrable domain suffix of (nor equal to) the tab's origin -
+  // i.e. the --rp-id does not match the URL the JupyterLab tab is open at. It is a
+  // caller misconfiguration, not a privacy-conflated outcome, so naming it distinctly
+  // leaks nothing and is the difference between a fixable message and a blank "error".
+  if (e instanceof DOMException && e.name === 'SecurityError') {
+    return 'rp-id-mismatch';
+  }
+  // Never collapse an unexpected failure to a bare "error": pass the exception name
+  // through so the CLI prints something a caller can act on rather than a dead end.
+  if (e instanceof DOMException) {
+    return `error: ${e.name}`;
+  }
   return 'error';
 }

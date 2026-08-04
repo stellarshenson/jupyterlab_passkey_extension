@@ -223,6 +223,22 @@ def test_failed_ceremony_exits_with_the_error(relay_dir, monkeypatch, no_wait):
         cli.cmd_get(_ns(rp_id="h", cred_id="CID", prf_salt=None, timeout=1.0))
 
 
+def test_rp_id_mismatch_gives_an_actionable_message(relay_dir, monkeypatch, no_wait):
+    # The URL-mismatch case must not surface as a bare code: the caller can fix it, but
+    # only if told it is --rp-id vs the tab URL, not "rp-id-mismatch".
+    def fake_trigger(command_id, args_obj, label, message):
+        (relay_dir / f"{args_obj['nonce']}.json").write_text(
+            json.dumps(
+                {"nonce": args_obj["nonce"], "ok": False, "error": "rp-id-mismatch"}
+            )
+        )
+
+    monkeypatch.setattr(cli, "_trigger", fake_trigger)
+
+    with pytest.raises(SystemExit, match="--rp-id does not match"):
+        cli.cmd_get(_ns(rp_id="wrong.example", cred_id="CID", prf_salt=None, timeout=1.0))
+
+
 def test_create_prints_cred_id_and_sends_a_user(relay_dir, capsys, monkeypatch, no_wait):
     seen = {}
 

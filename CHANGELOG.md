@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.0.44] - 2026-08-04
+
+Turns a passkey ceremony that fails because the RP ID does not match the tab's URL into an error the caller can act on, instead of a dead-end `error` code.
+
+### Fixed
+
+- A ceremony that fails because `--rp-id` is not the JupyterLab tab's hostname (nor a parent domain of it) now exits with a message that says exactly that, instead of the opaque `ceremony failed: error`. WebAuthn throws this synchronously as a `SecurityError`, distinct from the privacy-conflated `NotAllowedError` it uses for a cancel or a missing credential, so it is safe to name. Any other unexpected ceremony exception now carries its name through (`error: <name>`) rather than collapsing to a bare `error`
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.0.43] - 2026-07-24
 
 Makes the kernel-keyring relay actually available inside a container, tells the truth when it is not, and ends the wait as soon as a passphrase dialog is dismissed.
@@ -15,8 +25,6 @@ Makes the kernel-keyring relay actually available inside a container, tells the 
 - The keyctl relay is no longer silently downgraded to the `/dev/shm` file inside a container. A kernel `user` key grants read to the key's **possessor**, and a process possesses a key only when it is reachable from its session keyring - which container-spawned processes (a `docker exec`, a JupyterHub spawner, a JupyterLab terminal) never get, because `pam_keyinit` does not run for them. Staging and searching both succeeded and only the read was refused, so the probe rejected a keyctl that was installed and working. It now links the user keyring into the session before testing, establishing possession for the server and the CLI alike
 - The fallback warning named the wrong cause. It said "install keyutils" whatever went wrong - useless advice on a host where keyutils is installed and the kernel is refusing the syscall. It now distinguishes a sandbox refusal (a rootless or user-namespaced container, where no package helps), a possession failure, and a genuinely missing binary, which is the only case that still asks for keyutils
 - Dismissing the passphrase dialog no longer leaves the CLI waiting out its full timeout. Cancel and Escape relayed nothing, which is indistinguishable from a button nobody has clicked, so `passphrase` polled for 120s before reporting a refusal made instantly. The dialog now signals the cancel through a marker that carries no secret, and the command exits at once
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.41] - 2026-07-24
 

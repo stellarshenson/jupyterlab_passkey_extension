@@ -195,10 +195,10 @@ Every `POST` answers `400` on a bad nonce and touches no file when it does. The 
 { "nonce": "...", "ok": true, "cred_id": "<b64url>", "prf": "<b64url>" }
 
 // failure
-{ "nonce": "...", "ok": false, "error": "no-prf" | "not-allowed" | "error" }
+{ "nonce": "...", "ok": false, "error": "no-prf" | "not-allowed" | "rp-id-mismatch" | "error" }
 ```
 
-`create` never rejects on the create-time PRF flag - it always returns `cred_id` and a plain `prf_enabled`. Some authenticators (Windows Hello) report `prf_enabled: false` at registration yet yield a real PRF at assertion, so PRF availability is confirmed by a follow-up `get` with a `prf_salt`. `not-allowed` is WebAuthn's deliberate conflation of user-cancel, no-matching-credential, and wrong-RP into one privacy-preserving code.
+`create` never rejects on the create-time PRF flag - it always returns `cred_id` and a plain `prf_enabled`. Some authenticators (Windows Hello) report `prf_enabled: false` at registration yet yield a real PRF at assertion, so PRF availability is confirmed by a follow-up `get` with a `prf_salt`. `not-allowed` is WebAuthn's deliberate conflation of user-cancel, no-matching-credential, and wrong-RP into one privacy-preserving code. `rp-id-mismatch` is separate and nameable: a synchronous `SecurityError` thrown when `rp_id` is not a registrable suffix of the tab's origin, so the CLI reports that `--rp-id` does not match the tab's URL rather than a bare `error`.
 
 ## For extension authors: the frontend commands
 
