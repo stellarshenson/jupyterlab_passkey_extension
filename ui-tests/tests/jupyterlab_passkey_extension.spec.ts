@@ -265,7 +265,7 @@ test('passphrase dialog relays the value to a raw 0600 relay file', async ({
     .poll(() => fs.existsSync(passFile), { timeout: 15000 })
     .toBeTruthy();
 
-  // Written raw and 0600 - a consumer points PASS_RECOVERY_FILE straight at it.
+  // Written raw and 0600 - a consumer resolving the `file:` reference reads it as it is.
   expect(fs.readFileSync(passFile, 'utf-8')).toBe(PASSPHRASE);
   expect(fs.statSync(passFile).mode & 0o777).toBe(0o600);
 });

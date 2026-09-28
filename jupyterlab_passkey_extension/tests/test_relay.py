@@ -8,7 +8,11 @@ keyring is not functional (some CI runners), so they never turn a missing keyuti
 into a red suite.
 """
 
+import contextlib
+import logging
+import os
 import subprocess
+import sys
 
 import pytest
 
@@ -44,7 +48,7 @@ def test_auto_falls_back_to_shm_with_one_warning(monkeypatch, capsys):
     monkeypatch.setattr(relay, "_keyctl_probe", lambda: False)
 
     assert relay.backend() == "shm"
-    err = capsys.readouterr().err
+    out, err = capsys.readouterr()
     assert "keyctl unavailable" in err
     # The warning carries the recorded cause and points at --debug for the rest. It must
     # NOT tell every operator to install keyutils: where the kernel refuses the syscall
@@ -53,7 +57,7 @@ def test_auto_falls_back_to_shm_with_one_warning(monkeypatch, capsys):
     assert "the probe round-trip failed" in err
     assert "--debug" in err
     # Nothing to stdout - it carries the CLI result.
-    assert capsys.readouterr().out == ""
+    assert out == ""
 
 
 def test_fallback_warning_fires_once(monkeypatch, capsys):
@@ -362,6 +366,56 @@ def test_keyctl_cross_read_warns_once_on_a_squatted_shm(monkeypatch, tmp_path, c
     assert relay.collect(NONCE, "json") is None  # swallowed, not propagated
     err = capsys.readouterr().err
     assert "shm relay dir unreadable" in err  # ...but surfaced once
+
+
+@pytest.mark.parametrize("stderr", ["none", "closed"])
+@pytest.mark.parametrize("warning", ["fallback", "squat"])
+def test_a_relay_warning_never_fails_the_command_or_reaches_stdout(
+    capsys, monkeypatch, tmp_path, warning, stderr
+):
+    # The CLI runs both warnings. Started with `2>&-` stderr is None, and a print there
+    # goes to stdout, which carries the CLI's result; a stream something else closed
+    # raises on print.
+    closed = open(tmp_path / "stderr", "w")
+    closed.close()
+    monkeypatch.setattr(sys, "stderr", None if stderr == "none" else closed)
+    if warning == "fallback":
+        monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "auto")
+        monkeypatch.setattr(relay, "_backend_cache", None)
+        monkeypatch.setattr(relay, "_warned", False)
+        monkeypatch.setattr(relay, "_keyctl_probe", lambda: False)
+        assert relay.backend() == "shm"
+    else:
+        monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+        monkeypatch.setattr(relay, "_backend_cache", "keyctl")
+        monkeypatch.setattr(relay, "_keyctl_collect", lambda n, k: None)
+        relay.write_relay(NONCE, f"{NONCE}.json", "irrelevant")
+
+        def squat(n, k):
+            raise PermissionError("owned by uid 9999, not ours")
+
+        monkeypatch.setattr(relay, "_shm_collect", squat)
+        assert relay.collect(NONCE, "json") is None
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full to fail a write")
+def test_a_failed_warning_drops_stderr_without_closing_it(monkeypatch):
+    # In the server the log handlers write to the same object as sys.stderr, so it is
+    # dropped, never closed: a closed one would drop every later log record.
+    full = open("/dev/full", "w", buffering=1)
+    monkeypatch.setattr(sys, "stderr", full)
+    handler = logging.StreamHandler(full)
+    logger = logging.getLogger("relay-test")
+    logger.addHandler(handler)
+    try:
+        relay._say("keyctl unavailable")
+        assert sys.stderr is None and not full.closed
+        logger.warning("404 GET /missing")
+    finally:
+        logger.removeHandler(handler)
+        with contextlib.suppress(OSError):
+            full.close()
 
 
 def test_probe_detail_names_the_sandbox_on_eperm(monkeypatch):

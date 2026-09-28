@@ -32,7 +32,10 @@ dependencies = [
     # The `render` endpoint draws a staged code to a distorted PNG the `show` command
     # displays, so the code never reaches the page as text. Pillow >= 10.1 provides
     # ImageFont.load_default(size=...), so no font file has to ship with the package.
-    "Pillow>=10.1"
+    "Pillow>=10.1",
+    # The vault: AES-256-GCM for the entries and the wrapped data key, Scrypt for the
+    # recovery slot, HKDF for a passkey slot's PRF.
+    "cryptography>=42"
 ]
 dynamic = ["version", "description", "authors", "urls", "keywords"]
 

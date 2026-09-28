@@ -1,6 +1,6 @@
 """Render a short code to a distorted PNG a screen scraper cannot read as text.
 
-The code a local client stages for `show` is handed to the browser as an image,
+The code staged for `show` (by a local client, or the server for `vault show`) is handed to the browser as an image,
 never as DOM text, so it does not ride the notifications extension's broadcast to
 every socket, does not sit in the page for a scrape, and is absent from the
 accessibility tree. Standard CAPTCHA-style distortion - per-character jitter and

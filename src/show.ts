@@ -4,6 +4,8 @@ import { ServerConnection } from '@jupyterlab/services';
 
 import { Widget } from '@lumino/widgets';
 
+import { launchWithEscape } from './passphrase';
+
 import { requestAPI } from './request';
 
 export interface IShowArgs {
@@ -12,7 +14,8 @@ export interface IShowArgs {
 }
 
 /**
- * Show a code a local client staged, as an image the page never holds as text.
+ * Show a staged code - from a local client, or the server for `vault show` - as an
+ * image the page never holds as text.
  *
  * The counterpart of `copy` for a value the user must READ rather than paste - a
  * one-time authenticator code, a pairing code. The server renders the staged code
@@ -54,12 +57,13 @@ export async function runShow(
 
   // hasClose:false, mirroring the passphrase dialog: the default (true) dismisses
   // the dialog on any click outside it, which closes it out from under the user the
-  // moment focus moves. The Close button is the one way out; nothing is waiting on
-  // the far side, so no Escape handler is needed here.
-  await new Dialog({
-    title: 'Code',
-    body,
-    hasClose: false,
-    buttons: [Dialog.okButton({ label: 'Close' })]
-  }).launch();
+  // moment focus moves. Close and Escape are the ways out.
+  await launchWithEscape(
+    new Dialog({
+      title: 'Code',
+      body,
+      hasClose: false,
+      buttons: [Dialog.okButton({ label: 'Close' })]
+    })
+  );
 }

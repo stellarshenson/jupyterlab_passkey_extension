@@ -140,5 +140,12 @@ ui-tests/.tmp-runtime/
 # miss and arms the env fallback the trigger-failure test points at a dead port
 ui-tests/.tmp-runtime-empty/
 
+# passkey ui-tests: the vault file and state dir of the test server's throwaway vault
+ui-tests/.tmp-passkey-vault/
+ui-tests/.tmp-passkey-state/
+
 # jest junit reporter artifact
 junit.xml
+
+# review screenshots and scratch output
+tmp/

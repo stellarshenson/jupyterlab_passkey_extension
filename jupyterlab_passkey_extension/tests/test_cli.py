@@ -75,7 +75,7 @@ def posted(monkeypatch):
         return _R()
 
     monkeypatch.setattr(cli, "_server", lambda: ("http://127.0.0.1:8888/lab", "tok123"))
-    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(cli._LOOPBACK, "open", fake_urlopen)
     return sent
 
 
@@ -140,7 +140,7 @@ def test_a_404_trigger_names_the_missing_extension(monkeypatch):
     def boom(req, timeout=None):
         raise cli.urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(cli._LOOPBACK, "open", boom)
 
     with pytest.raises(SystemExit, match="notifications extension"):
         cli._trigger("passkey:run", {"nonce": "n" * 20}, "Approve", "msg")
@@ -298,6 +298,40 @@ def test_passphrase_prints_a_reference_never_the_value(relay_dir, capsys, monkey
     assert path.endswith(".pass")
     # Left in place for the consumer to read - unlike a ceremony relay.
     assert os.path.exists(path)
+
+
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full to fail a write")
+def test_passphrase_removes_the_secret_when_its_reference_cannot_be_written(relay_dir):
+    # A terminal closed during the wait, or a reader gone: nobody receives the reference,
+    # so nobody would ever remove the staged secret. Exit 1 with the reason, not 120.
+    script = (
+        "import argparse, pathlib, sys; sys.path.insert(0, %r);"
+        "from jupyterlab_passkey_extension import cli;"
+        "cli._trigger = lambda c, a, l, m: "
+        "(pathlib.Path(%r) / (a['nonce'] + '.pass')).write_text('hunter2');"
+        "cli._wait = lambda *a, **kw: None;"
+        "sys.exit(cli.cmd_passphrase(argparse.Namespace(prompt=None, once=False, timeout=1.0)))"
+        % (str(REPO_ROOT), str(relay_dir))
+    )
+    with open("/dev/full", "w") as full:
+        r = subprocess.run(
+            [sys.executable, "-c", script], stdout=full, stderr=subprocess.PIPE, text=True
+        )
+    assert r.returncode == 1, r.stderr
+    assert "the secret was removed" in r.stderr
+    assert not list(relay_dir.glob("*.pass"))
+
+
+def test_passphrase_started_with_stdout_closed_removes_the_secret(relay_dir, monkeypatch, no_wait):
+    # `>&-`: print would drop the reference without an error and exit 0.
+    monkeypatch.setattr(
+        cli, "_trigger",
+        lambda c, a, l, m: (relay_dir / f"{a['nonce']}.pass").write_text("hunter2"),
+    )
+    monkeypatch.setattr(sys, "stdout", None)
+    with pytest.raises(SystemExit, match="the secret was removed"):
+        cli.cmd_passphrase(_ns(prompt=None, once=False, timeout=1.0))
+    assert not list(relay_dir.glob("*.pass"))
 
 
 def test_passphrase_passes_the_prompt_through(relay_dir, monkeypatch, no_wait):
@@ -477,15 +511,14 @@ def test_a_broken_stderr_does_not_fail_the_process_at_shutdown():
 )
 def test_a_second_message_survives_the_first_dropping_stderr():
     # cmd_copy says two things, and the first one drops the stream when it is broken.
-    # The second then meets a CLOSED stderr, and printing to one raises ValueError,
-    # not OSError - so a handler that catches only OSError takes the whole command
-    # down over a progress message. Needs a real TextIOWrapper: a hand-rolled fake
-    # does not raise ValueError when closed, and would pass against the bug.
+    # The second then meets sys.stderr set to None, and print(file=None) writes to
+    # stdout, which carries the command's result. Needs a real /dev/full: a hand-rolled
+    # fake does not fail the way a full device does.
     script = (
         "import sys; sys.path.insert(0, %r);"
         "from jupyterlab_passkey_extension.cli import _say;"
         "_say('first - poisons and drops it');"
-        "_say('second - meets a closed stream');"
+        "_say('second - meets the dropped stream');"
         "print('stdout still works')" % str(REPO_ROOT)
     )
     with open("/dev/full", "w") as full:
@@ -495,7 +528,7 @@ def test_a_second_message_survives_the_first_dropping_stderr():
         )
 
     assert r.returncode == 0, f"exit {r.returncode} - a second message broke the command"
-    assert "stdout still works" in r.stdout
+    assert r.stdout == "stdout still works\n"
 
 
 def test_copy_refuses_to_read_a_secret_from_a_terminal(relay_dir, monkeypatch):
@@ -1223,6 +1256,19 @@ def test_show_refuses_to_read_a_code_from_a_terminal(relay_dir, monkeypatch):
 # --- detached: notifications, popups and queries survive the terminal going away ---
 
 
+def test_a_bare_call_prints_the_help_on_stderr_only(monkeypatch, capsys):
+    # Exit 2 with the full help on stderr; with stderr closed at start (`2>&-`) the
+    # help goes nowhere, never to stdout, which carries results.
+    monkeypatch.setattr(cli, "_ignore_hangup", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey"])
+    assert cli.main() == 2
+    out, err = capsys.readouterr()
+    assert out == "" and err.startswith("usage:") and "vault" in err
+    monkeypatch.setattr(sys, "stderr", None)
+    assert cli.main() == 2
+    assert capsys.readouterr().out == ""
+
+
 def test_ignore_hangup_makes_sighup_non_fatal():
     """After _ignore_hangup, a delivered SIGHUP does not kill the process.
 
@@ -1317,3 +1363,67 @@ def test_wait_prefers_the_value_over_a_cancel_marker(relay_dir):
     relay.stage(CANCEL_NONCE, "pass", "secret")
 
     cli._wait(CANCEL_NONCE, "pass", 5.0, "unused", watch_cancel=True)  # must not raise
+
+
+# The three CLI flows once more on the kernel keyring. The tests above run on shm (the
+# conftest default), so without these a keyctl-only break in a flow would pass the suite.
+needs_keyctl = pytest.mark.skipif(
+    not relay._keyctl_probe(), reason="keyctl not functional on this host"
+)
+
+
+@pytest.mark.keyctl
+@needs_keyctl
+def test_get_on_keyctl_prints_prf_and_consumes_the_key(capsys, monkeypatch, no_wait):
+    seen = {}
+
+    def fake_trigger(command_id, args_obj, label, message):
+        seen.update(args_obj)
+        relay.stage(args_obj["nonce"], "json", json.dumps(
+            {"nonce": args_obj["nonce"], "ok": True, "cred_id": "CID", "prf": "PRFVALUE"}))
+
+    monkeypatch.setattr(cli, "_trigger", fake_trigger)
+
+    assert cli.cmd_get(_ns(rp_id="h", cred_id="CID", prf_salt="SALT", timeout=1.0)) == 0
+    assert capsys.readouterr().out.strip() == "PRFVALUE"
+    assert relay.backend() == "keyctl"
+    assert not relay.relay_exists(seen["nonce"], "json")
+
+
+@pytest.mark.keyctl
+@needs_keyctl
+def test_passphrase_on_keyctl_prints_a_keyctl_reference(capsys, monkeypatch, no_wait):
+    SECRET = "correct horse battery staple"
+    seen = {}
+
+    def fake_trigger(command_id, args_obj, label, message):
+        seen.update(args_obj)
+        relay.stage(args_obj["nonce"], "pass", SECRET)
+
+    monkeypatch.setattr(cli, "_trigger", fake_trigger)
+
+    try:
+        assert cli.cmd_passphrase(_ns(prompt="Recovery passphrase", once=False, timeout=1.0)) == 0
+        out = capsys.readouterr().out
+        assert SECRET not in out
+        assert out.strip() == f"keyctl:jlab-passkey:{seen['nonce']}.pass"
+        # Left for the consumer, which collects it by that reference.
+        assert relay.collect(seen["nonce"], "pass") == SECRET
+    finally:
+        relay.unstage(seen.get("nonce", "n" * 20), "pass")
+
+
+@pytest.mark.keyctl
+@needs_keyctl
+def test_copy_on_keyctl_stages_the_secret_in_the_keyring(tmp_path, capsys, monkeypatch):
+    src = tmp_path / "token.txt"
+    src.write_text(COPY_SECRET)
+    seen = {}
+    monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: seen.update(a))
+
+    try:
+        assert cli.cmd_copy(_copy_ns(file=str(src), label=None)) == 0
+        assert COPY_SECRET not in capsys.readouterr().out
+        assert relay.collect(seen["nonce"], "secret") == COPY_SECRET
+    finally:
+        relay.unstage(seen.get("nonce", "n" * 20), "secret")

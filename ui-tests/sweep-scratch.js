@@ -1,5 +1,6 @@
 /**
- * Empty the suite's scratch directories: `.tmp-passkey-relay` and `.tmp-runtime`.
+ * Empty the suite's scratch directories: `.tmp-passkey-relay`, `.tmp-runtime`,
+ * `.tmp-passkey-vault` and `.tmp-passkey-state`.
  *
  * Wired as `globalTeardown` in playwright.config.js, and chained ahead of the server in
  * `webServer.command` for the pre-run half.
@@ -30,7 +31,12 @@ const fs = require('fs');
 const path = require('path');
 
 const sweep = async () => {
-  for (const dir of ['.tmp-passkey-relay', '.tmp-runtime']) {
+  for (const dir of [
+    '.tmp-passkey-relay',
+    '.tmp-runtime',
+    '.tmp-passkey-vault',
+    '.tmp-passkey-state'
+  ]) {
     fs.rmSync(path.join(__dirname, dir), { recursive: true, force: true });
   }
 };

@@ -12,6 +12,8 @@ import { ServerConnection } from '@jupyterlab/services';
 const mockLaunch = jest.fn();
 const mockReject = jest.fn();
 const mockCtor = jest.fn();
+// Whether the dialog is on screen; a launched dialog queued behind another is not.
+let mockAttached = true;
 jest.mock('@jupyterlab/apputils', () => ({
   Dialog: class {
     options: any;
@@ -24,6 +26,9 @@ jest.mock('@jupyterlab/apputils', () => ({
     constructor(options: any) {
       this.options = options;
       mockCtor(options);
+    }
+    get isAttached(): boolean {
+      return mockAttached;
     }
     launch(): any {
       return mockLaunch(this.options);
@@ -176,6 +181,44 @@ describe('runPassphrase', () => {
       false
     );
     expect(mockReject).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a dialog queued behind another alone on Escape', async () => {
+    mockAttached = false;
+    try {
+      mockLaunch.mockImplementation(
+        async () =>
+          new Promise(resolve => {
+            document.dispatchEvent(
+              new KeyboardEvent('keydown', { key: 'Escape' })
+            );
+            resolve({ button: { accept: false } });
+          })
+      );
+      await runPassphrase({ nonce: NONCE }, serverSettings);
+      expect(mockReject).not.toHaveBeenCalled();
+    } finally {
+      mockAttached = true;
+    }
+  });
+
+  it('lets one Escape close only one dialog', async () => {
+    // Closing the front dialog attaches the queued one before its listener runs;
+    // the first listener marks the key as used, so the second leaves it alone.
+    mockLaunch.mockImplementation(
+      async () =>
+        new Promise(resolve => {
+          const event = new KeyboardEvent('keydown', {
+            key: 'Escape',
+            cancelable: true
+          });
+          event.preventDefault();
+          document.dispatchEvent(event);
+          resolve({ button: { accept: false } });
+        })
+    );
+    await runPassphrase({ nonce: NONCE }, serverSettings);
+    expect(mockReject).not.toHaveBeenCalled();
   });
 
   it('stops listening for Escape once the dialog is done', async () => {

@@ -44,3 +44,12 @@ os.environ["JLAB_PASSKEY_RELAY_BACKEND"] = "shm"
 
 # Uncomment to set server log level to debug level
 # c.ServerApp.log_level = "DEBUG"
+
+# The vault: a throwaway vault file (its directory is emptied before each vault test)
+# and state dir, and the process memory holder pinned so a run never touches this host's kernel
+# keyring or a gpg-agent. The keyctl and gpg-agent holders are covered by pytest
+# (test_vault_holders.py).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+os.environ["JLAB_PASSKEY_VAULT"] = os.path.join(_HERE, ".tmp-passkey-vault", "vault.json")
+os.environ["XDG_STATE_HOME"] = os.path.join(_HERE, ".tmp-passkey-state")
+os.environ["JLAB_PASSKEY_VAULT_HOLDER"] = "memory"

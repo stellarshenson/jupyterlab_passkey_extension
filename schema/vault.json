@@ -1,0 +1,25 @@
+{
+  "title": "Passkey Vault",
+  "description": "The password vault the Jupyter server keeps, unlocked with a passkey",
+  "jupyter.lab.setting-icon": "ui-components:lock",
+  "jupyter.lab.setting-icon-label": "Passkey Vault",
+  "type": "object",
+  "properties": {
+    "unlockMinutes": {
+      "type": "integer",
+      "title": "Unlock duration (minutes)",
+      "description": "How long the vault stays unlocked after a passkey or recovery unlock, for every client: the panel, the CLI and the Python API",
+      "default": 240,
+      "minimum": 1,
+      "maximum": 1440
+    },
+    "sidebar": {
+      "type": "string",
+      "title": "Sidebar",
+      "description": "Which sidebar holds the vault panel",
+      "enum": ["right", "left"],
+      "default": "right"
+    }
+  },
+  "additionalProperties": false
+}

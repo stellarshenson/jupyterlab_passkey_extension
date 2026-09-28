@@ -35,13 +35,25 @@ def _relay_unavailable(handler):
     handler.finish(json.dumps({"error": "relay backend unavailable"}))
 
 
+def json_body(handler):
+    """The request body parsed as JSON, or None when it is not JSON.
+
+    Not `get_json_body`: that logs a malformed body at DEBUG, and these bodies carry a
+    PRF, a passphrase or a vault secret. Every caller answers 400 to a None.
+    """
+    try:
+        return json.loads(handler.request.body or b"null")
+    except ValueError:
+        return None
+
+
 class PasskeyResultHandler(APIHandler):
     # The following decorator should be present on all verb methods (head, get, post,
     # patch, put, delete, options) to ensure only authorized user can request the
     # Jupyter server
     @tornado.web.authenticated
     def post(self):
-        body = self.get_json_body()
+        body = json_body(self)
         nonce = body.get("nonce") if isinstance(body, dict) else None
         # Validate the nonce before it becomes a filename (prevents path traversal)
         if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
@@ -69,7 +81,7 @@ class PasskeyPassphraseHandler(APIHandler):
 
     @tornado.web.authenticated
     def post(self):
-        body = self.get_json_body()
+        body = json_body(self)
         nonce = body.get("nonce") if isinstance(body, dict) else None
         passphrase = body.get("passphrase") if isinstance(body, dict) else None
         # Validate the nonce before it becomes a filename (prevents path traversal)
@@ -107,13 +119,14 @@ class PasskeyPassphraseHandler(APIHandler):
 
 
 class PasskeySecretHandler(APIHandler):
-    """Hand a secret a local client staged in a relay to the browser, once.
+    """Hand a staged secret to the browser, once.
 
-    This runs the opposite way to every other handler here. The others take a
-    value the page produced and put it on disk for a local client; this takes a
-    value a local client already had - a token piped in from a file or a
-    stream - and hands it up to the page, which copies it to the clipboard.
-    So the CLI is the writer (via `relay.stage`) and this is the reader.
+    This runs the opposite way to the handlers that write: they take a value the
+    page produced and put it in a relay for a local client; this, like `render`,
+    takes a value already staged - by a local client (a token piped in from a
+    file or a stream), or by the server for `vault copy` - and hands it up to the
+    page, which copies it to the clipboard. `relay.stage` is the writer and this
+    is the reader.
 
     POST, not GET, though it only reads: the read is destructive, and a GET
     would carry the nonce in the query string, straight into the server's
@@ -121,15 +134,16 @@ class PasskeySecretHandler(APIHandler):
     one, and there is no reason to write tickets to a log file.
 
     One shot. The relay is destroyed on the way out whether or not the read
-    worked, so a secret is never left behind for a second collector - which
-    also means a failed clipboard write loses it and the caller must re-run
-    `jupyterlab-passkey copy`. That is the deliberate trade: a lost secret is
-    an inconvenience, a lingering one is a liability.
+    worked, so a secret is never left behind for a second collector. A refused
+    clipboard write is retried from page memory (copy.ts); a failed fetch, or the
+    tab closing before the retry, loses the secret, and the caller runs the copy
+    again. That is the deliberate
+    trade: a lost secret is an inconvenience, a lingering one is a liability.
     """
 
     @tornado.web.authenticated
     def post(self):
-        body = self.get_json_body()
+        body = json_body(self)
         nonce = body.get("nonce") if isinstance(body, dict) else None
         # Validate the nonce before it becomes a filename (prevents path traversal)
         if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
@@ -153,9 +167,10 @@ class PasskeySecretHandler(APIHandler):
 
 
 class PasskeyRenderHandler(APIHandler):
-    """Render a code a local client staged, as a distorted image, once.
+    """Render a staged code as a distorted image, once.
 
-    A one-shot reader of a relay the CLI wrote, like the secret handler - but the
+    A one-shot reader of a relay staged by a local client, or by the server for
+    `vault show`, like the secret handler - but the
     value is turned into a PNG here and only the image leaves, never the text. So a
     scraper reading the page, the notifications broadcast, or the accessibility
     tree never sees the code; an OCR pass on a screenshot still has to beat the
@@ -163,8 +178,8 @@ class PasskeyRenderHandler(APIHandler):
     returned as text.
 
     The relay is consumed before the render runs, so a render failure loses the
-    code - the same trade the secret handler makes, and the caller re-runs
-    `jupyterlab-passkey show`. Pillow is imported here rather than at module load so
+    code - the same trade the secret handler makes, and the caller runs the show
+    again. Pillow is imported here rather than at module load so
     a render-time failure gives this one endpoint a clean 500 rather than a
     traceback, and an unexpectedly broken Pillow does not fail the whole server
     extension at import.
@@ -172,7 +187,7 @@ class PasskeyRenderHandler(APIHandler):
 
     @tornado.web.authenticated
     def post(self):
-        body = self.get_json_body()
+        body = json_body(self)
         nonce = body.get("nonce") if isinstance(body, dict) else None
         # Validate the nonce before it becomes a filename (prevents path traversal)
         if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
@@ -188,9 +203,9 @@ class PasskeyRenderHandler(APIHandler):
             self.set_status(404)
             return
 
-        # The CLI caps this before staging; guard here too, since the render cost
-        # grows with length and runs on the server's event loop. Belt and braces
-        # against a value staged by any other writer.
+        # Both writers cap this before staging (`cli show`, `VaultService.stage`);
+        # guard here too, since the render cost grows with length and runs on the
+        # server's event loop.
         if len(value) > relay.MAX_CODE_CHARS:
             self.set_status(400)
             self.finish(json.dumps({"error": "code too long to render"}))
@@ -238,3 +253,7 @@ def setup_route_handlers(web_app):
     ]
 
     web_app.add_handlers(host_pattern, handlers)
+
+    from .vault.handlers import setup_vault_handlers
+
+    setup_vault_handlers(web_app)

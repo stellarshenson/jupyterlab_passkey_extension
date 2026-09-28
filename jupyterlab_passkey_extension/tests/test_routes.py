@@ -115,14 +115,32 @@ async def test_prf_not_logged(jp_fetch, relay_dir, caplog):
     assert prf_secret not in caplog.text
 
 
+@pytest.mark.parametrize("route", ["result", "passphrase", "secret", "render"])
+async def test_a_malformed_body_is_400_and_never_logged(jp_fetch, relay_dir, caplog, route):
+    # `get_json_body` logs a body it cannot parse at DEBUG, and these bodies carry a PRF
+    # or a passphrase - so they are parsed without it.
+    marker = "BODY_MUST_NOT_BE_LOGGED_QQQ"
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+            await jp_fetch("jupyterlab-passkey-extension", route, method="POST",
+                           body='{"passphrase": "' + marker)
+    assert exc.value.code == 400
+    assert marker not in caplog.text
+
+
+# A matching XSRF cookie and header pass the XSRF check, which runs first, so a 403
+# in the tests below can only come from the missing token.
+XSRF = {"Cookie": "_xsrf=x", "X-XSRFToken": "x"}
+
+
 async def test_unauthenticated_post_forbidden(http_server_client, jp_base_url, relay_dir):
     # http_server_client hits 127.0.0.1:<port> with NO auth token, so the
-    # @authenticated + XSRF protection must reject the POST.
+    # @authenticated check must reject the POST.
     path = url_path_join(jp_base_url, "jupyterlab-passkey-extension", "result")
     body = {"nonce": VALID_NONCE, "ok": True, "cred_id": "Y3JlZF9pZA"}
 
     with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
-        await http_server_client.fetch(path, method="POST", body=json.dumps(body))
+        await http_server_client.fetch(path, method="POST", body=json.dumps(body), headers=XSRF)
 
     assert exc.value.code == 403
     assert not relay_dir.exists()
@@ -252,8 +270,8 @@ async def test_passphrase_writes_raw_relay_file(jp_fetch, relay_dir):
     relay_file = relay_dir / f"{VALID_NONCE}.pass"
     assert relay_file.exists()
     assert stat.S_IMODE(os.stat(relay_file).st_mode) == 0o600
-    # Written raw: no JSON envelope and no trailing newline, so a consumer can
-    # use the file directly as PASS_RECOVERY_FILE.
+    # Written raw: no JSON envelope and no trailing newline, so a consumer that
+    # resolves the `file:` reference reads the passphrase as it is.
     assert relay_file.read_text() == PASSPHRASE
 
 
@@ -307,7 +325,7 @@ async def test_passphrase_requires_auth(http_server_client, jp_base_url, relay_d
     body = {"nonce": VALID_NONCE, "passphrase": PASSPHRASE}
 
     with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
-        await http_server_client.fetch(path, method="POST", body=json.dumps(body))
+        await http_server_client.fetch(path, method="POST", body=json.dumps(body), headers=XSRF)
 
     assert exc.value.code == 403
     assert not relay_dir.exists()
@@ -495,7 +513,7 @@ async def test_secret_requires_auth(http_server_client, jp_base_url, relay_dir):
 
     with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
         await http_server_client.fetch(
-            path, method="POST", body=json.dumps({"nonce": VALID_NONCE})
+            path, method="POST", body=json.dumps({"nonce": VALID_NONCE}), headers=XSRF
         )
 
     assert exc.value.code == 403
@@ -685,7 +703,7 @@ async def test_render_requires_auth(http_server_client, jp_base_url, relay_dir):
 
     with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
         await http_server_client.fetch(
-            path, method="POST", body=json.dumps({"nonce": VALID_NONCE})
+            path, method="POST", body=json.dumps({"nonce": VALID_NONCE}), headers=XSRF
         )
 
     assert exc.value.code == 403

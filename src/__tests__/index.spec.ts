@@ -17,7 +17,21 @@ jest.mock('@jupyterlab/apputils', () => ({
 import { runPasskey } from '../passkey';
 import { runCopy } from '../copy';
 import { runShow } from '../show';
-import plugin from '../index';
+// The vault plugin has its own tests (vault.spec.ts); stubbed here so this file keeps
+// testing only the bridge plugin's wiring.
+jest.mock('../vault/plugin', () => ({
+  vaultPlugin: { id: 'jupyterlab_passkey_extension:vault' }
+}));
+import plugins from '../index';
+
+const plugin = plugins[0];
+
+it('exports the bridge plugin and the vault plugin', () => {
+  expect(plugins.map(p => p.id)).toEqual([
+    'jupyterlab_passkey_extension:plugin',
+    'jupyterlab_passkey_extension:vault'
+  ]);
+});
 
 const mockRun = runPasskey as jest.MockedFunction<typeof runPasskey>;
 const mockCopy = runCopy as jest.MockedFunction<typeof runCopy>;

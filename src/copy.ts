@@ -10,10 +10,10 @@ export interface ICopyArgs {
 }
 
 /**
- * Collect the secret a local client staged under `nonce` and put it on the
- * clipboard.
+ * Collect the secret staged under `nonce` - by a local client, or by the server for
+ * `vault copy` - and put it on the clipboard.
  *
- * The reverse of the other commands: nothing is captured in the page, the value
+ * With `show`, the reverse of the other commands: nothing is captured in the page, the value
  * is fetched and delivered to the user's clipboard so they can paste it into
  * whatever asked for it. The notification carries only the nonce, so the secret
  * itself never rides through the notifications extension - which broadcasts its

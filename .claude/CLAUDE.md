@@ -32,14 +32,17 @@ The following workspace rules are STRICTLY ENFORCED for this project:
 (WebAuthn) capability of the user's browser or operating system to local clients with no
 browser of their own - the JupyterLab terminal and the CLI or API clients running on the
 Jupyter server. It runs the browser-side passkey ceremony and hands the result back to the
-requesting local process. It is purpose-agnostic and performs no cryptography; callers
-supply every parameter. It ships as a Python server extension plus an NPM frontend, both
-named `jupyterlab_passkey_extension`.
+requesting local process. The bridge commands are purpose-agnostic and perform no
+cryptography; callers supply every parameter. The extension also ships a password vault
+(`jupyterlab_passkey_extension/vault/`, `src/vault/`) - the one part that encrypts and
+stores secrets. It ships as a Python server extension plus an NPM frontend, both named
+`jupyterlab_passkey_extension`.
 
 - **Frontend** - TypeScript, `@jupyterlab/application`; one command `passkey:run` with args `{op:"get"|"create", nonce, rp_id, cred_id?, prf_salt?, user?}` runs the ceremony (optional PRF eval) and POSTs the result
 - **Server** - `jupyter_server` Tornado handlers: one authenticated `POST <base>/jupyterlab-passkey-extension/result` that writes a one-shot `0600` `/dev/shm/jlab-passkey-<uid>/<nonce>.json` relay (never logged), plus `GET <base>/jupyterlab-passkey-extension/health`
 - **Trigger** - consumers invoke `passkey:run` via jupyterlab-notify (the notification button click supplies the required WebAuthn user gesture); this extension builds no request-submission surface of its own
-- **Build/release** - versioned Makefile (currently v1.34), jupyter-releaser CI/CD workflows
+- **Vault** - the server holds the vault: `vault/store.py` (file, keyslots), `vault/holders.py` (keyctl → gpg-agent → process memory, each with measured capabilities), `vault/service.py` + `vault/handlers.py` (REST under `.../vault/<action>`); CLI `jupyterlab-passkey vault ...`, Python `Vault`, sidebar panel with a cog view; criteria in `docs/acc-crit-passkey.md`
+- **Build/release** - versioned Makefile (currently v1.43), jupyter-releaser CI/CD workflows
 - **Tests** - Jest (frontend), pytest (server), Playwright (`ui-tests/`)
 
 ## Mandatory Project Rules

@@ -13,6 +13,8 @@ import { runCopy, ICopyArgs } from './copy';
 
 import { runShow, IShowArgs } from './show';
 
+import { vaultPlugin } from './vault/plugin';
+
 const COMMAND_ID = 'passkey:run';
 const PASSPHRASE_COMMAND_ID = 'passkey:passphrase';
 const COPY_COMMAND_ID = 'passkey:copy';
@@ -75,4 +77,4 @@ const plugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
-export default plugin;
+export default [plugin, vaultPlugin];

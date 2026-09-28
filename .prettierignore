@@ -7,3 +7,5 @@ jupyterlab_passkey_extension
 eslint.config.mjs
 .venv
 .claude
+docs/acc-crit*.md
+docs/defects*.md

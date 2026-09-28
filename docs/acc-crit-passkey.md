@@ -1,0 +1,1472 @@
+# Acceptance Criteria - jupyterlab_passkey_extension
+
+Criteria for the passkey bridge: the relay that hands ceremony results, passphrases, copied secrets and shown codes between the Jupyter server and local clients (a kernel keyring `user` key when `keyctl` works, the `/dev/shm` `0600` file otherwise), the `show` command that displays a code as a distorted image, CLI commands that survive their terminal closing, and the password vault the Jupyter server keeps.
+
+## Authors
+
+- `@kj` Konrad Jelen
+
+## Relay scope and non-goals `SCOPE`
+
+Which relays the keyctl backend covers and what it does not promise
+
+- [x] `ACC-SCOPE-1` **In scope** - HIGH; every relay: ceremony <nonce>.json, passphrase <nonce>.pass, copy <nonce>.secret, show <nonce>.code, the cancel marker <nonce>.cancel
+  - evidence: relay._TTL routes json, pass, secret, code and cancel; test_result_valid_post_writes_relay_file, test_passphrase_writes_raw_relay_file, test_secret_is_handed_over_once_and_then_gone, test_render_returns_a_png_and_consumes_the_relay, test_passphrase_cancel_stages_a_marker_not_a_secret green; pytest 411/411 2026-09-27
+  - test-tags: UNIT
+  - test: stage and collect one value per kind (json, pass, secret, code, cancel) on shm; keyctl round trip, which does not depend on the kind
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:37Z @kj edited importance added "HIGH"; test added "stage and collect one value per kind (json, pass, secret) on each backend"; test-tags added "UNIT"; evidence added "`relay._TTL` routes json, pass and secret; `test_result_valid_post_writes_relay_file`, `test_passphrase_writes_raw_relay_file`, `test_secret_is_handed_over_once_and_then_gone` green; pytest 193/193 2026-09-26 v1.0.44"
+  - log: 2026-09-27T01:05:30Z @kj amended text "all three relays: ceremony `<nonce>.json`, passphrase `<nonce>.pass`, copy `<nonce>.secret`" -> "HIGH; every relay: ceremony <nonce>.json, passphrase <nonce>.pass, copy <nonce>.secret, show <nonce>.code, the cancel marker <nonce>.cancel"
+  - log: 2026-09-27T01:30:08Z @kj edited test "stage and collect one value per kind (json, pass, secret) on each backend" -> "stage and collect one value per kind (json, pass, secret, code, cancel) on each backend"; evidence "`relay._TTL` routes json, pass and secret; `test_result_valid_post_writes_relay_file`, `test_passphrase_writes_raw_relay_file`, `test_secret_is_handed_over_once_and_then_gone` green; pytest 193/193 2026-09-26 v1.0.44" -> "relay._TTL routes json, pass, secret, code and cancel; test_result_valid_post_writes_relay_file, test_passphrase_writes_raw_relay_file, test_secret_is_handed_over_once_and_then_gone, test_render_returns_a_png_and_consumes_the_relay, test_passphrase_cancel_stages_a_marker_not_a_secret green; pytest 411/411 2026-09-27"
+  - log: 2026-09-27T02:15:29Z @kj edited test "stage and collect one value per kind (json, pass, secret, code, cancel) on each backend" -> "stage and collect one value per kind (json, pass, secret, code, cancel) on shm; keyctl round trip, which does not depend on the kind"
+- [x] `ACC-SCOPE-2` **Non-goal: isolation** - MEDIUM; keyctl does not restrict same-uid reads; the win is no-swap, kernel-TTL self-destruct, no disk artifact - stated, never implied as access control
+  - evidence: README Security section and docs/cli-reference.md Relay backend section state keyctl is not access control; read 2026-09-27
+  - test-tags: MANUAL
+  - test: read the README security section and docs/cli-reference.md: no claim of same-uid isolation
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:37Z @kj edited importance added "MEDIUM"; test added "read the README security section and docs/cli-reference.md: no claim of same-uid isolation"; test-tags added "MANUAL"; evidence added "README.md line 235 and docs/cli-reference.md line 184 state keyctl is not access control; read 2026-09-26"
+  - log: 2026-09-27T01:05:33Z @kj edited evidence "README.md line 235 and docs/cli-reference.md line 184 state keyctl is not access control; read 2026-09-26" -> "README Security section and docs/cli-reference.md Relay backend section state keyctl is not access control; read 2026-09-27"
+- [x] `ACC-SCOPE-3` **Non-goal: cross-uid** - MEDIUM; server and CLI must share a uid (both uid 1000 here); a server running as another user is out of scope and must use the file backend
+  - evidence: docs/cli-reference.md Relay backend section states the shared-uid requirement and shm for a server under another user; read 2026-09-27
+  - test-tags: MANUAL
+  - test: read docs/cli-reference.md: server and CLI must share a uid
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:37Z @kj edited importance added "MEDIUM"; test added "read docs/cli-reference.md: server and CLI must share a uid"; test-tags added "MANUAL"; evidence added "docs/cli-reference.md line 184 states the shared-uid requirement and `shm` for a server under another user; read 2026-09-26"
+  - log: 2026-09-27T01:05:34Z @kj edited evidence "docs/cli-reference.md line 184 states the shared-uid requirement and `shm` for a server under another user; read 2026-09-26" -> "docs/cli-reference.md Relay backend section states the shared-uid requirement and shm for a server under another user; read 2026-09-27"
+
+## Relay backend selection `SELECT`
+
+How each process picks keyctl or the /dev/shm file relay, and what it reports
+
+- [x] `ACC-SELECT-4` **Probe, not presence** - HIGH; keyctl is chosen only when a full add -> search -> pipe -> unlink round-trip on `@u` succeeds, not merely when the binary is on PATH (the session-keyring linking caveat can make a present binary non-functional)
+  - evidence: `test_auto_prefers_keyctl_when_it_works`, `test_forced_keyctl_fails_loud_when_broken`, `test_probe_possesses_the_user_keyring_before_testing_it` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: stub keyctl broken, assert auto picks shm; with a working keyring, assert keyctl
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-07-19T00:00:00Z @kj probe key now unlinked in a `finally` keyed off padd's id, so a post-padd failure cannot leak it (review finding)
+  - log: 2026-09-26T14:28:37Z @kj edited importance added "HIGH"; test added "stub keyctl broken, assert auto picks shm; with a working keyring, assert keyctl"; test-tags added "UNIT"; evidence added "`test_auto_prefers_keyctl_when_it_works`, `test_forced_keyctl_fails_loud_when_broken`, `test_probe_possesses_the_user_keyring_before_testing_it` green; pytest 193/193 2026-09-26 v1.0.44"
+  - log: 2026-09-26T14:28:42Z @kj v1.0.43: the probe runs `keyctl link @u @s` before the round-trip
+- [x] `ACC-SELECT-5` **Cross-session reach** - HIGH; every keyctl op names `@u`; the probe first runs `keyctl link @u @s`, because a `user` key is readable only by a possessor and a process started without `pam_keyinit` (docker exec, JupyterHub spawner, JupyterLab terminal) does not possess `@u`. A failed link or round-trip falls back to shm
+  - evidence: `test_probe_possesses_the_user_keyring_before_testing_it`, `test_keyctl_cross_process_handoff` green, pytest 193/193 2026-09-26 v1.0.44; field host 2026-08-04: pipe denied before the link, read after it
+  - test-tags: UNIT, MANUAL
+  - test: in a session without `@u` linked (`keyctl session -`), run the probe, assert backend keyctl
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-07-19T00:00:00Z @kj implemented as explicit `@u` naming, not session linking - simpler and probe-verified; cross-process handoff tested
+  - log: 2026-09-26T14:28:36Z @kj amended text "every keyctl op names `@u` explicitly, which resolves across sessions on its own; no `keyctl link @u @s` is needed and none is done. The probe proves the round-trip end to end, so a host where `@u` were unreachable falls back to shm rather than staging into a key the reader cannot find" -> "every keyctl op names `@u`; the probe first runs `keyctl link @u @s`, because a `user` key is readable only by a possessor and a process started without `pam_keyinit` (docker exec, JupyterHub spawner, JupyterLab terminal) does not possess `@u`. A failed link or round-trip falls back to shm"
+  - log: 2026-09-26T14:28:37Z @kj edited importance added "HIGH"; test added "in a session without `@u` linked (`keyctl session -`), run the probe, assert backend keyctl"; test-tags added "UNIT, MANUAL"; evidence added "`test_probe_possesses_the_user_keyring_before_testing_it`, `test_keyctl_cross_process_handoff` green, pytest 193/193 2026-09-26 v1.0.44; field host 2026-08-04: pipe denied before the link, read after it"
+  - log: 2026-09-26T14:28:42Z @kj v1.0.43: `keyctl link @u @s` added; naming `@u` alone left `keyctl pipe` refused with EACCES in a JupyterLab terminal
+- [x] `ACC-SELECT-6` **Independent, converging** - MEDIUM; server and CLI probe independently; availability is environmental and uid-scoped, so they agree in practice, and a reader that guesses wrong resolves to not-found rather than silent-wrong (see Edge)
+  - related: ACC-SELECT-7 - supersedes this on version skew
+  - evidence: `test_cli_and_server_resolve_the_same_relay` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: resolve the relay from the CLI and from the server, assert the same location
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-07-21T00:00:00Z @kj the version-skew case (older server, newer CLI) does NOT converge; superseded by "Reader cross-reads on a split" - the keyctl reader now cross-reads shm rather than stranding at not-found
+  - log: 2026-09-26T14:28:37Z @kj edited importance added "MEDIUM"; test added "resolve the relay from the CLI and from the server, assert the same location"; test-tags added "UNIT"; evidence added "`test_cli_and_server_resolve_the_same_relay` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SELECT-7` **Reader cross-reads on a split** - HIGH; a keyctl-primary reader also checks the shm store when its kernel key is empty (`collect` falls back best-effort, `relay_exists` ORs it, `reference` names the file, `unstage` clears both), so a writer on the other backend - a server still on the pre-keyctl file relay handing to a newer keyctl CLI - is still collected instead of stranding under the same nonce. Read side only; the writer stays single-backend so keyctl keeps never-on-disk. The mirror split (keyctl writer -> shm-only reader) is an unrecoverable clean miss, never a wrong value
+  - evidence: `test_keyctl_reader_falls_back_to_the_shm_relay`, `test_keyctl_reader_collects_a_real_shm_staged_relay`, `test_reference_names_the_shm_file_when_a_shm_writer_staged_the_pass`, `test_keyctl_unstage_also_clears_the_shm_relay` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: keyctl reader, shm-staged value: assert collected, reference names the file, unstage clears both
+  - log: 2026-07-21T00:00:00Z @kj criterion added + implemented (v1.0.37) after a live vault unlock stranded on exactly this skew. Two architect+bug-hunter rounds: both independently found the passphrase BLOCKER (`reference` left backend-local while `relay_exists`/`collect` were made cross-aware, so the pass flow `_wait`-succeeds then prints a dead `keyctl:` handle), fixed symmetric; round 2 both SHIP; `test_keyctl_reader_falls_back_to_the_shm_relay`, `test_reference_names_the_shm_file_when_a_shm_writer_staged_the_pass`, `test_keyctl_unstage_also_clears_the_shm_relay`, `test_keyctl_cross_read_warns_once_on_a_squatted_shm`
+  - log: 2026-09-26T14:28:37Z @kj edited importance added "HIGH"; test added "keyctl reader, shm-staged value: assert collected, reference names the file, unstage clears both"; test-tags added "UNIT"; evidence added "`test_keyctl_reader_falls_back_to_the_shm_relay`, `test_keyctl_reader_collects_a_real_shm_staged_relay`, `test_reference_names_the_shm_file_when_a_shm_writer_staged_the_pass`, `test_keyctl_unstage_also_clears_the_shm_relay` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SELECT-8` **Override** - MEDIUM; `JLAB_PASSKEY_RELAY_BACKEND` = `auto` (default) / `keyctl` / `shm`; `keyctl` fails loud if the probe fails, `shm` forces the file relay, `auto` prefers keyctl and falls back
+  - evidence: `test_backend_forced_shm`, `test_forced_keyctl_fails_loud_when_broken`, `test_ceremony_under_forced_broken_keyctl_exits_one_line_not_a_traceback` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: set JLAB_PASSKEY_RELAY_BACKEND to shm, to keyctl on a broken keyring, to auto; assert shm, OSError, keyctl
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-07-19T00:00:00Z @kj forced-but-broken `keyctl` raises `OSError` (not `RuntimeError`), so the handlers' `except OSError` guards answer with a clean 500 / one line, never a traceback (review finding); passphrase's wait/reference now guarded too
+  - log: 2026-07-19T00:00:00Z @kj `unstage` made best-effort (never raises): `_run`'s `finally: unstage` re-enters `backend()`, and a raise in a `finally` would MASK the clean `SystemExit` with an `OSError` traceback on `create`/`get` (review finding); `test_ceremony_under_forced_broken_keyctl_exits_one_line_not_a_traceback`, `test_unstage_is_best_effort_when_the_backend_is_unavailable`
+  - log: 2026-09-26T14:28:37Z @kj edited importance added "MEDIUM"; test added "set JLAB_PASSKEY_RELAY_BACKEND to shm, to keyctl on a broken keyring, to auto; assert shm, OSError, keyctl"; test-tags added "UNIT"; evidence added "`test_backend_forced_shm`, `test_forced_keyctl_fails_loud_when_broken`, `test_ceremony_under_forced_broken_keyctl_exits_one_line_not_a_traceback` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SELECT-9` **Fallback warning** - MEDIUM; on fallback to shm, one warning on **stderr** (never stdout - it carries the result) naming why keyctl was refused and pointing at `--debug`: "keyctl unavailable (<cause>); using the /dev/shm file relay instead - swappable, orphaned on crash. Run any subcommand with --debug for the full backend decision."
+  - evidence: `test_auto_falls_back_to_shm_with_one_warning`, `test_probe_detail_names_possession_on_read_denied`, `test_a_relay_warning_never_fails_the_command_or_reaches_stdout` green; pytest 428/428 2026-09-27
+  - test-tags: UNIT
+  - test: stub the probe false under auto, assert stderr names the cause and `--debug`, stdout empty
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:36Z @kj amended text "on fallback to shm, one warning on **stderr** (never stdout - it carries the result): "keyctl unavailable; using /dev/shm relay (swappable, orphaned on crash) - install keyutils for kernel-keyring relays"" -> "on fallback to shm, one warning on **stderr** (never stdout - it carries the result) naming why keyctl was refused and pointing at `--debug`: "keyctl unavailable (<cause>); using the /dev/shm file relay instead - swappable, orphaned on crash. Run any subcommand with --debug for the full backend decision.""
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "MEDIUM"; test added "stub the probe false under auto, assert stderr names the cause and `--debug`, stdout empty"; test-tags added "UNIT"; evidence added "`test_auto_falls_back_to_shm_with_one_warning`, `test_probe_detail_names_possession_on_read_denied` green; pytest 193/193 2026-09-26 v1.0.44"
+  - log: 2026-09-26T14:28:42Z @kj v1.0.43: warning names the cause and points at `--debug`; no longer tells every host to install keyutils
+  - log: 2026-09-27T19:57:21Z @kj reopened: the fallback warning reached stdout when stderr was None (started with 2>&-), and the test's stdout check read an already-emptied capture; evidence retired: `test_auto_falls_back_to_shm_with_one_warning`, `test_probe_detail_names_possession_on_read_denied` green; pytest 193/193 2026-09-26 v1.0.44
+  - log: 2026-09-27T19:57:23Z @kj closed
+- [x] `ACC-SELECT-10` **Warning once** - LOW; the warning fires once per process, not once per relay
+  - evidence: `test_fallback_warning_fires_once` green; pytest 2026-09-27
+  - test-tags: UNIT
+  - test: call backend() twice under a failing probe, assert one warning
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "LOW"; test added "trigger the fallback twice in one process, assert one warning"; test-tags added "UNIT"; evidence added "`test_fallback_warning_fires_once`, `test_keyctl_cross_read_warns_once_on_a_squatted_shm` green; pytest 193/193 2026-09-26 v1.0.44"
+  - log: 2026-09-27T20:27:03Z @kj edited evidence "`test_fallback_warning_fires_once`, `test_keyctl_cross_read_warns_once_on_a_squatted_shm` green; pytest 193/193 2026-09-26 v1.0.44" -> "`test_fallback_warning_fires_once` green; pytest 2026-09-27"
+  - log: 2026-09-27T20:54:20Z @kj edited test "trigger the fallback twice in one process, assert one warning" -> "call backend() twice under a failing probe, assert one warning"
+
+## Relay per-flow behaviour `FLOW`
+
+Writer and reader per relay, and whether keyctl is transparent to the caller.
+
+| Flow               | Writer | Reader                   | keyctl transparent?                   |
+| ------------------ | ------ | ------------------------ | ------------------------------------- |
+| Ceremony `.json`   | server | CLI (`_run`)             | yes - CLI reads it internally         |
+| Ceremony raw-shell | server | external shell (docs)    | no - documented shell must use keyctl |
+| Copy `.secret`     | CLI    | browser via `secret` API | yes - both ends are our code          |
+| Passphrase `.pass` | server | external consumer        | no - consumer contract changes        |
+
+- [x] `ACC-FLOW-11` **Copy: transparent** - HIGH; CLI stages `jlab-passkey:<nonce>.secret`, notification carries the nonce only, `secret` handler searches + pipes + unlinks (one-shot); browser side unchanged
+  - evidence: `test_secret_is_handed_over_once_and_then_gone`, `test_copy_never_puts_the_secret_in_the_notification` green, pytest 193/193 2026-09-26 v1.0.44; Galata copy clipboard test green, Galata 27/27 at v1.0.41 (journal entry 27)
+  - test-tags: UNIT, E2E
+  - test: stage a secret, collect it through the `secret` handler twice, assert the second is 404
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "HIGH"; test added "stage a secret, collect it through the `secret` handler twice, assert the second is 404"; test-tags added "UNIT, E2E"; evidence added "`test_secret_is_handed_over_once_and_then_gone`, `test_copy_never_puts_the_secret_in_the_notification` green, pytest 193/193 2026-09-26 v1.0.44; Galata copy clipboard test green, Galata 27/27 at v1.0.41 (journal entry 27)"
+- [x] `ACC-FLOW-12` **Copy: --block collection** - MEDIUM; `--block` polls until the key is gone (search fails), same signal as the file disappearing today
+  - evidence: `test_copy_block_returns_when_the_browser_collects_the_secret` green, pytest 193/193 2026-09-26 v1.0.44; Galata `copy --block stays alive until the browser collects the secret` green, Galata 27/27 at v1.0.41 (journal entry 27)
+  - test-tags: UNIT, E2E
+  - test: `copy --block`, collect from the browser, assert exit 0 at once
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "MEDIUM"; test added "`copy --block`, collect from the browser, assert exit 0 at once"; test-tags added "UNIT, E2E"; evidence added "`test_copy_block_returns_when_the_browser_collects_the_secret` green, pytest 193/193 2026-09-26 v1.0.44; Galata `copy --block stays alive until the browser collects the secret` green, Galata 27/27 at v1.0.41 (journal entry 27)"
+- [x] `ACC-FLOW-13` **Ceremony: CLI read** - CRITICAL; server stages `jlab-passkey:<nonce>.json`; `_wait` polls `keyctl search`, reads via pipe, unlinks; PRF still printed to stdout, never logged
+  - evidence: `test_get_prints_prf_and_consumes_the_relay`, `test_prf_not_logged` green, pytest 193/193 2026-09-26 v1.0.44; Galata `get prints the PRF the authenticator actually returned` green, Galata 27/27 at v1.0.41 (journal entry 27)
+  - test-tags: UNIT, E2E
+  - test: run `get` with a PRF salt, assert the PRF on stdout and the relay consumed
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "CRITICAL"; test added "run `get` with a PRF salt, assert the PRF on stdout and the relay consumed"; test-tags added "UNIT, E2E"; evidence added "`test_get_prints_prf_and_consumes_the_relay`, `test_prf_not_logged` green, pytest 193/193 2026-09-26 v1.0.44; Galata `get prints the PRF the authenticator actually returned` green, Galata 27/27 at v1.0.41 (journal entry 27)"
+- [x] `ACC-FLOW-14` **Ceremony: raw-shell doc** - LOW; the raw `jupyterlab-notify` example in commands-reference.md gains the keyctl equivalent (`keyctl pipe $(keyctl search @u user ...)`), and states the file form applies only under the shm backend
+  - evidence: docs/commands-reference.md shows the `keyctl search` / `keyctl pipe` form beside the shm file form; read 2026-09-26
+  - test-tags: MANUAL
+  - test: read docs/commands-reference.md: keyctl read beside the shm file read
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "LOW"; test added "read docs/commands-reference.md: keyctl read beside the shm file read"; test-tags added "MANUAL"; evidence added "docs/commands-reference.md shows the `keyctl search` / `keyctl pipe` form beside the shm file form; read 2026-09-26"
+- [x] `ACC-FLOW-15` **Passphrase: keyctl stage** - HIGH; server stages `jlab-passkey:<nonce>.pass`; CLI prints a scheme-prefixed reference (see contract), not a path
+  - evidence: `test_passphrase_prints_a_reference_never_the_value`, `test_reference_scheme_per_backend` green, pytest 193/193 2026-09-26 v1.0.44; Galata passphrase relay test green, Galata 27/27 at v1.0.41 (journal entry 27)
+  - test-tags: UNIT, E2E
+  - test: run `passphrase` on each backend, assert stdout is a `keyctl:` or `file:` reference, never the value
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "HIGH"; test added "run `passphrase` on each backend, assert stdout is a `keyctl:` or `file:` reference, never the value"; test-tags added "UNIT, E2E"; evidence added "`test_passphrase_prints_a_reference_never_the_value`, `test_reference_scheme_per_backend` green, pytest 193/193 2026-09-26 v1.0.44; Galata passphrase relay test green, Galata 27/27 at v1.0.41 (journal entry 27)"
+- [x] `ACC-FLOW-16` **TTL** - MEDIUM; ceremony `json` and passphrase `pass` keys expire at 300s; copy `secret` at 900s, since the user may not click its notification at once; all via `keyctl timeout`
+  - evidence: `relay._TTL` json 300, pass 300, secret 900; `test_keyctl_sets_a_ttl`, `test_copy_without_block_uses_the_default_key_ttl` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: stage each kind on keyctl, assert `keyctl timeout` gets `relay._TTL[kind]`
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-07-19T00:00:00Z @kj TTLs set to json/pass 300s, secret 900s (was proposed 120/300); copy widened for the click-whenever window
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "MEDIUM"; test added "stage each kind on keyctl, assert `keyctl timeout` gets `relay._TTL[kind]`"; test-tags added "UNIT"; evidence added "`relay._TTL` json 300, pass 300, secret 900; `test_keyctl_sets_a_ttl`, `test_copy_without_block_uses_the_default_key_ttl` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-FLOW-17` **TTL set is checked** - HIGH; the `keyctl timeout` return code is checked; a key that cannot be given an expiry is unlinked and the stage fails loud, never left holding a secret with no self-destruct (the padd->timeout window is non-atomic and accepted as no-worse-than-shm)
+  - evidence: `test_keyctl_stage_unlinks_and_raises_when_the_ttl_cannot_be_set` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: make `keyctl timeout` fail, assert the key is unlinked and stage raises
+  - log: 2026-07-19T00:00:00Z @kj criterion added + implemented (review finding); `test_keyctl_stage_unlinks_and_raises_when_the_ttl_cannot_be_set`
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "HIGH"; test added "make `keyctl timeout` fail, assert the key is unlinked and stage raises"; test-tags added "UNIT"; evidence added "`test_keyctl_stage_unlinks_and_raises_when_the_ttl_cannot_be_set` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-FLOW-18` **Copy `--block` outlives the wait** - MEDIUM; in `--block` the copy key's TTL is set past the wait deadline (`ceil(timeout)` + margin), so a key vanishing during the wait can only mean collection, never expiry - otherwise `--block` would report a secret delivered that TTL-expired uncollected (keyctl only; shm files never expire)
+  - evidence: `test_copy_block_gives_the_key_a_ttl_that_outlives_the_wait`, `test_copy_rejects_a_non_positive_or_non_finite_block_timeout` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: `copy --block --timeout 30`, assert the key TTL exceeds 30s; assert bad timeouts refused
+  - log: 2026-07-19T00:00:00Z @kj criterion added + implemented (review finding); `test_copy_block_gives_the_key_a_ttl_that_outlives_the_wait`
+  - log: 2026-07-19T00:00:00Z @kj `--block --timeout` must be positive and finite - inf/nan would crash `ceil()`, and `<= -60` would drive the TTL to 0/negative (`keyctl timeout 0` clears the expiry); rejected before staging (review finding); `test_copy_rejects_a_non_positive_or_non_finite_block_timeout`
+  - log: 2026-07-19T00:00:00Z @kj also capped at 1e8s - keyctl stores the TTL in a 32-bit unsigned int, so a value at/beyond 2^32 wraps below the wait, re-opening the mid-wait self-destruct (review finding); one range test `0 < timeout <= 1e8` subsumes non-finite/non-positive/oversized
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "MEDIUM"; test added "`copy --block --timeout 30`, assert the key TTL exceeds 30s; assert bad timeouts refused"; test-tags added "UNIT"; evidence added "`test_copy_block_gives_the_key_a_ttl_that_outlives_the_wait`, `test_copy_rejects_a_non_positive_or_non_finite_block_timeout` green; pytest 193/193 2026-09-26 v1.0.44"
+
+### API
+
+- Kernel key: type `user`, description `jlab-passkey:<nonce>.<kind>`, keyring `@u`, payload = the raw value, TTL per flow
+- Backend selection env: `JLAB_PASSKEY_RELAY_BACKEND` = `auto` | `keyctl` | `shm`
+- Passphrase reference (stdout): `keyctl:jlab-passkey:<nonce>.pass` or `file:<relay_dir>/<nonce>.pass`
+- No new HTTP endpoints; the `secret` / `result` / `passphrase` handlers gain a backend indirection, wire contract unchanged
+
+## Passphrase consumer contract `PASS`
+
+The passphrase value must reach a tool outside this extension. The CLI prints a **reference**, scheme-prefixed so one consumer handles both backends and the value never transits the bridge CLI or an agent.
+
+- [x] `ACC-PASS-19` **Reference form** - HIGH; keyctl: `keyctl:jlab-passkey:<nonce>.pass`; shm fallback: `file:<relay_dir>/<nonce>.pass`
+  - evidence: `test_reference_scheme_per_backend` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: stage a pass on each backend, assert `reference` gives `keyctl:jlab-passkey:<nonce>.pass` or `file:<path>`
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "HIGH"; test added "stage a pass on each backend, assert `reference` gives `keyctl:jlab-passkey:<nonce>.pass` or `file:<path>`"; test-tags added "UNIT"; evidence added "`test_reference_scheme_per_backend` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-PASS-20` **Consumer resolves** - MEDIUM; a keyctl-aware consumer branches on the scheme: `keyctl:` -> `keyctl pipe $(keyctl search @u user <desc>)`; `file:` -> read the path
+  - evidence: docs/cli-reference.md passphrase section documents the branch: keyctl pipe for keyctl:, read the path for file:; read 2026-09-27
+  - test-tags: MANUAL
+  - test: run the docs/cli-reference.md consumer snippet on one `keyctl:` and one `file:` reference
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "MEDIUM"; test added "run the docs/cli-reference.md consumer snippet on one `keyctl:` and one `file:` reference"; test-tags added "MANUAL"; evidence added "docs/cli-reference.md lines 78-97 document the branch: `keyctl pipe` for `keyctl:`, read the path for `file:`; read 2026-09-26"
+  - log: 2026-09-27T01:31:15Z @kj edited evidence "docs/cli-reference.md lines 78-97 document the branch: `keyctl pipe` for `keyctl:`, read the path for `file:`; read 2026-09-26" -> "docs/cli-reference.md passphrase section documents the branch: keyctl pipe for keyctl:, read the path for file:; read 2026-09-27"
+- [x] `ACC-PASS-21` **No bridge-side read helper** - HIGH; the extension never pipes the value to its own stdout; the consumer reads the key itself, keeping the value out of the bridge CLI and any agent transcript
+  - evidence: `test_passphrase_prints_a_reference_never_the_value` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: run `passphrase`, assert the value is absent from stdout
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "HIGH"; test added "run `passphrase`, assert the value is absent from stdout"; test-tags added "UNIT"; evidence added "`test_passphrase_prints_a_reference_never_the_value` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-PASS-22` **Consumer stays one-shot-optional** - MEDIUM; keyctl passphrase is not unlinked on read (mirrors the file the consumer shreds today); the kernel TTL is the backstop, and the consumer may unlink after use
+  - evidence: `test_passphrase_prints_a_reference_never_the_value` asserts the relay is left in place; the keyctl pass key keeps its 300s TTL; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: run `passphrase`, assert the pass relay still exists after the CLI exits
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "MEDIUM"; test added "run `passphrase`, assert the pass relay still exists after the CLI exits"; test-tags added "UNIT"; evidence added "`test_passphrase_prints_a_reference_never_the_value` asserts the relay is left in place; the keyctl pass key keeps its 300s TTL; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-PASS-23` **Reference is time-bounded on keyctl** - LOW; a `keyctl:` reference resolves only until its 300s TTL; the consumer must resolve promptly, where the `file:` form persists until reboot - documented in cli-reference.md as a backend asymmetry, not silently different
+  - evidence: docs/cli-reference.md passphrase section states the 300s limit and that file: persists until reboot; read 2026-09-27
+  - test-tags: MANUAL
+  - test: read docs/cli-reference.md: the 300s limit of a `keyctl:` reference is stated
+  - log: 2026-07-19T00:00:00Z @kj criterion added (review finding); documented, TTL unchanged (deliberate)
+  - log: 2026-09-26T14:28:38Z @kj edited importance added "LOW"; test added "read docs/cli-reference.md: the 300s limit of a `keyctl:` reference is stated"; test-tags added "MANUAL"; evidence added "docs/cli-reference.md line 83 states the 300s limit and that `file:` persists until reboot; read 2026-09-26"
+  - log: 2026-09-27T01:31:16Z @kj edited evidence "docs/cli-reference.md line 83 states the 300s limit and that `file:` persists until reboot; read 2026-09-26" -> "docs/cli-reference.md passphrase section states the 300s limit and that file: persists until reboot; read 2026-09-27"
+- [x] `ACC-PASS-24` **Docs: worked example** - LOW; cli-reference.md passphrase examples show the keyctl consumer form beside the file form, and the `pass-cli` integration the vault side must match
+  - evidence: docs/cli-reference.md passphrase section shows both reference forms and a consumer case on the scheme; read 2026-09-27
+  - test-tags: MANUAL
+  - test: read the docs/cli-reference.md passphrase examples
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "LOW"; test added "read the docs/cli-reference.md passphrase examples"; test-tags added "MANUAL"; evidence added "docs/cli-reference.md lines 78-97 show both reference forms and a consumer `case` on the scheme; read 2026-09-26"
+  - log: 2026-09-27T01:31:17Z @kj edited evidence "docs/cli-reference.md lines 78-97 show both reference forms and a consumer `case` on the scheme; read 2026-09-26" -> "docs/cli-reference.md passphrase section shows both reference forms and a consumer case on the scheme; read 2026-09-27"
+
+## Relay security properties `SECURE`
+
+Where a relayed value may and may not appear
+
+- [x] `ACC-SECURE-25` **No value on argv** - CRITICAL; `keyctl padd` takes the payload on stdin; only the nonce/description is ever an argument
+  - evidence: `test_keyctl_stage_never_puts_the_secret_on_argv` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: spy `subprocess.run` during a keyctl stage, assert the value is in no argv
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "CRITICAL"; test added "spy `subprocess.run` during a keyctl stage, assert the value is in no argv"; test-tags added "UNIT"; evidence added "`test_keyctl_stage_never_puts_the_secret_on_argv` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SECURE-26` **No value in logs** - CRITICAL; no handler or CLI path logs the value or the pipe output, same bar as the file relay
+  - evidence: `test_prf_not_logged`, `test_passphrase_not_logged`, `test_secret_not_logged`, `test_render_not_logged` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: capture server logs during each handler, assert the value is absent
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "CRITICAL"; test added "capture server logs during each handler, assert the value is absent"; test-tags added "UNIT"; evidence added "`test_prf_not_logged`, `test_passphrase_not_logged`, `test_secret_not_logged`, `test_render_not_logged` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SECURE-27` **One-shot preserved** - HIGH; copy and ceremony unlink the key on read; a second reader finds nothing, exactly as the file relay unlinks
+  - evidence: `test_keyctl_round_trip_and_one_shot`, `test_secret_is_handed_over_once_and_then_gone`, `test_get_prints_prf_and_consumes_the_relay` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: collect a copy or ceremony relay twice, assert the second read finds nothing
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "HIGH"; test added "collect a copy or ceremony relay twice, assert the second read finds nothing"; test-tags added "UNIT"; evidence added "`test_keyctl_round_trip_and_one_shot`, `test_secret_is_handed_over_once_and_then_gone`, `test_get_prints_prf_and_consumes_the_relay` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SECURE-28` **Squat guard scope** - MEDIUM; the keyctl path has no filesystem to squat; `ensure_relay_dir` and the `0600` model are retained and exercised only on the shm fallback
+  - evidence: five `test_ensure_relay_dir_*` tests and `test_keyctl_cross_read_is_best_effort_on_a_squatted_shm` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: symlinked or foreign-owned relay dir, assert `ensure_relay_dir` refuses
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "symlinked or foreign-owned relay dir, assert `ensure_relay_dir` refuses"; test-tags added "UNIT"; evidence added "five `test_ensure_relay_dir_*` tests and `test_keyctl_cross_read_is_best_effort_on_a_squatted_shm` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SECURE-29` **Same-uid caveat documented** - MEDIUM; README security section states keyctl protects against swap and disk residue, not against the user's own processes
+  - evidence: README Security section states neither backend isolates a secret from the user's own processes; read 2026-09-27
+  - test-tags: MANUAL
+  - test: read the README.md security section
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "read the README.md security section"; test-tags added "MANUAL"; evidence added "README.md line 235 states neither backend isolates a secret from the user's own processes; read 2026-09-26"
+  - log: 2026-09-27T01:05:36Z @kj edited evidence "README.md line 235 states neither backend isolates a secret from the user's own processes; read 2026-09-26" -> "README Security section states neither backend isolates a secret from the user's own processes; read 2026-09-27"
+
+## Relay edge cases `EDGE`
+
+Relay failure and backend mismatch cases
+
+- [x] `ACC-EDGE-30` **Edge: backend mismatch** - MEDIUM; writer keyctl, reader probes shm-only -> reader finds nothing and times out with the normal not-found message, never a wrong value
+  - evidence: a shm reader reads files only, so a keyctl-staged value is not found; `test_wait_times_out_when_nothing_is_relayed` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: stage on keyctl, wait with the backend forced to shm, assert a timeout and no value
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "stage on keyctl, wait with the backend forced to shm, assert a timeout and no value"; test-tags added "UNIT"; evidence added "a shm reader reads files only, so a keyctl-staged value is not found; `test_wait_times_out_when_nothing_is_relayed` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-EDGE-31` **Edge: quota exhausted** - MEDIUM; `keyctl padd` fails on the per-uid key quota -> CLI/server answer with a one-line error (as a full /dev/shm does today), never a traceback
+  - evidence: `test_result_handler_answers_a_relay_failure_with_a_clean_500`, `test_secret_handler_answers_a_relay_failure_with_a_clean_500`, `test_a_squatted_relay_dir_answers_with_a_line_not_a_traceback` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: make `relay.stage` raise OSError, assert a clean 500 from each handler and one line from the CLI
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "make `relay.stage` raise OSError, assert a clean 500 from each handler and one line from the CLI"; test-tags added "UNIT"; evidence added "`test_result_handler_answers_a_relay_failure_with_a_clean_500`, `test_secret_handler_answers_a_relay_failure_with_a_clean_500`, `test_a_squatted_relay_dir_answers_with_a_line_not_a_traceback` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-EDGE-32` **Edge: TTL expiry mid-wait** - MEDIUM; a key that expires before collection -> the waiter reports the same timeout as an uncollected file, nothing stranded
+  - evidence: live 2026-09-26: 1s-TTL key present at 0s, absent at 2.5s; `test_wait_times_out_when_nothing_is_relayed` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT, MANUAL
+  - test: stage a keyctl key with a 1s TTL, wait 2.5s, assert `relay_exists` is false
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "stage a keyctl key with a 1s TTL, wait 2.5s, assert `relay_exists` is false"; test-tags added "UNIT, MANUAL"; evidence added "live 2026-09-26: 1s-TTL key present at 0s, absent at 2.5s; `test_wait_times_out_when_nothing_is_relayed` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-EDGE-33` **Edge: keyctl present, linking broken** - MEDIUM; probe round-trip fails -> auto falls back to shm with the warning; `JLAB_PASSKEY_RELAY_BACKEND=keyctl` fails loud instead
+  - evidence: `test_auto_falls_back_to_shm_with_one_warning`, `test_forced_keyctl_fails_loud_when_broken`, `test_probe_detail_names_possession_on_read_denied` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: stub the probe to fail, assert auto falls back with the warning and forced keyctl raises OSError
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "stub the probe to fail, assert auto falls back with the warning and forced keyctl raises OSError"; test-tags added "UNIT"; evidence added "`test_auto_falls_back_to_shm_with_one_warning`, `test_forced_keyctl_fails_loud_when_broken`, `test_probe_detail_names_possession_on_read_denied` green; pytest 193/193 2026-09-26 v1.0.44"
+  - log: 2026-09-26T14:28:43Z @kj v1.0.43: the probe tries `keyctl link @u @s` first; the warning names the failing step
+- [x] `ACC-EDGE-34` **Edge: empty / non-text payload** - MEDIUM; same boundary rules as today (empty rejected, utf-8 strict at the stdin boundary)
+  - evidence: `test_copy_refuses_empty_input`, `test_copy_rejects_stdin_bytes_that_are_not_text`, `test_passphrase_rejects_missing_or_non_string` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: pipe empty input and non-utf-8 bytes to `copy`; post a non-string passphrase
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "pipe empty input and non-utf-8 bytes to `copy`; post a non-string passphrase"; test-tags added "UNIT"; evidence added "`test_copy_refuses_empty_input`, `test_copy_rejects_stdin_bytes_that_are_not_text`, `test_passphrase_rejects_missing_or_non_string` green; pytest 193/193 2026-09-26 v1.0.44"
+
+## Relay tests `TESTS`
+
+Test coverage the relay backend work committed to
+
+- [x] `ACC-TESTS-35` **Probe test** - MEDIUM; selection returns keyctl when the round-trip works, shm when it is forced off, discriminating against a stubbed-broken keyctl
+  - evidence: `test_auto_prefers_keyctl_when_it_works`, `test_backend_forced_shm`, `test_forced_keyctl_fails_loud_when_broken` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: run the backend selection tests in tests/test_relay.py
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "run the backend selection tests in tests/test_relay.py"; test-tags added "UNIT"; evidence added "`test_auto_prefers_keyctl_when_it_works`, `test_backend_forced_shm`, `test_forced_keyctl_fails_loud_when_broken` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-TESTS-36` **Cross-process handoff** - MEDIUM; a key staged in one process is read byte-exact in another (mirrors the empirical check already run)
+  - evidence: `test_keyctl_cross_process_handoff` green on a real keyring; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: stage in a child process, collect in the parent, assert byte-exact
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "stage in a child process, collect in the parent, assert byte-exact"; test-tags added "UNIT"; evidence added "`test_keyctl_cross_process_handoff` green on a real keyring; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-TESTS-37` **TTL destroys** - MEDIUM; a key is gone after its timeout, no reaper
+  - evidence: live 2026-09-26: 1s-TTL key absent at 2.5s; `test_keyctl_sets_a_ttl` green (TTL set per kind); pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT, MANUAL
+  - test: stage a keyctl key with a 1s TTL, wait 2.5s, assert it is gone
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "stage a keyctl key with a 1s TTL, wait 2.5s, assert it is gone"; test-tags added "UNIT, MANUAL"; evidence added "live 2026-09-26: 1s-TTL key absent at 2.5s; `test_keyctl_sets_a_ttl` green (TTL set per kind); pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-TESTS-38` **One-shot** - MEDIUM; copy/ceremony read unlinks; a second read finds nothing
+  - evidence: `test_keyctl_round_trip_and_one_shot`, `test_secret_is_handed_over_once_and_then_gone` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: collect a relay twice, assert the second read is empty
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "collect a relay twice, assert the second read is empty"; test-tags added "UNIT"; evidence added "`test_keyctl_round_trip_and_one_shot`, `test_secret_is_handed_over_once_and_then_gone` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-TESTS-39` **No argv leak** - MEDIUM; the value never appears in a staged process command line (payload on stdin)
+  - evidence: `test_keyctl_stage_never_puts_the_secret_on_argv` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: spy the subprocess argv during a keyctl stage
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:39Z @kj edited importance added "MEDIUM"; test added "spy the subprocess argv during a keyctl stage"; test-tags added "UNIT"; evidence added "`test_keyctl_stage_never_puts_the_secret_on_argv` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-TESTS-40` **Fallback + warning** - MEDIUM; auto fallback to shm emits exactly one stderr warning and uses the file relay; nothing on stdout. A forced `shm` stays silent
+  - evidence: `test_auto_falls_back_to_shm_with_one_warning`, `test_fallback_warning_fires_once` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: stub the probe false under auto, assert one stderr warning and empty stdout
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:37Z @kj amended text "forcing shm emits exactly one stderr warning and uses the file relay; nothing on stdout" -> "auto fallback to shm emits exactly one stderr warning and uses the file relay; nothing on stdout. A forced `shm` stays silent"
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "MEDIUM"; test added "stub the probe false under auto, assert one stderr warning and empty stdout"; test-tags added "UNIT"; evidence added "`test_auto_falls_back_to_shm_with_one_warning`, `test_fallback_warning_fires_once` green; pytest 193/193 2026-09-26 v1.0.44"
+  - log: 2026-09-26T14:28:43Z @kj body corrected: a forced shm never warned; the warning test covers the auto fallback
+- [x] `ACC-TESTS-41` **Both backends per flow** - MEDIUM; copy, ceremony and passphrase each pass on keyctl and on shm
+  - evidence: test_cli.py: test_get_on_keyctl_prints_prf_and_consumes_the_key, test_passphrase_on_keyctl_prints_a_keyctl_reference, test_copy_on_keyctl_stages_the_secret_in_the_keyring pass; skip where keyctl is blocked; 94 test_cli pass
+  - test-tags: UNIT
+  - test: run the copy, ceremony and passphrase CLI tests with JLAB_PASSKEY_RELAY_BACKEND=keyctl
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "MEDIUM"; test added "run the copy, ceremony and passphrase CLI tests with JLAB_PASSKEY_RELAY_BACKEND=keyctl"; test-tags added "UNIT"
+  - log: 2026-09-26T14:28:43Z @kj reopened: reopened: CLI flow tests run on shm only (conftest pins shm); keyctl is covered at relay level only
+  - log: 2026-09-26T16:06:44Z @kj closed
+- [x] `ACC-TESTS-42` **Adversarial review** - MEDIUM; survives the same review bar as the relay work (architect + bug-hunter), on a snapshot of the working tree
+  - evidence: journal entries 23-24: architect and bug-hunter both CLEAN; round 5 SHIP at v1.0.36
+  - test-tags: MANUAL
+  - test: architect and bug-hunter review of a working-tree snapshot
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "MEDIUM"; test added "architect and bug-hunter review of a working-tree snapshot"; test-tags added "MANUAL"; evidence added "journal entries 23-24: architect and bug-hunter both CLEAN; round 5 SHIP at v1.0.36"
+
+## Relay resolved defaults `DECIDE`
+
+Defaults fixed during the relay design
+
+- [x] `ACC-DECIDE-43` **TTLs** - MEDIUM; set to ceremony/passphrase 300s, copy 900s (copy widened for the click-whenever window)
+  - evidence: `relay._TTL` json 300, pass 300, secret 900; `test_keyctl_sets_a_ttl` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: read `relay._TTL`; stage on keyctl, assert the timeout per kind
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-07-19T00:00:00Z @kj resolved
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "MEDIUM"; test added "read `relay._TTL`; stage on keyctl, assert the timeout per kind"; test-tags added "UNIT"; evidence added "`relay._TTL` json 300, pass 300, secret 900; `test_keyctl_sets_a_ttl` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-DECIDE-44` **Reference scheme** - MEDIUM; `keyctl:` / `file:` prefixes (confirmed); the consumer branches on the scheme
+  - evidence: `test_reference_scheme_per_backend` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: stage a pass on each backend, assert the `keyctl:` / `file:` prefix
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-07-19T00:00:00Z @kj resolved
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "MEDIUM"; test added "stage a pass on each backend, assert the `keyctl:` / `file:` prefix"; test-tags added "UNIT"; evidence added "`test_reference_scheme_per_backend` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-DECIDE-45` **pass-cli side** - LOW; the vault consumer that reads the `keyctl:` reference is updated separately, outside this extension, which only prints the reference
+  - evidence: `cmd_passphrase` prints only the reference; the pass-cli consumer is outside this repository; read 2026-09-26
+  - test-tags: MANUAL
+  - test: read `cmd_passphrase`: prints the reference, reads no vault state
+  - log: 2026-07-18T00:00:00Z @kj criterion added
+  - log: 2026-07-19T00:00:00Z @kj resolved - out of this repo's scope per the project boundary
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "LOW"; test added "read `cmd_passphrase`: prints the reference, reads no vault state"; test-tags added "MANUAL"; evidence added "`cmd_passphrase` prints only the reference; the pass-cli consumer is outside this repository; read 2026-09-26"
+
+## Show code - CLI `SHOW`
+
+`jupyterlab-passkey show` reads a code from FILE or stdin, stages it in a one-shot relay under kind `code`, and raises a notification whose button runs `passkey:show`. Fire and forget, mirroring `copy` without `--block`.
+
+- [x] `ACC-SHOW-46` **Stages the code** - HIGH; reads FILE or stdin and stages it as relay kind `code` (`0600` on shm), value never on argv
+  - evidence: `test_show_stages_the_code_and_triggers_passkey_show` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: `show FILE`: assert a `code` relay at 0600 and `passkey:show` triggered
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "HIGH"; test added "`show FILE`: assert a `code` relay at 0600 and `passkey:show` triggered"; test-tags added "UNIT"; evidence added "`test_show_stages_the_code_and_triggers_passkey_show` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SHOW-47` **Notification carries only the nonce** - HIGH; the payload holds `nonce` (and `label` if given), never the code; `commandId` is `passkey:show`, button label `Show the code`
+  - evidence: `test_show_never_puts_the_code_in_the_notification` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: capture the posted payload, assert the code is absent and the args are nonce and label
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "HIGH"; test added "capture the posted payload, assert the code is absent and the args are nonce and label"; test-tags added "UNIT"; evidence added "`test_show_never_puts_the_code_in_the_notification` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SHOW-48` **Fire and forget** - MEDIUM; posts and returns `0`; no `--block`/`--timeout`, nothing waited on, a stderr note says the click is what shows it
+  - evidence: `test_show_stages_the_code_and_triggers_passkey_show` returns 0 with no wait; `test_show_defaults_match_the_parser` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: run `show`, assert exit 0 with nothing waited on
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "MEDIUM"; test added "run `show`, assert exit 0 with nothing waited on"; test-tags added "UNIT"; evidence added "`test_show_stages_the_code_and_triggers_passkey_show` returns 0 with no wait; `test_show_defaults_match_the_parser` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SHOW-49` **Strips one trailing newline** - LOW; exactly one, so a multi-line value survives intact
+  - evidence: `show` reads through the shared `_read_stdin_or_file`; `test_copy_strips_exactly_one_trailing_newline` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: pipe `code` plus two newlines, assert `code` plus one newline staged
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "LOW"; test added "pipe `code` plus two newlines, assert `code` plus one newline staged"; test-tags added "UNIT"; evidence added "`show` reads through the shared `_read_stdin_or_file`; `test_copy_strips_exactly_one_trailing_newline` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SHOW-50` **Never echoes the code** - HIGH; the value is absent from stdout
+  - evidence: `test_show_stages_the_code_and_triggers_passkey_show` asserts the code is absent from stdout; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: run `show`, assert the code is absent from stdout
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "HIGH"; test added "run `show`, assert the code is absent from stdout"; test-tags added "UNIT"; evidence added "`test_show_stages_the_code_and_triggers_passkey_show` asserts the code is absent from stdout; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SHOW-51` **Edge: empty input** - MEDIUM; refuses with `nothing to show - the input was empty`, stages nothing
+  - evidence: `test_show_refuses_empty_input` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: empty input, assert the refusal and nothing staged
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "MEDIUM"; test added "empty input, assert the refusal and nothing staged"; test-tags added "UNIT"; evidence added "`test_show_refuses_empty_input` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SHOW-52` **Edge: stdin is a terminal** - MEDIUM; refused with `refusing to read a code from a terminal`, stages nothing
+  - evidence: `test_show_refuses_to_read_a_code_from_a_terminal` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: stdin is a TTY, assert the refusal and nothing staged
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "MEDIUM"; test added "stdin is a TTY, assert the refusal and nothing staged"; test-tags added "UNIT"; evidence added "`test_show_refuses_to_read_a_code_from_a_terminal` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SHOW-53` **Edge: non-text stdin** - MEDIUM; strict utf-8 decode, refused with `is not text`
+  - evidence: `show` reads through the shared `_read_stdin_or_file`; `test_copy_rejects_stdin_bytes_that_are_not_text` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: pipe non-utf-8 bytes, assert `is not text`
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "MEDIUM"; test added "pipe non-utf-8 bytes, assert `is not text`"; test-tags added "UNIT"; evidence added "`show` reads through the shared `_read_stdin_or_file`; `test_copy_rejects_stdin_bytes_that_are_not_text` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SHOW-54` **Edge: trigger fails** - MEDIUM; a failed/interrupted trigger unstages the code, since the nonce dies with the process and no button was raised (BaseException-guarded)
+  - evidence: `test_show_unstages_the_code_when_the_trigger_fails` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: make the trigger fail, assert the code relay is unstaged
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:40Z @kj edited importance added "MEDIUM"; test added "make the trigger fail, assert the code relay is unstaged"; test-tags added "UNIT"; evidence added "`test_show_unstages_the_code_when_the_trigger_fails` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-SHOW-55` **Edge: relay stage fails** - MEDIUM; an `OSError` (full shm, keyctl quota, squatted dir) exits one line, not a traceback
+  - evidence: cmd_show's stage handler catches OSError and exits cannot stage the code: <e>; copy twin test_a_squatted_relay_dir_answers_with_a_line_not_a_traceback green; read 2026-09-27
+  - test-tags: MANUAL
+  - test: make `relay.stage` raise OSError in `cmd_show`, assert one line `cannot stage the code`
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "MEDIUM"; test added "make `relay.stage` raise OSError in `cmd_show`, assert one line `cannot stage the code`"; test-tags added "MANUAL"; evidence added "`cmd_show` catches OSError and exits `cannot stage the code: <e>` (cli.py:616-619); copy twin `test_a_squatted_relay_dir_answers_with_a_line_not_a_traceback` green; read 2026-09-26"
+  - log: 2026-09-27T01:31:19Z @kj edited evidence "`cmd_show` catches OSError and exits `cannot stage the code: <e>` (cli.py:616-619); copy twin `test_a_squatted_relay_dir_answers_with_a_line_not_a_traceback` green; read 2026-09-26" -> "cmd_show's stage handler catches OSError and exits cannot stage the code: <e>; copy twin test_a_squatted_relay_dir_answers_with_a_line_not_a_traceback green; read 2026-09-27"
+- [x] `ACC-SHOW-56` **Edge: code too long** - MEDIUM; a code over `relay.MAX_CODE_CHARS` (256) is refused before staging, so a mistaken `show` of a file cannot tie up the server rendering it; the limit boundary is accepted
+  - evidence: `test_show_refuses_an_overlong_code`, `test_show_accepts_a_code_at_the_length_limit` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: `show` a 257-char and a 256-char code, assert refused and accepted
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39), length cap added after bug-hunter review
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "MEDIUM"; test added "`show` a 257-char and a 256-char code, assert refused and accepted"; test-tags added "UNIT"; evidence added "`test_show_refuses_an_overlong_code`, `test_show_accepts_a_code_at_the_length_limit` green; pytest 193/193 2026-09-26 v1.0.44"
+
+## Show code - render endpoint `RENDER`
+
+`POST <base>/jupyterlab-passkey-extension/render` reads the `code` relay once, renders it to a PNG, and returns only image bytes. Authenticated, one-shot.
+
+- [x] `ACC-RENDER-57` **Returns a PNG** - HIGH; `{"png": "<base64>"}` whose decode starts with the PNG magic
+  - evidence: `test_render_returns_a_png_and_consumes_the_relay` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: stage a code, POST `render`, assert the base64 decodes to PNG magic
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "HIGH"; test added "stage a code, POST `render`, assert the base64 decodes to PNG magic"; test-tags added "UNIT"; evidence added "`test_render_returns_a_png_and_consumes_the_relay` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-RENDER-58` **One-shot** - HIGH; the relay is consumed on render; a second call `404`s
+  - evidence: `test_render_returns_a_png_and_consumes_the_relay` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: POST `render` twice, assert the second is 404
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "HIGH"; test added "POST `render` twice, assert the second is 404"; test-tags added "UNIT"; evidence added "`test_render_returns_a_png_and_consumes_the_relay` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-RENDER-59` **Never returns the code as text** - CRITICAL; the value appears nowhere in the response body, only as image bytes
+  - evidence: `test_render_never_returns_the_code_as_text` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: render a code, assert the code string is absent from the response body
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "CRITICAL"; test added "render a code, assert the code string is absent from the response body"; test-tags added "UNIT"; evidence added "`test_render_never_returns_the_code_as_text` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-RENDER-60` **Never logged** - CRITICAL; the code is absent from server logs at every level
+  - evidence: `test_render_not_logged` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: capture server logs during `render`, assert the code is absent
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "CRITICAL"; test added "capture server logs during `render`, assert the code is absent"; test-tags added "UNIT"; evidence added "`test_render_not_logged` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-RENDER-61` **Authenticated** - CRITICAL; a tokenless caller gets `403` and does not consume the relay
+  - evidence: `test_render_requires_auth` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: POST `render` without a token, assert 403 and the relay still present
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "CRITICAL"; test added "POST `render` without a token, assert 403 and the relay still present"; test-tags added "UNIT"; evidence added "`test_render_requires_auth` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-RENDER-62` **Edge: nothing staged** - MEDIUM; `404` when the nonce was never staged, already rendered, or expired
+  - evidence: `test_render_404s_when_nothing_was_staged` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: POST `render` for a nonce never staged, assert 404
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "MEDIUM"; test added "POST `render` for a nonce never staged, assert 404"; test-tags added "UNIT"; evidence added "`test_render_404s_when_nothing_was_staged` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-RENDER-63` **Edge: bad / traversal nonce** - HIGH; `400` on a nonce failing `^[A-Za-z0-9_-]{16,128}$`, reading and unlinking no outside file
+  - evidence: `test_render_rejects_traversal_nonce`, `test_render_traversal_neither_reads_nor_unlinks_an_outside_file` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: POST `render` with `../` in the nonce, assert 400 and the outside file untouched
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "HIGH"; test added "POST `render` with `../` in the nonce, assert 400 and the outside file untouched"; test-tags added "UNIT"; evidence added "`test_render_rejects_traversal_nonce`, `test_render_traversal_neither_reads_nor_unlinks_an_outside_file` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-RENDER-64` **Edge: code too long** - MEDIUM; a staged code over `relay.MAX_CODE_CHARS` (256) gets a clean `400` before any render, defending the event loop against a value staged by any other writer; the relay is consumed one-shot regardless
+  - evidence: `test_render_400s_a_code_too_long_to_render` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: stage a 257-char code directly, POST `render`, assert 400
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39), length cap added after bug-hunter review
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "MEDIUM"; test added "stage a 257-char code directly, POST `render`, assert 400"; test-tags added "UNIT"; evidence added "`test_render_400s_a_code_too_long_to_render` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-RENDER-65` **Edge: relay backend failure** - MEDIUM; a clean `500` (`relay backend unavailable`), never a traceback
+  - evidence: `test_render_answers_a_relay_failure_with_a_clean_500` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: make the relay raise OSError, assert 500 `relay backend unavailable`
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "MEDIUM"; test added "make the relay raise OSError, assert 500 `relay backend unavailable`"; test-tags added "UNIT"; evidence added "`test_render_answers_a_relay_failure_with_a_clean_500` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-RENDER-66` **Edge: renderer failure** - MEDIUM; Pillow imported inside the handler, so a render-time Pillow failure gives this one endpoint a clean `500`, not a traceback or a server-extension load failure; the relay is already consumed
+  - evidence: `test_render_answers_a_broken_renderer_with_a_clean_500` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: make the renderer raise, assert a clean 500
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "MEDIUM"; test added "make the renderer raise, assert a clean 500"; test-tags added "UNIT"; evidence added "`test_render_answers_a_broken_renderer_with_a_clean_500` green; pytest 193/193 2026-09-26 v1.0.44"
+
+### API
+
+- `POST <base>/jupyterlab-passkey-extension/render` body `{nonce}` -> `{"png": "<base64 PNG>"}`; `400` bad nonce, `404` nothing staged / already rendered, `403` unauthenticated, `500` relay or renderer failure
+- Relay kind `code`, keyctl TTL 900s; staged by `jupyterlab-passkey show`, consumed by the `render` endpoint
+- Frontend command `passkey:show` args `{nonce, label?}`
+
+## Show code - frontend command `FRONT`
+
+`passkey:show` POSTs the nonce to `render` and shows the returned image in a dialog.
+
+- [x] `ACC-FRONT-67` **Fetches the render** - HIGH; POSTs `{nonce}` to `render` and reads `{png}`
+  - evidence: jest `fetches the render for the nonce and never receives the code as text` green; jest 62/62 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: mock the request API, run `passkey:show`, assert POST `render` with the nonce
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "HIGH"; test added "mock the request API, run `passkey:show`, assert POST `render` with the nonce"; test-tags added "UNIT"; evidence added "jest `fetches the render for the nonce and never receives the code as text` green; jest 62/62 2026-09-26 v1.0.44"
+- [x] `ACC-FRONT-68` **Shows the image** - HIGH; sets an `<img>` `src` to `data:image/png;base64,<png>` inside a dialog with a Close button
+  - evidence: jest `shows the rendered image as a data URL and launches the dialog` green; jest 62/62 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: mock a `{png}` response, assert the dialog `<img>` src is the data URL
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "HIGH"; test added "mock a `{png}` response, assert the dialog `<img>` src is the data URL"; test-tags added "UNIT"; evidence added "jest `shows the rendered image as a data URL and launches the dialog` green; jest 62/62 2026-09-26 v1.0.44"
+- [x] `ACC-FRONT-69` **Label only, never the code** - MEDIUM; a caller `label` is shown as text; the code is only ever the image
+  - evidence: jest `shows the caller-chosen label but only the label, never the code` green; jest 62/62 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: pass a label, assert it is shown and no code text is present
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:41Z @kj edited importance added "MEDIUM"; test added "pass a label, assert it is shown and no code text is present"; test-tags added "UNIT"; evidence added "jest `shows the caller-chosen label but only the label, never the code` green; jest 62/62 2026-09-26 v1.0.44"
+- [x] `ACC-FRONT-70` **Accessibility channel closed** - MEDIUM; the image `alt` is empty by design, so the code does not re-enter the accessibility tree
+  - evidence: jest `closes the accessibility channel - the image carries no alt text` green; jest 62/62 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: assert the dialog `<img>` has an empty `alt`
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:42Z @kj edited importance added "MEDIUM"; test added "assert the dialog `<img>` has an empty `alt`"; test-tags added "UNIT"; evidence added "jest `closes the accessibility channel - the image carries no alt text` green; jest 62/62 2026-09-26 v1.0.44"
+- [x] `ACC-FRONT-71` **Edge: render fails** - MEDIUM; a rejected fetch (e.g. `404` on a spent relay) propagates; no dialog is opened
+  - evidence: jest `propagates a failed render, e.g. a relay already consumed (404)` green; jest 62/62 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: mock a 404 from `render`, assert the rejection propagates and no dialog opens
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:42Z @kj edited importance added "MEDIUM"; test added "mock a 404 from `render`, assert the rejection propagates and no dialog opens"; test-tags added "UNIT"; evidence added "jest `propagates a failed render, e.g. a relay already consumed (404)` green; jest 62/62 2026-09-26 v1.0.44"
+- [x] `ACC-FRONT-72` **End to end** - HIGH; a real `passkey:show` shows an `<img>` and the code string is absent from the page DOM; the relay is consumed (Galata)
+  - evidence: Galata `show renders the staged code as an image and never as page text` green; Galata 27/27 at v1.0.41 (journal entry 27)
+  - test-tags: E2E
+  - test: Galata: stage a code, run `passkey:show`, assert an `<img>`, no code text in the DOM, relay consumed
+  - log: 2026-07-24T00:00:00Z @kj criterion added, verifying
+  - log: 2026-09-26T14:28:42Z @kj edited importance added "HIGH"; test added "Galata: stage a code, run `passkey:show`, assert an `<img>`, no code text in the DOM, relay consumed"; test-tags added "E2E"
+  - log: 2026-09-26T14:28:43Z @kj closed: verified by the Galata show test
+
+## Show code - renderer `IMAGE`
+
+`render_code_png(text)` draws the code as a distorted, scraper-resistant PNG.
+
+- [x] `ACC-IMAGE-73` **Valid PNG** - HIGH; returns bytes Pillow opens as a PNG with non-zero dimensions
+  - evidence: `test_render_returns_a_valid_png` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: `render_code_png`, open the bytes with Pillow, assert PNG with non-zero size
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:42Z @kj edited importance added "HIGH"; test added "`render_code_png`, open the bytes with Pillow, assert PNG with non-zero size"; test-tags added "UNIT"; evidence added "`test_render_returns_a_valid_png` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-IMAGE-74` **No embedded text** - HIGH; the code appears nowhere as literal bytes in the file (no text/metadata chunk)
+  - evidence: `test_the_code_is_not_embedded_as_text_in_the_png` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: render a code, assert its bytes do not occur in the PNG
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:42Z @kj edited importance added "HIGH"; test added "render a code, assert its bytes do not occur in the PNG"; test-tags added "UNIT"; evidence added "`test_the_code_is_not_embedded_as_text_in_the_png` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-IMAGE-75` **Distortion** - MEDIUM; per-character jitter and rotation, colour variation, overlaid line and dot noise
+  - evidence: captcha.py rotates each glyph by -22 to 22 degrees, tints it, moves it up to 6px, draws noise lines and dots; read 2026-09-26
+  - test-tags: MANUAL
+  - test: render a code and view it: glyphs tilted and tinted, lines and dots over them
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:42Z @kj edited importance added "MEDIUM"; test added "render a code and view it: glyphs tilted and tinted, lines and dots over them"; test-tags added "MANUAL"; evidence added "captcha.py rotates each glyph by -22 to 22 degrees, tints it, moves it up to 6px, draws noise lines and dots; read 2026-09-26"
+- [x] `ACC-IMAGE-76` **No font file shipped** - LOW; `ImageFont.load_default(size=...)` (Pillow >= 10.1), with a fallback for older Pillow
+  - evidence: captcha.py uses `ImageFont.load_default(size=...)` with a no-size fallback; no .ttf or .otf in the package; `test_render_returns_a_valid_png` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT, MANUAL
+  - test: list the package files, assert no .ttf or .otf; render a code
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:42Z @kj edited importance added "LOW"; test added "list the package files, assert no .ttf or .otf; render a code"; test-tags added "UNIT, MANUAL"; evidence added "captcha.py uses `ImageFont.load_default(size=...)` with a no-size fallback; no .ttf or .otf in the package; `test_render_returns_a_valid_png` green; pytest 193/193 2026-09-26 v1.0.44"
+
+## Detached commands `DETACH`
+
+Every subcommand ignores `SIGHUP` while it runs, so a backgrounded command keeps waiting for its click after its terminal closes - notifications, popups and queries land the same attached or detached; the command `vault exec` runs gets the `SIGHUP` handling the CLI was started with
+
+- [x] `ACC-DETACH-77` **SIGHUP ignored** - HIGH; `_ignore_hangup()` sets `SIG_IGN` for `SIGHUP`; a delivered `SIGHUP` no longer terminates the process
+  - evidence: `test_ignore_hangup_makes_sighup_non_fatal` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: install the guard, send SIGHUP to the process, assert it keeps running
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:42Z @kj edited importance added "HIGH"; test added "install the guard, send SIGHUP to the process, assert it keeps running"; test-tags added "UNIT"; evidence added "`test_ignore_hangup_makes_sighup_non_fatal` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-DETACH-78` **Installed before dispatch** - MEDIUM; `main()` calls `_ignore_hangup()` before parsing/dispatching any command
+  - evidence: `test_main_installs_the_hangup_ignore_before_dispatch` green; pytest 193/193 2026-09-26 v1.0.44
+  - test-tags: UNIT
+  - test: spy `_ignore_hangup` and the dispatch, assert the guard runs first
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:42Z @kj edited importance added "MEDIUM"; test added "spy `_ignore_hangup` and the dispatch, assert the guard runs first"; test-tags added "UNIT"; evidence added "`test_main_installs_the_hangup_ignore_before_dispatch` green; pytest 193/193 2026-09-26 v1.0.44"
+- [x] `ACC-DETACH-79` **Std streams tolerant** - MEDIUM; a closed or redirected stderr never crashes the command (`_say` drops a poisoned stream, pre-existing)
+  - evidence: `test_a_broken_stderr_does_not_fail_the_process_at_shutdown`, `test_a_second_message_survives_the_first_dropping_stderr`, `test_exec_runs_the_command_with_stdout_or_stderr_closed`, `test_a_relay_warning_never_fails_the_command_or_reaches_stdout` green; pytest 428/428 2026-09-27
+  - test-tags: UNIT
+  - test: close stderr, run a command, assert exit 0
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:42Z @kj edited importance added "MEDIUM"; test added "close stderr, run a command, assert exit 0"; test-tags added "UNIT"; evidence added "`test_a_broken_stderr_does_not_fail_the_process_at_shutdown`, `test_a_second_message_survives_the_first_dropping_stderr` green; pytest 193/193 2026-09-26 v1.0.44"
+  - log: 2026-09-27T19:36:45Z @kj reopened: reopened: vault exec failed before running the command when stdout or stderr was None or closed; evidence retired: `test_a_broken_stderr_does_not_fail_the_process_at_shutdown`, `test_a_second_message_survives_the_first_dropping_stderr` green; pytest 193/193 2026-09-26 v1.0.44
+  - log: 2026-09-27T19:36:50Z @kj closed
+  - log: 2026-09-27T19:57:24Z @kj reopened: the relay's shm fallback and squat warnings printed straight to stderr: a closed stderr crashed the command; evidence retired: `test_a_broken_stderr_does_not_fail_the_process_at_shutdown`, `test_a_second_message_survives_the_first_dropping_stderr`, `test_exec_runs_the_command_with_stdout_or_stderr_closed` green; pytest 424/424 2026-09-27
+  - log: 2026-09-27T19:57:26Z @kj closed
+- [x] `ACC-DETACH-80` **Edge: non-POSIX / no SIGHUP** - LOW; best-effort; a platform without `SIGHUP` (Windows) or a non-main thread is a no-op, the command still works under `nohup`/`setsid`
+  - evidence: _ignore_hangup in cli.py returns when signal.SIGHUP is absent and ignores ValueError/OSError; read 2026-09-27
+  - test-tags: MANUAL
+  - test: read `_ignore_hangup`: returns without SIGHUP, ignores ValueError and OSError
+  - log: 2026-07-24T00:00:00Z @kj implemented (v1.0.39)
+  - log: 2026-09-26T14:28:42Z @kj edited importance added "LOW"; test added "read `_ignore_hangup`: returns without SIGHUP, ignores ValueError and OSError"; test-tags added "MANUAL"; evidence added "`_ignore_hangup` returns when `signal.SIGHUP` is absent and ignores ValueError/OSError (cli.py:133-139); read 2026-09-26"
+  - log: 2026-09-27T01:31:21Z @kj edited evidence "`_ignore_hangup` returns when `signal.SIGHUP` is absent and ignores ValueError/OSError (cli.py:133-139); read 2026-09-26" -> "_ignore_hangup in cli.py returns when signal.SIGHUP is absent and ignores ValueError/OSError; read 2026-09-27"
+
+## Vault key holder `HOLDER`
+
+Where the unlocked vault key is kept, chosen by what the host allows
+
+- [x] `ACC-HOLDER-81` **Common interface** - HIGH; every holder offers put(vault_id, key, ttl), get(vault_id), clear(vault_id), remaining(vault_id), unusable_reason(), name, about and capabilities; the vault calls nothing else; vault_id keeps each vault's key apart
+  - evidence: test_vault_holders.py contract tests run on all three holders through put/get/clear/remaining(vault_id), name, about and unusable_reason(): test_every_holder_says_what_it_is_and_that_it_works_here, test_a_key_is_only_ever_read_back_for_its_own_vault; unusable_reason() also: test_missing_gnupg_makes_gpg_agent_unusable, test_a_socket_path_over_the_limit_makes_gpg_agent_unusable, test_a_pinned_holder_that_cannot_work_fails_loud; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: run one contract test over every usable holder, name, about and unusable_reason() included; unusable_reason() also through the gpg-agent and selection tests
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:56Z @kj added
+  - log: 2026-09-26T16:48:53Z @kj edited text "every holder offers `put(key, ttl)`, `get()`, `clear()`, `remaining()`, `name` and `capabilities`; the vault calls nothing else" -> "every holder offers put(vault_id, key, ttl), get(vault_id), clear(vault_id), remaining(vault_id), name and capabilities; the vault calls nothing else; vault_id keeps each vault's key apart"
+  - log: 2026-09-27T09:50:24Z @kj edited text "every holder offers put(vault_id, key, ttl), get(vault_id), clear(vault_id), remaining(vault_id), name and capabilities; the vault calls nothing else; vault_id keeps each vault's key apart" -> "every holder offers put(vault_id, key, ttl), get(vault_id), clear(vault_id), remaining(vault_id), unusable_reason(), name, about and capabilities; the vault calls nothing else; vault_id keeps each vault's key apart"
+  - log: 2026-09-27T10:36:55Z @kj edited test "run one contract test over every usable holder" -> "run one contract test over every usable holder; unusable_reason() through the gpg-agent and selection tests"
+  - log: 2026-09-27T11:00:25Z @kj edited test "run one contract test over every usable holder; unusable_reason() through the gpg-agent and selection tests" -> "run one contract test over every usable holder, name, about and unusable_reason() included; unusable_reason() also through the gpg-agent and selection tests"
+  - log: 2026-09-28T00:23:19Z @kj closed
+- [x] `ACC-HOLDER-82` **Capability properties** - HIGH; `capabilities` reports `locked_memory`, `no_core_dump`, `holder_ttl`, `locks_on_restart` and `container_isolated`, each true only when the mechanism in use provides it; true is always the safer state; the first two describe the holder's own copy of the key, not the copies the server uses per request (README)
+  - evidence: test_vault_holders.py test_keyctl_capabilities, test_gpg_agent_capabilities_are_measured_from_the_agent, test_gpg_agent_isolation_follows_where_its_socket_is, test_memory_prefers_memfd_secret, test_memory_falls_back_to_mlock, test_memory_falls_back_to_plain_memory; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: assert the flags per holder, including a stubbed `mlock` failure
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:56Z @kj added
+  - log: 2026-09-26T19:31:40Z @kj amended text "`capabilities` reports `locked_memory`, `no_core_dump`, `holder_ttl`, `survives_restart` and `container_isolated`, each true only when the mechanism in use provides it" -> "`capabilities` reports `locked_memory`, `no_core_dump`, `holder_ttl`, `locks_on_restart` and `container_isolated`, each true only when the mechanism in use provides it; true is always the safer state"
+  - log: 2026-09-27T08:13:00Z @kj amended text "`capabilities` reports `locked_memory`, `no_core_dump`, `holder_ttl`, `locks_on_restart` and `container_isolated`, each true only when the mechanism in use provides it; true is always the safer state" -> "HIGH; `capabilities` reports `locked_memory`, `no_core_dump`, `holder_ttl`, `locks_on_restart` and `container_isolated`, each true only when the mechanism in use provides it; true is always the safer state; the first two describe the holder's own copy of the key, not the copies the server uses per request (README)"; reason: the server's working copies of the key are not covered by the holder's measurements
+  - log: 2026-09-28T00:23:19Z @kj closed
+- [x] `ACC-HOLDER-83` **Security summary** - MEDIUM; the summary is strong when locked memory and no core dump both hold, reduced when one of them holds, otherwise basic; the holder's own expiry is not counted, since every holder ends the key at the unlock duration
+  - evidence: test_vault_holders.py test_the_summary_follows_the_protections; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: build capabilities for each case, assert the summary word
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-26T20:16:20Z @kj amended text "the summary is `strong` when locked memory, no core dump and holder-enforced expiry all hold, `reduced` when locked memory or no core dump holds, otherwise `basic`" -> "the summary is strong when locked memory and no core dump both hold, reduced when one of them holds, otherwise basic; the holder's own expiry is not counted, since every holder ends the key at the unlock duration"
+  - log: 2026-09-28T00:23:19Z @kj closed
+- [x] `ACC-HOLDER-84` **Selection order** - HIGH; `auto` picks the first usable holder of keyctl, gpg-agent, process memory, once per process
+  - evidence: test_vault_holders.py test_auto_takes_keyctl_first, test_auto_takes_gpg_agent_when_keyctl_is_refused, test_auto_lands_on_memory_with_one_notice; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub keyctl and gpg-agent unusable one at a time, assert the choice
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-28T00:23:19Z @kj closed
+- [x] `ACC-HOLDER-85` **Override** - MEDIUM; `JLAB_PASSKEY_VAULT_HOLDER=auto|keyctl|gpg-agent|memory` pins the holder; a pinned holder that is unusable raises OSError naming why
+  - evidence: test_vault_holders.py test_a_pinned_holder_that_cannot_work_fails_loud, test_a_pinned_memory_holder_gives_no_notice, test_an_unknown_pin_is_refused; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: pin gpg-agent with it stubbed unusable, assert OSError with the reason (one branch serves every pinned holder)
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-27T12:38:29Z @kj edited test "pin each holder with it stubbed unusable, assert OSError with the reason" -> "pin gpg-agent with it stubbed unusable, assert OSError with the reason (one branch serves every pinned holder)"
+  - log: 2026-09-28T00:23:19Z @kj closed
+- [x] `ACC-HOLDER-86` **Fallback notice** - HIGH; when auto lands on process memory, one stderr line says gpg-agent could not be used and why (the reason names GnuPG and apt install gnupg when it is not installed), and that the extension's own code holds the key
+  - evidence: test_vault_holders.py test_auto_lands_on_memory_with_one_notice (one stderr line: gpg-agent unavailable, own code, apt install gnupg); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub gpg-agent missing, assert one stderr line and empty stdout
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-26T18:25:03Z @kj edited text "when `auto` lands on process memory, one stderr line says gpg-agent is unavailable and why, that the extension's own code holds the key, and to install GnuPG" -> "when auto lands on process memory, one stderr line says gpg-agent could not be used and why (the reason names GnuPG and apt install gnupg when it is not installed), and that the extension's own code holds the key"
+  - log: 2026-09-28T00:23:19Z @kj closed
+- [x] `ACC-HOLDER-87` **Key never on argv** - CRITICAL; keyctl and gpg-agent receive the key on stdin only; neither the key nor its hex form appears in any command line
+  - evidence: test_vault_holders.py test_the_key_never_appears_in_a_command_line (argv spy on keyctl and gpg-connect-agent); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: spy `subprocess.run` during `put` and `get`, assert the key and its hex in no argv
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-HOLDER-88` **Expiry** - HIGH; `get()` returns None once `ttl` seconds have passed, on every holder
+  - evidence: test_vault_holders.py test_the_key_is_gone_after_its_ttl on keyctl, gpg-agent and memory; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: `put` with a 1s TTL, wait 2.5s, assert `get()` is None
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-HOLDER-89` **Clear** - HIGH; after `clear()`, `get()` returns None on every holder, and the process memory holder zeroes its buffer
+  - evidence: test_vault_holders.py test_clear_empties_the_holder on all holders, test_memory_clear_zeroes_the_page; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: `put`, `clear`, assert `get()` is None and the buffer is all zero bytes
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-HOLDER-90` **gpg-agent uses its own home** - HIGH; the vault's gpg-agent runs from its own GnuPG home under the state directory, never `~/.gnupg`, so its expiry setting and restarts never touch the user's gpg or ssh agent
+  - evidence: test_vault_holders.py test_gpg_agent_runs_from_its_own_home; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: point the state directory at a temp dir, `put`, assert the GnuPG home and its gpg-agent.conf are under it, the socket is not `~/.gnupg`'s, and `~/.gnupg` is unchanged
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-27T20:03:07Z @kj edited test "point the state directory at a temp dir, `put`, assert the socket and config are there and `~/.gnupg` is unchanged" -> "point the state directory at a temp dir, `put`, assert the GnuPG home and its gpg-agent.conf are under it, the socket is not `~/.gnupg`'s, and `~/.gnupg` is unchanged"
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-HOLDER-91` **Edge: gpg-agent socket path too long** - MEDIUM; a GnuPG home whose agent socket path exceeds 107 bytes makes the gpg-agent holder unusable with that reason
+  - evidence: test_vault_holders.py test_a_socket_path_over_the_limit_makes_gpg_agent_unusable; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub the agent socket path over 107 bytes, assert the reason names the 107-byte limit and XDG_STATE_HOME
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-27T20:03:08Z @kj edited test "set the state directory to a 120-character path, assert the reason names the socket path limit" -> "stub the agent socket path at 120 characters, assert the reason names the 107-byte limit and XDG_STATE_HOME"
+  - log: 2026-09-27T20:27:02Z @kj edited test "stub the agent socket path at 120 characters, assert the reason names the 107-byte limit and XDG_STATE_HOME" -> "stub the agent socket path over 107 bytes, assert the reason names the 107-byte limit and XDG_STATE_HOME"
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-HOLDER-92` **Process memory mechanism** - HIGH; the process memory holder uses `memfd_secret`, else an anonymous mapping with `MADV_DONTDUMP` and `mlock`, else plain memory; `name` and `capabilities` say which
+  - evidence: test_vault_holders.py test_memory_prefers_memfd_secret, test_memory_falls_back_to_mlock, test_memory_falls_back_to_plain_memory; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub `memfd_secret` and then `mlock` to fail, assert `name` and the flags each time
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-HOLDER-93` **Debug report** - MEDIUM; `holders.debug_report()` names the override, the chosen holder, its capabilities and why each earlier holder was skipped; it never contains the key
+  - evidence: test_vault_holders.py test_debug_report_names_the_decision_and_never_the_key; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: select with keyctl stubbed unusable, assert the reason line and that the key is absent
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+
+## Vault file `STORE`
+
+The encrypted vault file, its keyslots and how it is written
+
+- [x] `ACC-STORE-94` **One encrypted file** - HIGH; the vault is one JSON file, mode 0600, at `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` or `JLAB_PASSKEY_VAULT`, whose leading ~ is the home directory and which is made absolute; all entries, names included, are one AES-256-GCM ciphertext under the data key
+  - evidence: test_vault_store.py test_create_writes_one_private_file_with_names_hidden, test_the_default_path_follows_xdg_data_home, test_a_set_path_expands_the_home_directory_and_is_absolute; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: create a vault with one entry, assert mode 0600 and that the entry name is absent from the file bytes; a set path with ~ or a relative one resolves to the absolute file
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-27T10:18:17Z @kj edited text "the vault is one JSON file, mode 0600, at `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` or `JLAB_PASSKEY_VAULT`; all entries, names included, are one AES-256-GCM ciphertext under the data key" -> "the vault is one JSON file, mode 0600, at `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` or `JLAB_PASSKEY_VAULT`, whose leading ~ is the home directory and which is made absolute; all entries, names included, are one AES-256-GCM ciphertext under the data key"; test "create a vault with one entry, assert mode 0600 and that the entry name is absent from the file bytes" -> "create a vault with one entry, assert mode 0600 and that the entry name is absent from the file bytes; a set path with ~ or a relative one resolves to the absolute file"
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-STORE-95` **Keyslots** - CRITICAL; the data key is wrapped once per slot: recovery with `Scrypt(passphrase)`, each passkey with `HKDF(PRF)`; any one slot opens the vault
+  - evidence: test_vault_store.py test_any_slot_opens_the_same_vault; test_vault_routes.py test_passkey_register_and_unlock, test_recovery_unlock; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: create with recovery, add a passkey slot, open with each, assert the same entries
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-STORE-96` **Recovery slot mandatory** - HIGH; creating a vault requires a recovery passphrase, and the recovery slot can be replaced but never removed
+  - evidence: test_vault_store.py test_create_needs_a_recovery_passphrase, test_the_recovery_slot_is_replaced_never_removed; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: create without a passphrase, assert refusal; try to remove the recovery slot, assert refusal
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-STORE-97` **Tamper detection** - HIGH; a changed ciphertext, wrapped key or slot parameter makes opening fail with an error, never with wrong data
+  - evidence: test_vault_store.py test_changed_entries_fail_to_decrypt, test_a_changed_recovery_slot_fails_to_open, test_a_changed_passkey_slot_fails_to_open, test_a_write_under_the_wrong_key_is_refused; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: flip one byte in each part, assert open raises
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:57Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-STORE-98` **Atomic write** - HIGH; every write goes to a temp file in the same directory, is fsynced and renamed over the vault; a failed write leaves the previous vault intact
+  - evidence: test_vault_store.py test_a_failed_write_leaves_the_previous_vault; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: make the rename raise, assert the old vault still opens with its entries
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-STORE-99` **Concurrent writers** - HIGH; an exclusive file lock covers each read-modify-write, so two writers never lose an entry
+  - evidence: test_vault_store.py test_two_concurrent_writers_lose_nothing; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: run two processes adding 20 entries each, assert 40 entries
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-STORE-100` **Wrong secret refused** - HIGH; a wrong recovery passphrase or a PRF from another passkey is refused with one line and caches nothing
+  - evidence: test_vault_store.py test_a_wrong_passphrase_or_prf_is_refused; test_vault_routes.py test_recovery_unlock, test_passkey_register_and_unlock (status reads locked after the wrong secret); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: open with a wrong passphrase and a wrong PRF, assert the error and an empty holder
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-STORE-101` **KDF parameters stored** - MEDIUM; each slot stores its own KDF parameters (Scrypt n=2^17, r=8, p=1 today), so a later version can raise them without breaking old slots
+  - evidence: test_vault_store.py test_each_slot_keeps_its_own_kdf_parameters; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: open a slot written with smaller test parameters, assert it opens
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-28T00:23:20Z @kj closed
+
+## Vault unlock and lock `UNLOCK`
+
+Opening the vault with a passkey or the recovery passphrase, and closing it
+
+- [x] `ACC-UNLOCK-102` **Passkey unlock** - CRITICAL; a PRF from a registered passkey unwraps the data key, which goes to the holder for the configured duration
+  - evidence: test_vault_routes.py test_passkey_register_and_unlock (time left within 5 s of the setting); Galata vault.spec.ts 'lock, then unlock with the passkey'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unlock with a test PRF, assert status unlocked and time left close to the setting
+  - test-tags: UNIT, E2E
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-UNLOCK-103` **Recovery unlock** - HIGH; the recovery passphrase unwraps the data key, entered at a hidden CLI prompt or in the panel dialog
+  - evidence: test_vault_routes.py test_recovery_unlock; test_vault_cli.py test_lock_and_unlock_with_passkey_and_recovery; Galata vault.spec.ts 'unlock with the recovery passphrase'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unlock through the REST API with the passphrase, assert unlocked
+  - test-tags: UNIT, E2E
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-UNLOCK-104` **Lock** - HIGH; `vault lock` and the panel Lock button clear the vault's key from its holder at once; the Lock button is drawn in the colour of the header's other buttons
+  - evidence: test_vault_cli.py test_lock_and_unlock_with_passkey_and_recovery; test_vault_routes.py test_lock_then_every_call_that_needs_the_held_key_answers_423, test_lock_after_a_restart_clears_the_key_of_the_file_it_points_at; Galata vault.spec.ts 'lock, then unlock with the passkey' (the Lock icon has the Refresh icon's fill); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unlock, lock, assert entries answer locked; a restarted server's lock clears the key of the file it points at; Galata: the Lock icon has the Refresh icon's fill
+  - test-tags: UNIT, E2E
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-27T10:18:26Z @kj edited text "`vault lock` and the panel Lock button clear the holder at once" -> "`vault lock` and the panel Lock button clear the holder at once; the Lock button is drawn in the colour of the header's other buttons"; test "unlock, lock, assert entries answer locked" -> "unlock, lock, assert entries answer locked; Galata: the Lock icon has the Refresh icon's fill"
+  - log: 2026-09-27T11:49:02Z @kj edited test "unlock, lock, assert entries answer locked; Galata: the Lock icon has the Refresh icon's fill" -> "unlock, lock, assert entries answer locked; a restarted server's lock clears the key of the file it points at; Galata: the Lock icon has the Refresh icon's fill"
+  - log: 2026-09-27T11:58:04Z @kj edited text "`vault lock` and the panel Lock button clear the holder at once; the Lock button is drawn in the colour of the header's other buttons" -> "`vault lock` and the panel Lock button clear the vault's key from its holder at once; the Lock button is drawn in the colour of the header's other buttons"
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-UNLOCK-105` **Expiry locks** - HIGH; after the configured duration the vault is locked with no action from anyone
+  - evidence: test_vault_routes.py test_the_vault_locks_itself_at_expiry; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unlock with a 1s duration, wait, assert status locked
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-UNLOCK-106` **Locked access refused** - HIGH; entry reads and writes on a locked vault answer 423, except the panel's passkey reveal, which unwraps its own key (ACC-REST-167)
+  - evidence: test_vault_routes.py test_lock_then_every_call_that_needs_the_held_key_answers_423; the exception: test_a_passkey_reveal_answers_the_password_only_for_a_prf_that_opens_a_slot (the passkey reveal answers after a lock); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: call each entry endpoint while locked, assert 423
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-27T10:54:35Z @kj edited text "entry reads and writes on a locked vault answer 423 and the CLI says `vault is locked`" -> "entry reads and writes on a locked vault answer 423"
+  - log: 2026-09-27T11:22:34Z @kj edited text "entry reads and writes on a locked vault answer 423" -> "entry reads and writes on a locked vault answer 423, except the panel's passkey reveal, which unwraps its own key (ACC-REST-167)"
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-UNLOCK-107` **CLI unlocks on demand** - MEDIUM; `vault get`, `copy`, `show` and `exec` on a locked vault run the passkey unlock first, as `pass-cli-open` does; a vault with no passkey slot raises no notification and names `vault unlock --recovery`, and no vault names the path looked at and `vault init`
+  - evidence: test_vault_cli.py test_get_on_a_locked_vault_unlocks_first; test_vault_cli.py test_a_vault_without_a_passkey_names_the_recovery_unlock, test_the_python_unlock_without_a_vault_says_run_init, test_unlock_without_a_vault_says_run_init, test_passkey_add_without_a_vault_says_run_init (each names the path); jest vault-plugin.spec.ts 'reads the vault again for an unlock when this tab read no passkey for its host'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub the ceremony, run `vault get` locked, assert one unlock then the value; a vault made with --no-passkey: `vault unlock` and `vault get` stop naming --recovery, with no notification; the Python `Vault().unlock()` with no vault names init
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-27T07:28:31Z @kj amended text "`vault get`, `copy`, `show` and `exec` on a locked vault run the passkey unlock first, as `pass-cli-open` does" -> "MEDIUM; `vault get`, `copy`, `show` and `exec` on a locked vault run the passkey unlock first, as `pass-cli-open` does; a vault with no passkey slot raises no notification and names `vault unlock --recovery`"
+  - log: 2026-09-27T07:28:31Z @kj edited test "stub the ceremony, run `vault get` locked, assert one unlock then the value" -> "stub the ceremony, run `vault get` locked, assert one unlock then the value; a vault made with --no-passkey: `vault unlock` and `vault get` stop naming --recovery, with no notification"
+  - log: 2026-09-27T07:43:13Z @kj amended text "`vault get`, `copy`, `show` and `exec` on a locked vault run the passkey unlock first, as `pass-cli-open` does; a vault with no passkey slot raises no notification and names `vault unlock --recovery`" -> "MEDIUM; `vault get`, `copy`, `show` and `exec` on a locked vault run the passkey unlock first, as `pass-cli-open` does; a vault with no passkey slot raises no notification and names `vault unlock --recovery`, and no vault names `vault init`"
+  - log: 2026-09-27T07:43:13Z @kj edited test "stub the ceremony, run `vault get` locked, assert one unlock then the value; a vault made with --no-passkey: `vault unlock` and `vault get` stop naming --recovery, with no notification" -> "stub the ceremony, run `vault get` locked, assert one unlock then the value; a vault made with --no-passkey: `vault unlock` and `vault get` stop naming --recovery, with no notification; the Python `Vault().unlock()` with no vault names init"
+  - log: 2026-09-27T10:18:21Z @kj edited text "`vault get`, `copy`, `show` and `exec` on a locked vault run the passkey unlock first, as `pass-cli-open` does; a vault with no passkey slot raises no notification and names `vault unlock --recovery`, and no vault names `vault init`" -> "`vault get`, `copy`, `show` and `exec` on a locked vault run the passkey unlock first, as `pass-cli-open` does; a vault with no passkey slot raises no notification and names `vault unlock --recovery`, and no vault names the path looked at and `vault init`"
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-UNLOCK-108` **Only passkeys for this hostname** - MEDIUM; the passkey unlock offers only slots registered for the tab's hostname or a parent domain of it; with none, the panel offers the recovery passphrase
+  - evidence: jest vault.spec.ts 'takes only the most specific RP ID that covers the host', 'offers only the recovery passphrase link when no passkey matches this host', 'refuses when no passkey is registered for the host'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: status with slots for two hostnames, assert the panel requests only the matching credential
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-26T18:25:03Z @kj edited text "the passkey unlock offers only slots registered for the tab's hostname; with none, the panel offers the recovery passphrase" -> "the passkey unlock offers only slots registered for the tab's hostname or a parent domain of it; with none, the panel offers the recovery passphrase"
+  - log: 2026-09-28T00:23:21Z @kj closed
+
+## Vault entries `ENTRY`
+
+The secrets the vault stores and the operations on them
+
+- [x] `ACC-ENTRY-109` **Entry fields** - HIGH; an entry has name, username, password, url, category, notes, created and updated; name is unique
+  - evidence: test_vault_routes.py test_every_field_round_trips, test_bad_names_are_refused; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: add one entry with every field, read it back, assert every field
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-ENTRY-110` **Add and edit** - MEDIUM; add refuses a name that exists; edit changes only the given fields and sets `updated`
+  - evidence: test_vault_routes.py test_add_refuses_a_duplicate_and_edit_changes_only_given_fields; test_vault_cli.py test_add_refuses_a_duplicate, test_edit_changes_only_given_fields; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: add twice, assert refusal; edit the url, assert the password unchanged and `updated` newer
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-ENTRY-111` **Delete** - MEDIUM; delete removes the entry; deleting a missing name answers not found
+  - evidence: test_vault_routes.py test_delete_and_missing_names; test_vault_cli.py test_rm_and_missing_names; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: delete an entry, assert it is gone; delete again, assert 404
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-ENTRY-112` **List hides secrets** - CRITICAL; listing returns names and metadata only, never a password
+  - evidence: test_vault_routes.py test_the_list_never_carries_a_password; test_vault_cli.py test_list_hides_passwords_and_filters; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: list a vault with passwords, assert no password value in the response
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-ENTRY-113` **Generate** - MEDIUM; generate returns a password from secrets: 24 characters by default, letters, digits and symbols without the look-alikes l I 1 | O 0; --length and --no-symbols honoured
+  - evidence: test_vault_routes.py test_generate, test_generated_passwords_hold_every_character_class, test_generated_passwords_leave_out_characters_that_look_alike; test_vault_cli.py test_generate; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: generate 200 passwords, assert length and character classes
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:58Z @kj added
+  - log: 2026-09-26T16:48:53Z @kj edited text "generate returns a password from `secrets`: 24 characters by default, letters, digits and symbols, `--length` and `--no-symbols` honoured" -> "generate returns a password from secrets: 24 characters by default, letters, digits and symbols without the look-alikes l I 1 | O 0; --length and --no-symbols honoured"
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-ENTRY-114` **Import** - MEDIUM; import reads a JSON list of entries (pass-cli field `service` accepted as the name), adds new names, skips existing ones and reports both counts
+  - evidence: test_vault_routes.py test_import_adds_new_names_and_reports_skipped; test_vault_cli.py test_import; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: import a list with one existing name, assert added and skipped counts
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:59Z @kj added
+  - log: 2026-09-28T00:23:21Z @kj closed
+
+## Vault CLI `VAULT`
+
+The `jupyterlab-passkey vault` subcommands
+
+- [x] `ACC-VAULT-115` **init** - HIGH; `vault init` sets the recovery passphrase (entered twice), names the file it created and registers the first passkey; it refuses when a vault exists
+  - evidence: test_vault_cli.py test_init_sets_the_recovery_passphrase_and_registers_a_passkey (names the created path), test_init_refuses_an_existing_vault, test_init_at_a_terminal_asks_twice_and_refuses_a_mismatch; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub the ceremonies, run init, assert one recovery and one passkey slot and the created path in the output
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:59Z @kj added
+  - log: 2026-09-27T10:18:23Z @kj edited text "`vault init` sets the recovery passphrase (entered twice) and registers the first passkey; it refuses when a vault exists" -> "`vault init` sets the recovery passphrase (entered twice), names the file it created and registers the first passkey; it refuses when a vault exists"; test "stub the ceremonies, run init, assert one recovery and one passkey slot" -> "stub the ceremonies, run init, assert one recovery and one passkey slot and the created path in the output"
+  - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-VAULT-116` **status** - MEDIUM; `vault status` prints locked or unlocked, time left, the holder name and the security summary
+  - evidence: test_vault_cli.py test_status_prints_state_holder_and_capabilities; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub the server status, assert the printed lines
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:59Z @kj added
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-VAULT-117` **get** - HIGH; `vault get NAME [--field F]` prints only the value to stdout, password by default
+  - evidence: test_vault_cli.py test_get_prints_only_the_value; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub the server, assert stdout is exactly the value
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:59Z @kj added
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-VAULT-118` **copy and show** - HIGH; `vault copy` and `vault show` have the server stage the value and raise the existing copy or show notification; the value never enters the CLI process
+  - evidence: test_vault_cli.py test_copy_stages_on_the_server_and_the_value_never_reaches_the_cli, test_show_stages_a_code, test_copy_unstages_when_the_trigger_fails; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub the server and trigger, assert the value is absent from the notification arguments and the CLI output, and is in the relay the server staged
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:59Z @kj added
+  - log: 2026-09-27T20:54:24Z @kj edited test "stub the server and trigger, assert the value is absent from every CLI request and output" -> "stub the server and trigger, assert the value is absent from the notification arguments and the CLI output, and is in the relay the server staged"
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-VAULT-119` **Secrets never on argv** - CRITICAL; `vault add` and `vault edit` read the password from a hidden prompt, stdin or `--in-browser`; no option takes it as a value
+  - evidence: test_vault_cli.py test_no_option_takes_a_secret_as_its_value; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: parse `vault add --help`, assert no password option; feed stdin, assert stored
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:59Z @kj added
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-VAULT-120` **exec** - MEDIUM; vault exec --env VAR=NAME[:FIELD] -- CMD becomes CMD (exec) with the values in its environment; signals and the exit status are CMD's own, and a SIGHUP ignored when the CLI started (nohup) stays ignored
+  - evidence: test_vault_cli.py test_exec_becomes_the_command_with_the_values_in_its_environment, test_exec_passes_the_command_arguments_through_untouched, test_exec_under_nohup_leaves_the_command_ignoring_sighup, test_python_m_exec_hands_the_command_the_sighup_it_started_with (a real process, SigIgn read from /proc), test_exec_needs_a_command; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: replace os.execvpe: assert CMD and its arguments untouched, the values in its environment, SIGPIPE back to its default; a real python -m process started with SIGHUP default, then ignored: the command's SigIgn matches
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:59Z @kj added
+  - log: 2026-09-26T16:48:53Z @kj edited text "`vault exec --env VAR=NAME[:FIELD] -- CMD` runs CMD with the values in its environment and returns its exit code" -> "vault exec --env VAR=NAME[:FIELD] -- CMD becomes CMD (exec) with the values in its environment; signals and the exit status are CMD's own"
+  - log: 2026-09-27T12:16:03Z @kj edited text "vault exec --env VAR=NAME[:FIELD] -- CMD becomes CMD (exec) with the values in its environment; signals and the exit status are CMD's own" -> "vault exec --env VAR=NAME[:FIELD] -- CMD becomes CMD (exec) with the values in its environment; signals and the exit status are CMD's own, and a SIGHUP ignored when the CLI started (nohup) stays ignored"; test "exec `sh -c 'test "$X" = value'`, assert exit 0" -> "replace os.execvpe: assert CMD and its arguments untouched, the values in its environment, SIGPIPE back to its default, SIGHUP back to how the process started (ignored under nohup)"
+  - log: 2026-09-27T12:33:44Z @kj edited test "replace os.execvpe: assert CMD and its arguments untouched, the values in its environment, SIGPIPE back to its default, SIGHUP back to how the process started (ignored under nohup)" -> "replace os.execvpe: assert CMD and its arguments untouched, the values in its environment, SIGPIPE back to its default; a real python -m process started with SIGHUP default, then ignored: the command's SigIgn matches"
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-VAULT-121` **Passkey and recovery management** - HIGH; vault passkey add, passkey rm --cred-id ID and recovery register, remove and replace slots; passkey add needs no unlock, the browser asks for the proof after the click - a passkey for its hostname, else the recovery passphrase; recovery asks for the current passphrase, then the new one twice
+  - evidence: test_vault_cli.py test_passkey_list_and_remove, test_passkey_add_needs_no_unlock, test_recovery_replacement, test_recovery_needs_the_current_passphrase_not_an_unlock; jest vault-plugin.spec.ts 'proves a registration against the vault the server serves now, not the one this tab read'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub the ceremony, add then remove a passkey, assert the slot list each time
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:59Z @kj added
+  - log: 2026-09-26T17:46:16Z @kj edited text "`vault passkey add`, `vault passkey rm CRED_ID` and `vault recovery` register, remove and replace slots" -> "vault passkey add, vault passkey rm --cred-id ID and vault recovery register, remove and replace slots"
+  - log: 2026-09-26T20:17:29Z @kj amended text "vault passkey add, vault passkey rm --cred-id ID and vault recovery register, remove and replace slots" -> "vault passkey add, vault passkey rm --cred-id ID and vault recovery register, remove and replace slots; vault recovery asks for the current recovery passphrase, then the new one twice"
+  - log: 2026-09-26T20:56:51Z @kj amended text "vault passkey add, vault passkey rm --cred-id ID and vault recovery register, remove and replace slots; vault recovery asks for the current recovery passphrase, then the new one twice" -> "HIGH; vault passkey add, vault passkey rm --cred-id ID and vault recovery register, remove and replace slots; vault passkey add needs no unlock, the browser asks for the recovery passphrase after the notification click; vault recovery asks for the current recovery passphrase, then the new one twice"
+  - log: 2026-09-26T21:20:04Z @kj amended text "vault passkey add, vault passkey rm --cred-id ID and vault recovery register, remove and replace slots; vault passkey add needs no unlock, the browser asks for the recovery passphrase after the notification click; vault recovery asks for the current recovery passphrase, then the new one twice" -> "HIGH; vault passkey add, passkey rm --cred-id ID and recovery register, remove and replace slots; passkey add needs no unlock, the browser asks for the proof after the click - a passkey for its hostname, else the recovery passphrase; recovery asks for the current passphrase, then the new one twice"
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-VAULT-122` **One-line errors** - MEDIUM; locked vault, missing entry, missing vault and no server each exit 1 with one line, never a traceback
+  - evidence: test_vault_cli.py test_a_missing_vault_is_one_line, test_no_server_is_one_line, test_passkey_remove_needs_an_unlocked_vault, test_rm_and_missing_names; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: provoke each, assert exit 1 and one stderr line
+  - test-tags: UNIT
+  - log: 2026-09-26T15:31:59Z @kj added
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-VAULT-123` **--debug** - LOW; `--debug` on any vault subcommand prints the holder decision from the server
+  - evidence: test_vault_cli.py test_debug_prints_the_holder_decision; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: run `vault status --debug` against a stub, assert the holder lines
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-VAULT-147` **Adversarial review** - HIGH; the vault survives architect, bug-hunter, slop-hunter and ux-designer review on a snapshot of the working tree, two consecutive rounds clean
+  - evidence: rounds 53 and 54 CLEAN on architect, bug-hunter, slop-hunter and ux-designer (devils-advocate), on snapshots of one unchanged tree; 54 rounds in all 2026-09-26 to 2026-09-28; pytest 433/433, jest 210/210, Galata 36/36 v1.0.108
+  - test: run the four devils-advocate lenses on a fresh snapshot; triage, fix, repeat until two rounds in a row are clean
+  - test-tags: MANUAL
+  - log: 2026-09-26T16:48:53Z @kj added
+  - log: 2026-09-28T00:23:36Z @kj closed
+- [x] `ACC-VAULT-152` **status details** - MEDIUM; vault status prints what the panel keeps in tooltips: what the holder is, the notice, the protection level with what it lacks, and one line per capability with yes or no and its explanation
+  - evidence: test_vault_cli.py test_status_prints_state_holder_and_capabilities (one explained line per capability); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub the server status, assert the holder line and one line per capability with its explanation
+  - test-tags: UNIT
+  - log: 2026-09-26T19:15:26Z @kj added
+  - log: 2026-09-28T00:23:26Z @kj closed
+- [x] `ACC-VAULT-168` **CLI unchanged by the reveal** - HIGH; the reveal is for the panel only; the CLI, which agents use, keeps today's flows - secrets entered through the lab dialog, copy and show staged on the server and released by a notification click, nothing secret in argv
+  - evidence: test_vault_cli.py passes with no change for the reveal work; the reveal without prf still serves vault get; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: pytest test_vault_cli.py passes unchanged by the reveal work
+  - test-tags: UNIT
+  - log: 2026-09-26T19:44:24Z @kj added
+  - log: 2026-09-28T00:23:26Z @kj closed
+
+## Vault Python API `PYAPI`
+
+Using the vault from Python code and notebooks
+
+- [x] `ACC-PYAPI-124` **Vault class** - MEDIUM; `from jupyterlab_passkey_extension.vault import Vault`; `Vault().get(name, field)`, `list()`, `status()`, `unlock()`, `lock()` call the same REST API as the CLI
+  - evidence: test_vault_cli.py test_python_api, test_the_package_exports_vault; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: route requests through the handlers' action tables, call get, list, status, lock and unlock, assert each result; assert the package exports Vault
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-27T20:54:22Z @kj edited test "stub the server, call each method, assert the request and the result" -> "route requests through the handlers' action tables, call get, list, status, lock and unlock, assert each result; assert the package exports Vault"
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-PYAPI-125` **Unlock on demand** - MEDIUM; `Vault().get` on a locked vault runs the passkey unlock first, as the CLI does
+  - evidence: test_vault_cli.py test_python_api_unlocks_on_demand; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: stub the ceremony, call get while locked, assert one unlock
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-28T00:23:22Z @kj closed
+
+## Vault REST API `REST`
+
+The server endpoints the CLI, the Python API and the panel call
+
+- [x] `ACC-REST-126` **Authenticated** - CRITICAL; every vault endpoint requires the Jupyter token; a tokenless request gets 403 and changes nothing
+  - evidence: test_vault_routes.py test_every_action_needs_the_token (POST and PATCH carry a matching XSRF cookie and header, so the 403 is the missing token); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: call 10 actions covering every HTTP method (GET, POST, PATCH) without a token, POST and PATCH with a matching XSRF cookie and header, assert 403 and no vault file
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-27T20:27:04Z @kj edited test "call each endpoint without a token, assert 403" -> "call 10 actions covering every HTTP method (GET, POST, PATCH) without a token, POST and PATCH with a matching XSRF cookie and header, assert 403 and no vault file"
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-REST-127` **Never logged** - CRITICAL; no vault endpoint logs a password, passphrase, PRF or data key at any level
+  - evidence: test_vault_routes.py test_no_secret_is_logged (caplog at DEBUG); test_routes.py test_a_malformed_body_is_400_and_never_logged; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: capture logs while calling every endpoint that receives or returns a secret (init, both unlocks, passkey add, both reveals, generate, entries add and edit, import, recovery, a malformed body), assert no password, passphrase, PRF, generated value or data key appears
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-27T20:03:05Z @kj edited test "capture logs while calling each endpoint, assert no secret appears" -> "capture logs while calling every endpoint that receives or returns a secret (init, both unlocks, passkey add, both reveals, generate, entries add and edit, import, recovery, a malformed body), assert no password, passphrase, PRF, generated value or data key appears"
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-REST-128` **Status has no secrets** - HIGH; `vault/status` returns state, time left, holder, capabilities, notice, slot metadata and settings, never a secret
+  - evidence: test_vault_routes.py test_status_carries_no_secret, test_status_before_init; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unlock, call status, assert no secret in the body
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-REST-129` **Clean failures** - MEDIUM; a holder or file failure answers a JSON error with 500, never a traceback
+  - evidence: test_vault_routes.py test_a_holder_failure_is_a_clean_500, test_a_body_that_is_not_an_object_is_400, test_an_unknown_action_is_404; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: make the holder raise, assert 500 with a message
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-28T00:23:23Z @kj closed
+- [x] `ACC-REST-167` **Reveal endpoint** - HIGH; POST vault/reveal with the entry name and a passkey PRF answers the password, locked or not; a PRF that opens no passkey slot answers 403; neither the PRF nor the password is logged
+  - evidence: test_vault_routes.py test_a_passkey_reveal_answers_the_password_only_for_a_prf_that_opens_a_slot (the password, also after a lock; 403 for a wrong PRF, another cred_id, a malformed or missing PRF; caplog holds neither PRF nor password); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: pytest: reveal with the registered PRF returns the password, also after a lock, a wrong PRF 403, caplog holds neither
+  - test-tags: INTEGRATION
+  - log: 2026-09-26T19:44:20Z @kj added
+  - log: 2026-09-27T11:22:34Z @kj edited text "POST vault/reveal with the entry name and a passkey PRF answers the password; a PRF that opens no passkey slot answers 403; neither the PRF nor the password is logged" -> "POST vault/reveal with the entry name and a passkey PRF answers the password, locked or not; a PRF that opens no passkey slot answers 403; neither the PRF nor the password is logged"; test "pytest: reveal with the registered PRF returns the password, a wrong PRF 403, caplog holds neither" -> "pytest: reveal with the registered PRF returns the password, also after a lock, a wrong PRF 403, caplog holds neither"
+  - log: 2026-09-28T00:23:26Z @kj closed
+- [x] `ACC-REST-170` **Recovery change needs a proof** - CRITICAL; POST vault/recovery replaces the recovery passphrase only with a proof in the same request - a passkey PRF that opens a passkey slot, or the current recovery passphrase; an unlocked vault alone is not enough; a missing or wrong proof answers 403 and changes nothing
+  - evidence: test_vault_routes.py test_recovery_replacement_needs_a_proof_in_the_same_request (no proof, empty proof, wrong passphrase, wrong PRF, another credential: 403; passphrase and passkey each replace it, locked too); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: pytest: no proof 403, wrong current 403, wrong PRF 403, current passphrase and passkey PRF each replace it
+  - test-tags: INTEGRATION, UNIT, E2E
+  - mechanism: 2026-09-26T21:19:42Z @kj the new recovery slot wraps the data key the proof unwraps, never the key in the holder; the proof asks the person at the screen and is no boundary against a process running as the user (see ACC-REST-173)
+  - mechanism: 2026-09-26T20:17:25Z @kj the new recovery slot wraps the data key the proof unwraps, never the key in the holder
+  - log: 2026-09-26T20:17:25Z @kj added
+  - log: 2026-09-26T21:19:42Z @kj mechanism overridden; reason: states the limit found in review round 6
+  - log: 2026-09-26T21:23:34Z @kj amended text "POST vault/recovery replaces the recovery passphrase only with a fresh proof in the same request - a passkey PRF that opens a passkey slot, or the current recovery passphrase; an unlocked vault alone is not enough; a missing or wrong proof answers 403 and changes nothing" -> "CRITICAL; POST vault/recovery replaces the recovery passphrase only with a proof in the same request - a passkey PRF that opens a passkey slot, or the current recovery passphrase; an unlocked vault alone is not enough; a missing or wrong proof answers 403 and changes nothing"
+  - log: 2026-09-28T00:23:22Z @kj closed
+- [x] `ACC-REST-173` **Passkey registration needs a proof** - CRITICAL; POST vault/passkeys adds a slot only with a proof in the same request - a PRF that opens a passkey slot, or the current recovery passphrase; unlocked alone is not enough, locked with a proof is; a missing or wrong proof answers 403 and adds nothing
+  - evidence: test_vault_routes.py test_a_passkey_is_registered_only_with_a_proof (no proof and wrong passphrase 403, slots unchanged; the passphrase adds a slot on a locked vault; a wrong passkey PRF 403, a right one adds a second); test_vault_cli.py test_passkey_add_needs_no_unlock; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: pytest: no proof and wrong passphrase 403, slots unchanged; passphrase adds a slot on a locked vault; a wrong passkey PRF 403, a right one adds a second slot
+  - test-tags: INTEGRATION, UNIT, E2E
+  - mechanism: 2026-09-26T21:19:39Z @kj the new slot wraps the data key the proof unwraps, never the key in the holder; the proof asks the person at the screen and is no boundary against a process running as the user, which can read the key from keyctl or gpg-agent while unlocked or get a PRF through passkey:run
+  - mechanism: 2026-09-26T20:56:45Z @kj the new slot wraps the data key the passphrase unwraps, never the key in the holder; without this a token holder registers a passkey and uses it as the proof for ACC-REST-170
+  - log: 2026-09-26T20:56:45Z @kj added
+  - log: 2026-09-26T21:19:36Z @kj amended title "Passkey registration needs the recovery passphrase" -> "Passkey registration needs a proof"; text "POST vault/passkeys adds a passkey slot only with the current recovery passphrase in the same request; an unlocked vault alone is not enough, a locked vault with the passphrase is; a missing or wrong passphrase answers 403 and adds nothing" -> "CRITICAL; POST vault/passkeys adds a slot only with a proof in the same request - a PRF that opens a passkey slot, or the current recovery passphrase; unlocked alone is not enough, locked with a proof is; a missing or wrong proof answers 403 and adds nothing"
+  - log: 2026-09-26T21:19:39Z @kj mechanism overridden; reason: the first record called it a stop for a token holder; review round 6 showed a same-user process reads the key directly
+  - log: 2026-09-26T21:19:44Z @kj edited test "pytest: no passphrase 403, wrong passphrase 403, slot list unchanged; correct passphrase adds the slot on a locked vault" -> "pytest: no proof and wrong passphrase 403, slots unchanged; passphrase adds a slot on a locked vault; a wrong passkey PRF 403, a right one adds a second slot"
+  - log: 2026-09-28T00:23:25Z @kj closed
+
+## Vault panel `PANEL`
+
+The vault sidebar panel in JupyterLab
+
+- [x] `ACC-PANEL-130` **Sidebar panel** - MEDIUM; a Vault panel with its own icon docks in the right sidebar by default; the `sidebar` setting moves it left
+  - evidence: Galata vault.spec.ts 'the vault panel docks in the right sidebar'; jest vault.spec.ts 'sends the unlock duration and docks the panel, now and on every change'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: Galata: open the panel, assert it is in the right area
+  - test-tags: E2E
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-28T00:23:23Z @kj closed
+- [x] `ACC-PANEL-131` **Create vault** - HIGH; with no vault, the panel names the vault path it looked at and offers Create vault: recovery passphrase entered twice, then register a passkey with that passphrase as the proof, not asked again
+  - evidence: jest vault.spec.ts 'offers Create vault when there is none' (names the path), 'creates a vault: recovery passphrase twice, then a passkey' (the passphrase is the registration proof, asked once), 'says the vault exists when the passkey step of Create fails'; Galata vault.spec.ts 'create vault sets the recovery passphrase, registers a passkey and unlocks'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: the Create view names the vault path; Galata with a virtual authenticator: create, assert unlocked with one passkey slot
+  - test-tags: UNIT, E2E
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-26T20:56:51Z @kj amended text "with no vault, the panel offers Create vault: recovery passphrase entered twice, then register a passkey" -> "HIGH; with no vault, the panel offers Create vault: recovery passphrase entered twice, then register a passkey with that passphrase as the proof, not asked again"
+  - log: 2026-09-27T09:53:21Z @kj edited text "with no vault, the panel offers Create vault: recovery passphrase entered twice, then register a passkey with that passphrase as the proof, not asked again" -> "with no vault, the panel names the vault path it looked at and offers Create vault: recovery passphrase entered twice, then register a passkey with that passphrase as the proof, not asked again"
+  - log: 2026-09-27T10:10:15Z @kj edited test "Galata with a virtual authenticator: create, assert unlocked with one passkey slot" -> "jest: the Create view names the vault path; Galata with a virtual authenticator: create, assert unlocked with one passkey slot"; test-tags "E2E" -> "UNIT, E2E"
+  - log: 2026-09-28T00:23:23Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-132` **Locked view** - HIGH; a locked vault shows Unlock with passkey, whose click runs the WebAuthn request in the page, and Use recovery passphrase
+  - evidence: jest vault.spec.ts 'shows the locked view with passkey and recovery unlock'; Galata vault.spec.ts 'lock, then unlock with the passkey', 'unlock with the recovery passphrase'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: Galata: lock, click Unlock with passkey, assert unlocked
+  - test-tags: E2E
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-28T00:23:23Z @kj closed
+- [x] `ACC-PANEL-133` **Status line** - HIGH; the header shows a status diode, locked or unlocked with time left, and the holder name; when auto falls back to the extension's own code, one banner line shows the current notice, replaced when a restart changes it, as do the cog view's Key holder tooltip and vault status
+  - evidence: jest vault.spec.ts 'shows state, time left and the holder in the status line', 'says when the extension's own code holds the key, and why, in the banner and the Key holder tooltip', 'replaces the banner notice when a restart changes its reason'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit-render the header for each state, assert text and banner
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-26T16:48:53Z @kj edited text "the header shows a status diode, locked or unlocked with time left, and the holder name; a banner explains when the extension's own code holds the key" -> "the header shows a status diode, locked or unlocked with time left, and the holder name; when the extension's own code holds the key, one banner line says so and the cog view gives the full notice"
+  - log: 2026-09-26T19:15:37Z @kj amended text "the header shows a status diode, locked or unlocked with time left, and the holder name; when the extension's own code holds the key, one banner line says so and the cog view gives the full notice" -> "the header shows a status diode, locked or unlocked with time left, and the holder name; when the extension's own code holds the key, one banner line says so, and the Key holder tooltip in the cog view and vault status give the full notice"
+  - log: 2026-09-27T08:28:24Z @kj amended text "the header shows a status diode, locked or unlocked with time left, and the holder name; when the extension's own code holds the key, one banner line says so, and the Key holder tooltip in the cog view and vault status give the full notice" -> "HIGH; the header shows a status diode, locked or unlocked with time left, and the holder name; when auto falls back to the extension's own code, one banner line says so, and the Key holder tooltip in the cog view and vault status give the full notice"; reason: a pinned memory holder gives no notice (test_a_pinned_memory_holder_gives_no_notice)
+  - log: 2026-09-27T08:50:40Z @kj amended text "the header shows a status diode, locked or unlocked with time left, and the holder name; when auto falls back to the extension's own code, one banner line says so, and the Key holder tooltip in the cog view and vault status give the full notice" -> "HIGH; the header shows a status diode, locked or unlocked with time left, and the holder name; when auto falls back to the extension's own code, one banner line shows the notice, as do the Key holder tooltip in the cog view and vault status"; reason: all three show the same notice since round 6
+  - log: 2026-09-27T09:53:26Z @kj edited text "the header shows a status diode, locked or unlocked with time left, and the holder name; when auto falls back to the extension's own code, one banner line shows the notice, as do the Key holder tooltip in the cog view and vault status" -> "the header shows a status diode, locked or unlocked with time left, and the holder name; when auto falls back to the extension's own code, one banner line shows the current notice, replaced when a restart changes it, as do the cog view's Key holder tooltip and vault status"
+  - log: 2026-09-28T00:23:23Z @kj closed
+- [x] `ACC-PANEL-134` **Entry list** - MEDIUM; entries are grouped by category and filtered by name, username and url as the user types
+  - evidence: jest vault.spec.ts 'groups entries by category and filters them as the user types'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit-render three entries, type a filter, assert the visible rows
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-28T00:23:23Z @kj closed
+- [-] `ACC-PANEL-135` **Entry actions** - HIGH; an expanded entry offers Copy username, Copy password (clipboard only, never displayed), Show (distorted image), Edit and a two-step Delete
+  - test: Galata: add an entry, copy its password, assert the clipboard value and that the page text lacks it
+  - test-tags: E2E
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-26T19:44:34Z @kj rejected: replaced by the entry popup: ACC-PANEL-157 to ACC-PANEL-162 and ACC-PANEL-166
+- [x] `ACC-PANEL-136` **Add and edit dialog** - MEDIUM; the dialog has name, username, password with Generate, url, category and notes; the password field never autofills
+  - evidence: jest vault.spec.ts 'adds an entry through the form', 'never lets the browser autofill the password and fills it on Generate', 'shows Edit with the same visible fields as Add, the name read-only, plus the keep-password help'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit-render the dialog, assert `autocomplete=new-password` and that Generate fills it
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:10Z @kj added
+  - log: 2026-09-28T00:23:23Z @kj closed
+- [x] `ACC-PANEL-137` **Settings and security view** - HIGH; a cog icon in the panel header opens a view showing the active holder, the security summary and one row per capability except the holder's own expiry and container isolation, which only vault status prints
+  - evidence: jest vault.spec.ts 'shows short values, with the explanations as tooltips'; test_vault_holders.py test_the_protection_names_what_it_counts_with_the_container_caveat; Galata vault.spec.ts 'the cog view shows the key holder and a row for each capability it shows'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: Galata: click the cog, assert the Key holder row and 3 capability rows, none for the holder's own expiry or container isolation
+  - test-tags: E2E
+  - log: 2026-09-26T15:32:11Z @kj added
+  - log: 2026-09-26T19:31:46Z @kj amended text "a cog icon in the panel header opens a view showing the active holder, the security summary and one row per capability" -> "a cog icon in the panel header opens a view showing the active holder, the security summary and one row per capability except container isolation, which only vault status prints"
+  - log: 2026-09-26T19:31:51Z @kj edited test "Galata: click the cog, assert the holder name and one row per capability" -> "Galata: click the cog, assert the holder name and 4 capability rows, none for container isolation"
+  - log: 2026-09-26T20:16:23Z @kj amended text "a cog icon in the panel header opens a view showing the active holder, the security summary and one row per capability except container isolation, which only vault status prints" -> "a cog icon in the panel header opens a view showing the active holder, the security summary and one row per capability except the holder's own expiry and container isolation, which only vault status prints"
+  - log: 2026-09-26T20:37:12Z @kj edited test "Galata: click the cog, assert the holder name and 4 capability rows, none for container isolation" -> "Galata: click the cog, assert the Key holder row and 3 capability rows, none for the holder's own expiry or container isolation"
+  - log: 2026-09-28T00:23:23Z @kj closed
+- [x] `ACC-PANEL-138` **Passkey management** - HIGH; the cog lists passkeys (name, date added, hostname if not this tab's), registers one under a given name, removes one in two steps (needs an unlock); registering first takes a proof - a passkey for this host, else the recovery passphrase; a failure after create names the unused passkey
+  - evidence: jest vault.spec.ts 'lists passkeys and removes one in two steps', 'stores the name chosen in the confirm step', 'registers a passkey with an existing passkey as the proof', 'registers with the recovery passphrase on a hostname with no passkey, asked before the browser creates one', 'creates nothing when the proof is not given', 'says the created passkey is unused when the registration is cancelled at the confirm step', 'says a refused proof left the created passkey unused', 'asks for an unlock only to remove passkeys on a locked vault'; Galata vault.spec.ts 'a passkey is registered with a passkey as the proof, or the recovery passphrase when this host has none'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: Galata: register a second passkey with the first as the proof (no passphrase field), assert two rows; remove both, register through the passphrase dialog, assert one; jest: each proof, cancel creates nothing, a refused proof names the unused passkey, locked view offers Register
+  - test-tags: UNIT, E2E
+  - log: 2026-09-26T15:32:11Z @kj added
+  - log: 2026-09-26T16:48:53Z @kj edited text "the cog view lists passkeys (label, hostname, created), registers a new passkey and removes one with a two-step button" -> "the cog view lists passkeys (name, hostname, date added), registers a new passkey under a name the user gives, and removes one with a two-step button"
+  - log: 2026-09-26T17:07:38Z @kj edited text "the cog view lists passkeys (name, hostname, date added), registers a new passkey under a name the user gives, and removes one with a two-step button" -> "the cog view lists passkeys (name and date added, plus the hostname when it is not this tab's), registers a new passkey under a name the user gives, and removes one with a two-step button"
+  - log: 2026-09-26T20:56:51Z @kj edited test "Galata: register a second passkey, assert two rows; remove it, assert one" -> "Galata: register a second passkey through the passphrase dialog, assert two rows; remove it, assert one; jest: passphrase asked before create, cancel creates nothing, 403 names the unused passkey, locked view offers Register"
+  - log: 2026-09-26T20:56:57Z @kj amended text "the cog view lists passkeys (name and date added, plus the hostname when it is not this tab's), registers a new passkey under a name the user gives, and removes one with a two-step button" -> "HIGH; the cog lists passkeys (name, date added, hostname when not this tab's), registers one under a given name, removes one with a two-step button; registering asks the recovery passphrase before the browser creates the passkey, locked or not; removing needs an unlock; a refused passphrase names the unused passkey"
+  - log: 2026-09-26T21:19:55Z @kj amended text "the cog lists passkeys (name, date added, hostname when not this tab's), registers one under a given name, removes one with a two-step button; registering asks the recovery passphrase before the browser creates the passkey, locked or not; removing needs an unlock; a refused passphrase names the unused passkey" -> "HIGH; the cog lists passkeys (name, date added, hostname if not this tab's), registers one under a given name, removes one in two steps (needs an unlock); registering first takes a proof - a passkey for this host, else the recovery passphrase; a failure after create names the unused passkey"
+  - log: 2026-09-26T21:54:04Z @kj edited test "Galata: register a second passkey through the passphrase dialog, assert two rows; remove it, assert one; jest: passphrase asked before create, cancel creates nothing, 403 names the unused passkey, locked view offers Register" -> "Galata: register a second passkey with the first as the proof (no passphrase field), assert two rows; remove both, register through the passphrase dialog, assert one; jest: each proof, cancel creates nothing, a refused proof names the unused passkey, locked view offers Register"
+  - log: 2026-09-27T23:38:53Z @kj edited test-tags "E2E" -> "UNIT, E2E"
+  - log: 2026-09-28T00:23:23Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-139` **Recovery passphrase change** - MEDIUM; the cog view replaces the recovery passphrase after a proof - a passkey request when a passkey for this host exists, otherwise the current recovery passphrase - and the new one entered twice; a cancelled proof changes nothing
+  - evidence: jest vault.spec.ts 'changes the recovery passphrase with a passkey as the proof', 'changes the recovery passphrase with the current one when the passkey does not answer', 'asks for the current passphrase as the proof when no passkey matches this host', 'says nothing changed when the recovery dialog is cancelled'; Galata vault.spec.ts 'the recovery passphrase is changed and then opens the vault'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: Galata: change it, lock, unlock with the new passphrase
+  - test-tags: E2E
+  - log: 2026-09-26T15:32:11Z @kj added
+  - log: 2026-09-26T20:17:29Z @kj amended text "the cog view replaces the recovery passphrase after it is entered twice" -> "the cog view replaces the recovery passphrase after a proof - a passkey request when a passkey for this host exists, otherwise the current recovery passphrase - and the new one entered twice; a cancelled proof changes nothing"
+  - log: 2026-09-28T00:23:23Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-140` **Settings link** - MEDIUM; the cog view shows the unlock duration and opens the Settings Editor at the vault settings
+  - evidence: jest vault.spec.ts 'shows the unlock duration and opens the Settings Editor'; jest vault-plugin.spec.ts 'opens the Settings Editor at the vault settings, searched by the schema title'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit: click Open settings, assert the panel calls openSettings; the plugin opens settingeditor:open with the query Passkey Vault, the title in schema/vault.json
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:11Z @kj added
+  - log: 2026-09-26T21:58:56Z @kj edited test "unit: click Open settings, assert `settingeditor:open` with the vault plugin id" -> "unit: click Open settings, assert the panel calls openSettings; the plugin opens settingeditor:open with the query Passkey Vault, the title in schema/vault.json"
+  - log: 2026-09-28T00:23:23Z @kj closed
+- [x] `ACC-PANEL-141` **Time left refresh** - MEDIUM; time left refreshes while the panel is visible, and expiry switches the panel to the locked view
+  - evidence: jest vault.spec.ts 'switches to the locked view when the vault expires while shown', 'rounds time left up to the minute, with seconds under one minute'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit with fake timers: expire the status, assert the locked view
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:11Z @kj added
+  - log: 2026-09-28T00:23:23Z @kj closed
+- [x] `ACC-PANEL-148` **Recovery passphrase as a link** - MEDIUM; the locked view offers Use recovery passphrase as a text link, not a button, whether or not a passkey matches this host; Enter and Space activate it
+  - evidence: jest vault.spec.ts 'shows the locked view with passkey and recovery unlock', 'offers only the recovery passphrase link when no passkey matches this host'; Galata vault.spec.ts 'unlock with the recovery passphrase'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit-render the locked view with and without a matching passkey, assert the link style and that a click opens the passphrase dialog
+  - test-tags: UNIT, E2E
+  - mechanism: 2026-09-26T19:15:10Z @kj a button element styled as a link, so it keeps the button role and keyboard activation
+  - log: 2026-09-26T19:15:10Z @kj added
+  - log: 2026-09-28T00:23:23Z @kj closed
+- [x] `ACC-PANEL-149` **Edit looks like Add** - MEDIUM; the edit dialog shows the same fields in the same order as Add entry, titled Edit entry, with the name visible and read-only; its only addition is the help line, which reads 'Leave empty to keep the current password' while the password field is empty and 'Save replaces the current password' once it holds one (typed or generated)
+  - evidence: jest vault.spec.ts 'shows Edit with the same visible fields as Add, the name read-only, plus the keep-password help'; Galata vault.spec.ts 'the entry dialog is wide with a tall Notes, and Edit shows the same fields as Add'; EntryForm 'says in Edit that a generated password replaces the current one', 'clears a failed Generate line in Add once a password is generated', 'keeps the replace rule beside a failed Generate that follows a successful one'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: Edit has Add's fields, name read-only, keep-password help; Generate shows the replace line, clearing brings keep back, a later failed Generate keeps the replace rule; Galata: the dialog title is Edit entry
+  - test-tags: UNIT, E2E
+  - log: 2026-09-26T19:15:13Z @kj added
+  - log: 2026-09-27T08:10:12Z @kj amended text "the edit dialog shows the same fields in the same order as Add entry, titled Edit entry, with the name visible and read-only; its only addition is the help line Leave empty to keep the current password" -> "MEDIUM; the edit dialog shows the same fields in the same order as Add entry, titled Edit entry, with the name visible and read-only; its only addition is the help line 'Leave empty to keep the current password', which reads 'Save replaces the current password' once Generate has filled the field"; reason: adds the help line's change after Generate
+  - log: 2026-09-27T08:28:24Z @kj amended text "the edit dialog shows the same fields in the same order as Add entry, titled Edit entry, with the name visible and read-only; its only addition is the help line 'Leave empty to keep the current password', which reads 'Save replaces the current password' once Generate has filled the field" -> "MEDIUM; the edit dialog shows the same fields in the same order as Add entry, titled Edit entry, with the name visible and read-only; its only addition is the help line, which reads 'Leave empty to keep the current password' while the password field is empty and 'Save replaces the current password' once it holds one (typed or generated)"; reason: the help line follows the field
+  - log: 2026-09-27T08:28:24Z @kj edited test "unit-render the add and the edit form, assert the same label list, a visible read-only name and the Edit entry title" -> "unit: open Edit for an entry, assert the same field order as Add, name read-only, the keep-password help; Generate shows 'Save replaces the current password', clearing the field brings the keep-password help back and sends no password"
+  - log: 2026-09-27T08:29:57Z @kj edited test "unit: open Edit for an entry, assert the same field order as Add, name read-only, the keep-password help; Generate shows 'Save replaces the current password', clearing the field brings the keep-password help back and sends no password" -> "unit: Edit has Add's field order, name read-only, the keep-password help; Generate shows 'Save replaces the current password', clearing the field brings the keep-password help back and sends no password; a failed Generate after a successful one keeps the replace rule beside the failure"
+  - log: 2026-09-27T08:30:30Z @kj edited test "unit: Edit has Add's field order, name read-only, the keep-password help; Generate shows 'Save replaces the current password', clearing the field brings the keep-password help back and sends no password; a failed Generate after a successful one keeps the replace rule beside the failure" -> "jest: Edit has Add's fields, name read-only, keep-password help; Generate shows the replace line, clearing brings keep back, a later failed Generate keeps the replace rule; Galata: the dialog title is Edit entry"; test-tags "UNIT" -> "UNIT, E2E"
+  - log: 2026-09-28T00:23:24Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-150` **Dialog fits JSON notes** - MEDIUM; the add and edit dialog is 560 px wide, at most 90% of the window, and Notes is at least 12 lines tall; the dialog may grow to 90% of the window height, past the lab's 500 px limit
+  - evidence: Galata vault.spec.ts 'the entry dialog is wide with a tall Notes, and Edit shows the same fields as Add' (width >= 540 px, Notes >= 12 lines); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: Galata: open Add entry, assert the dialog is at least 540 px wide and Notes at least 12 lines tall
+  - test-tags: E2E
+  - log: 2026-09-26T19:15:18Z @kj added
+  - log: 2026-09-28T00:23:24Z @kj closed
+- [x] `ACC-PANEL-151` **Simple security view** - HIGH; the cog view shows each security row as a short value - holder family (memory, not memory/memfd_secret), protection level in one word, yes or no per capability; tooltips carry the explanation, on the holder row also the full name and notice; no line of instructions under the rows
+  - evidence: jest vault.spec.ts 'shows short values, with the explanations as tooltips'; test_vault_holders.py test_describe_explains_every_capability_in_order; Galata vault.spec.ts 'the cog view shows the key holder and a row for each capability it shows' (title attribute); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit-render the cog view, assert one-word values and that the holder, protection and first capability rows carry the explanation sent in the status as their tooltip
+  - test-tags: UNIT, E2E
+  - mechanism: 2026-09-26T19:15:22Z @kj holders.describe() sends each row's label and explanation in the status, so the panel tooltips and vault status print the same text
+  - log: 2026-09-26T19:15:22Z @kj added
+  - log: 2026-09-26T19:27:32Z @kj amended text "the cog view shows each security row as a short value - the holder name, the protection level as one word, yes or no per capability; the row's tooltip carries the explanation, the holder row's tooltip also the notice; one line names jupyterlab-passkey vault status for the full text" -> "the cog view shows each security row as a short value - holder family (memory, not memory/memfd_secret), protection level in one word, yes or no per capability; tooltips carry the explanation, on the holder row also the full name and notice; one line names jupyterlab-passkey vault status"
+  - log: 2026-09-26T20:11:54Z @kj amended text "the cog view shows each security row as a short value - holder family (memory, not memory/memfd_secret), protection level in one word, yes or no per capability; tooltips carry the explanation, on the holder row also the full name and notice; one line names jupyterlab-passkey vault status" -> "the cog view shows each security row as a short value - holder family (memory, not memory/memfd_secret), protection level in one word, yes or no per capability; tooltips carry the explanation, on the holder row also the full name and notice; no line of instructions under the rows"
+  - log: 2026-09-28T00:22:10Z @kj edited test "unit-render the cog view, assert one-word values and that each row's tooltip holds the explanation sent in the status" -> "unit-render the cog view, assert one-word values and that the holder, protection and first capability rows carry the explanation sent in the status as their tooltip"
+  - log: 2026-09-28T00:23:24Z @kj closed
+- [x] `ACC-PANEL-153` **Vault file as a path** - LOW; the cog view and the Create view show the vault file's full path, with ~ for the home directory, broken only after a slash unless one part is wider than the line
+  - evidence: jest vault.spec.ts 'shows the unlock duration and opens the Settings Editor' (~/.local/share/jupyterlab-passkey/vault.json), 'offers Create vault when there is none' (the path, one element per part); the break after a slash rendered in headless Chrome at 234 px, a long part wraps inside the panel; test_vault_routes.py test_status_shows_a_path_under_home_with_a_tilde; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit-render the cog view, assert the value is the ~ path; unit-render the Create view, assert one element per path part; the break after a slash, rendered in Chrome at 234 px; pytest: status sends a path under home with ~
+  - test-tags: UNIT, MANUAL
+  - log: 2026-09-26T19:15:29Z @kj added
+  - log: 2026-09-26T20:13:18Z @kj amended title "Vault file as a name" -> "Vault file as a path"; text "the cog view shows the vault file's name; the full path is in its tooltip and in vault status" -> "the cog view shows the vault file's full path, with ~ for the home directory"
+  - log: 2026-09-26T20:37:13Z @kj edited test "unit-render the cog view, assert the value is vault.json and the tooltip the full path" -> "unit-render the cog view, assert the value is the ~ path; pytest: status sends a path under home with ~"
+  - log: 2026-09-27T10:18:20Z @kj edited text "the cog view shows the vault file's full path, with ~ for the home directory" -> "the cog view and the Create view show the vault file's full path, with ~ for the home directory, broken only after a slash unless one part is wider than the line"; test "unit-render the cog view, assert the value is the ~ path; pytest: status sends a path under home with ~" -> "unit-render the cog view, assert the value is the ~ path; unit-render the Create view, assert a break opportunity after each slash; pytest: status sends a path under home with ~"
+  - log: 2026-09-27T10:37:51Z @kj edited test "unit-render the cog view, assert the value is the ~ path; unit-render the Create view, assert a break opportunity after each slash; pytest: status sends a path under home with ~" -> "unit-render the cog view, assert the value is the ~ path; unit-render the Create view, assert one element per path part; the break after a slash, rendered in Chrome at 234 px; pytest: status sends a path under home with ~"; test-tags "UNIT" -> "UNIT, MANUAL"
+  - log: 2026-09-28T00:23:24Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-154` **Colour for present and missing** - MEDIUM; in the cog view every capability row reads yes when the key is safer; a yes shows in green, a no in amber - Locks on server restart is yes for the memory holder and no for keyctl and gpg-agent
+  - evidence: jest vault.spec.ts 'marks each protection present or missing, for its colour'; Galata vault.spec.ts 'the cog view shows the key holder and a row for each capability it shows' (Locks on restart yes, in the success colour); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit-render the cog view, assert data-protection present on yes rows and missing on no rows; Galata: a yes is drawn in --jp-success-color1
+  - test-tags: UNIT, E2E
+  - mechanism: 2026-09-26T19:23:51Z @kj data-protection on the row, coloured by --jp-success-color1 and --jp-warn-color1 in CSS; the yes or no text carries the meaning without colour
+  - log: 2026-09-26T19:23:51Z @kj added
+  - log: 2026-09-26T19:31:43Z @kj amended text "in the cog view a protection that is present shows its yes in green, one that is missing shows its no in amber; Kept across a server restart stays uncoloured, since a restart that locks the vault is not a missing protection" -> "in the cog view every capability row reads yes when the key is safer; a yes shows in green, a no in amber - Vault locked by a server restart is yes for the memory holder and no for keyctl and gpg-agent"
+  - log: 2026-09-26T19:31:54Z @kj edited test "unit-render the cog view, assert data-protection present, missing and none on the matching rows" -> "unit-render the cog view, assert data-protection present on yes rows and missing on no rows; Galata: yes and no colours differ"
+  - log: 2026-09-26T19:49:24Z @kj amended text "in the cog view every capability row reads yes when the key is safer; a yes shows in green, a no in amber - Vault locked by a server restart is yes for the memory holder and no for keyctl and gpg-agent" -> "in the cog view every capability row reads yes when the key is safer; a yes shows in green, a no in amber - Locks on restart is yes for the memory holder and no for keyctl and gpg-agent"
+  - log: 2026-09-26T20:37:19Z @kj amended text "in the cog view every capability row reads yes when the key is safer; a yes shows in green, a no in amber - Locks on restart is yes for the memory holder and no for keyctl and gpg-agent" -> "in the cog view every capability row reads yes when the key is safer; a yes shows in green, a no in amber - Locks on server restart is yes for the memory holder and no for keyctl and gpg-agent"
+  - log: 2026-09-26T20:37:20Z @kj edited test "unit-render the cog view, assert data-protection present on yes rows and missing on no rows; Galata: yes and no colours differ" -> "unit-render the cog view, assert data-protection present on yes rows and missing on no rows; Galata: a yes is drawn in --jp-success-color1"
+  - log: 2026-09-28T00:23:24Z @kj closed
+- [x] `ACC-PANEL-155` **Two button sizes** - MEDIUM; a panel button is either the design system's small button (20 px) inside a row, or spans the panel width as a view's or a section's own action; no other size
+  - evidence: Galata vault.spec.ts 'a passkey is registered with a passkey as the proof, or the recovery passphrase when this host has none' (Remove 20 px, Register the section width); three-theme screenshots read 2026-09-26; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: Galata: measure Remove at 20 px and Register new passkey at the section width minus 16 px
+  - test-tags: E2E
+  - mechanism: 2026-09-26T19:29:34Z @kj one small base rule; a button that is a direct child of the empty view or a section stretches to 24 px full width
+  - log: 2026-09-26T19:29:34Z @kj added
+  - log: 2026-09-26T20:37:15Z @kj edited test "Galata: measure the entry actions at 20 px and Register new passkey at the panel width minus 16 px" -> "Galata: measure Remove at 20 px and Register new passkey at the section width minus 16 px"
+  - log: 2026-09-28T00:23:24Z @kj closed
+- [x] `ACC-PANEL-156` **Unlock duration in hours and minutes** - LOW; the cog view and vault status show the unlock duration as hours and minutes, a zero part left out - 240 as 4h, 90 as 1h 30m, 45 as 45m; the setting itself stays in minutes
+  - evidence: jest vault.spec.ts 'shows the unlock duration in hours and minutes, a zero part left out', 'shows the unlock duration and opens the Settings Editor'; test_vault_cli.py test_the_unlock_duration_reads_in_hours_and_minutes; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit: format 240, 90, 45 and 1440 minutes, assert 4h, 1h 30m, 45m and 24h in the panel and the CLI
+  - test-tags: UNIT
+  - log: 2026-09-26T19:38:14Z @kj added
+  - log: 2026-09-28T00:23:24Z @kj closed
+- [x] `ACC-PANEL-157` **Row shows the minimum** - HIGH; an entry row shows the name and the username only, with no buttons; the row no longer expands in the panel
+  - evidence: jest vault.spec.ts 'shows each entry as its name and username only, with no buttons'; Galata vault.spec.ts 'an entry opens read-only in a popup, and its password shows only after a passkey' (row text github/apime); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit-render the list, assert each row holds the name and the username and no button
+  - test-tags: UNIT, E2E
+  - log: 2026-09-26T19:42:19Z @kj added
+  - log: 2026-09-26T19:42:27Z @kj amended text "an entry row shows the name and the username only, plus a small copy-password icon shown on hover or keyboard focus; the row no longer expands in the panel" -> "an entry row shows the name and the username only, with no buttons; the row no longer expands in the panel"
+  - log: 2026-09-26T19:42:30Z @kj edited test "unit-render the list, assert name, username and one copy icon per row, no inline actions" -> "unit-render the list, assert each row holds the name and the username and no button"
+  - log: 2026-09-28T00:23:24Z @kj closed
+- [x] `ACC-PANEL-158` **Entry opens in a popup** - HIGH; clicking a row, or Enter on it, opens a dialog laid out like Edit entry with every field read-only: name, username, password, URL, category, notes; focus starts on the eye, and Enter on a one-line field closes the dialog
+  - evidence: jest vault.spec.ts 'opens the entry in its popup, and Edit there opens Edit entry for it'; jest vault.spec.ts EntryView 'shows the fields of Edit entry, every one read-only, and no copy button'; Galata vault.spec.ts 'an entry opens read-only in a popup, and its password shows only after a passkey'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest EntryView: all six fields read-only; Galata: click a row, assert the dialog shows Name, Username, Password, URL and Notes read-only
+  - test-tags: UNIT, E2E
+  - log: 2026-09-26T19:42:43Z @kj added
+  - log: 2026-09-26T20:37:22Z @kj amended text "clicking a row, or Enter on it, opens a dialog laid out like Edit entry with every field read-only: name, username, password, URL, category, notes" -> "clicking a row, or Enter on it, opens a dialog laid out like Edit entry with every field read-only: name, username, password, URL, category, notes; focus starts on the eye, and Enter on a field closes the dialog"
+  - log: 2026-09-26T21:23:31Z @kj amended text "clicking a row, or Enter on it, opens a dialog laid out like Edit entry with every field read-only: name, username, password, URL, category, notes; focus starts on the eye, and Enter on a field closes the dialog" -> "HIGH; clicking a row, or Enter on it, opens a dialog laid out like Edit entry with every field read-only: name, username, password, URL, category, notes; focus starts on the eye, and Enter on a one-line field closes the dialog"
+  - log: 2026-09-28T00:22:11Z @kj edited test "Galata: click a row, assert the dialog shows each field read-only" -> "jest EntryView: all six fields read-only; Galata: click a row, assert the dialog shows Name, Username, Password, URL and Notes read-only"
+  - log: 2026-09-28T00:23:24Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-159` **Popup actions** - HIGH; the popup offers Edit, which closes it and opens Edit entry for the same entry, Delete, which asks for confirmation first (Enter there cancels), and Close
+  - evidence: jest vault.spec.ts 'opens the entry in its popup, and Edit there opens Edit entry for it', 'asks before deleting from the popup, and keeps the entry when that is declined', confirmDelete 'makes Cancel the button Enter presses'; Galata vault.spec.ts 'the entry dialog is wide with a tall Notes, and Edit shows the same fields as Add' (Edit from the popup); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit: click Edit in the popup, assert the popup closes and Edit entry opens for that entry; confirmDelete's default button is Cancel
+  - test-tags: UNIT, E2E
+  - log: 2026-09-26T19:42:47Z @kj added
+  - log: 2026-09-26T19:43:47Z @kj amended text "the popup offers Edit, which closes it and opens Edit entry for the same entry, the existing Copy password, Copy username and two-step Delete, and Close" -> "the popup offers Edit, which closes it and opens Edit entry for the same entry, Delete, which asks for confirmation first, and Close"
+  - log: 2026-09-27T07:49:46Z @kj amended text "the popup offers Edit, which closes it and opens Edit entry for the same entry, Delete, which asks for confirmation first, and Close" -> "HIGH; the popup offers Edit, which closes it and opens Edit entry for the same entry, Delete, which asks for confirmation first (Enter there cancels), and Close"
+  - log: 2026-09-27T07:49:57Z @kj edited test "unit: click Edit in the popup, assert the popup closes and Edit entry opens for that entry" -> "unit: click Edit in the popup, assert the popup closes and Edit entry opens for that entry; confirmDelete's default button is Cancel"
+  - log: 2026-09-28T00:23:24Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-160` **Password hidden until revealed** - CRITICAL; the popup shows the password as dots with an eye button; the password text is not in the page before a reveal succeeds
+  - evidence: jest vault.spec.ts EntryView 'keeps the password out of the page until a reveal returns it'; Galata vault.spec.ts 'an entry opens read-only in a popup, and its password shows only after a passkey' (not in page text or any field before the eye); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: Galata: open the popup, assert the page text does not contain the password
+  - test-tags: E2E
+  - log: 2026-09-26T19:42:50Z @kj added
+  - log: 2026-09-28T00:23:24Z @kj closed
+- [x] `ACC-PANEL-161` **Reveal needs a passkey** - CRITICAL; the eye runs a passkey request for this host; the server returns the password only when that request's PRF opens a passkey slot of the vault, and answers 403 otherwise
+  - evidence: jest vault.spec.ts 'reveals through a passkey request, sending the server that request's PRF'; test_vault_routes.py test_a_passkey_reveal_answers_the_password_only_for_a_prf_that_opens_a_slot; Galata vault.spec.ts eye with the virtual authenticator shows the password; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: Galata: click the eye with the virtual authenticator, assert the password shows; REST: a wrong PRF answers 403
+  - test-tags: INTEGRATION, E2E
+  - mechanism: 2026-09-26T20:06:12Z @kj reveal with cred_id and prf: HKDF(PRF) must unwrap that passkey slot, and the entry is decrypted with the key it yields, else 403; reveal without prf stays for vault get, so the check proves a passkey at the screen, not a boundary against a holder of the Jupyter token
+  - mechanism: 2026-09-26T19:42:55Z @kj same proof as passkey unlock: HKDF(PRF) must unwrap the slot's data key; the page alone cannot open the password
+  - log: 2026-09-26T19:42:55Z @kj added
+  - log: 2026-09-26T20:06:12Z @kj mechanism overridden; reason: the page-alone claim was false: vault get reads without a passkey
+  - log: 2026-09-26T21:54:06Z @kj amended title "Reveal needs a fresh passkey" -> "Reveal needs a passkey"
+  - log: 2026-09-28T00:23:24Z @kj closed
+- [x] `ACC-PANEL-162` **Reveal lasts until the popup closes** - MEDIUM; after one reveal, the eye hides and shows the password without a new passkey request; a click in the shown password selects all of it, for copying; an entry with no password says so; closing the popup removes the password text from the page
+  - evidence: jest vault.spec.ts EntryView 'reveals once, then only hides and shows'; Galata vault.spec.ts Hide then Close, password not in the page; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit: reveal once, toggle twice, assert one reveal request; Galata: close the popup, assert the password text is gone from the page
+  - test-tags: UNIT, E2E
+  - log: 2026-09-26T19:43:04Z @kj added
+  - log: 2026-09-26T20:37:23Z @kj amended text "after one reveal, the eye hides and shows the password without a new passkey request; closing the popup removes the password text from the page" -> "after one reveal, the eye hides and shows the password without a new passkey request; a click in the shown password selects all of it, for copying; an entry with no password says so; closing the popup removes the password text from the page"
+  - log: 2026-09-27T12:38:30Z @kj edited test "unit: reveal once, toggle twice, assert one reveal request; close, assert the text is gone" -> "unit: reveal once, toggle twice, assert one reveal request; Galata: close the popup, assert the password text is gone from the page"; test-tags "UNIT" -> "UNIT, E2E"
+  - log: 2026-09-28T00:23:24Z @kj closed
+- [-] `ACC-PANEL-163` **Reveal without a passkey for this host** - MEDIUM; on a hostname with no passkey registered, the eye asks for the recovery passphrase, which the server checks against the recovery slot the same way
+  - test: unit: status with only a recovery slot, click the eye, assert the passphrase dialog and a recovery reveal request
+  - test-tags: UNIT
+  - log: 2026-09-26T19:43:07Z @kj added
+  - log: 2026-09-26T19:44:10Z @kj rejected: reduced to the simplest: the eye needs a passkey for this host; without one, the passkey request's own error says so
+- [x] `ACC-PANEL-164` **Edge: reveal cancelled** - MEDIUM; cancelling the passkey prompt keeps the dots and shows no error
+  - evidence: jest vault.spec.ts EntryView 'keeps the dots and says nothing when the passkey prompt is cancelled'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit: passkey request rejects with NotAllowedError, assert dots remain and no error line
+  - test-tags: UNIT
+  - log: 2026-09-26T19:43:11Z @kj added
+  - log: 2026-09-26T20:37:16Z @kj amended text "cancelling the passkey or passphrase prompt keeps the dots and shows no error" -> "cancelling the passkey prompt keeps the dots and shows no error"
+  - log: 2026-09-28T00:23:24Z @kj closed
+- [-] `ACC-PANEL-165` **Edge: vault locks while the popup is open** - MEDIUM; when the vault locks or expires with the popup open, the popup closes and the password text leaves the page
+  - test: unit: open the popup, refresh to a locked status, assert the dialog is gone
+  - test-tags: UNIT
+  - log: 2026-09-26T19:43:14Z @kj added
+  - log: 2026-09-26T19:44:13Z @kj rejected: reduced to the simplest: a revealed password stays in its popup until the user closes it
+- [x] `ACC-PANEL-166` **Panel drops copy and show** - MEDIUM; the panel no longer offers Copy password, Copy username or Show; the CLI keeps vault copy, vault show and vault get unchanged
+  - evidence: jest vault.spec.ts 'shows each entry as its name and username only, with no buttons' (no Copy or Show); jest vault.spec.ts EntryView 'shows the fields of Edit entry, every one read-only, and no copy button'; test_vault_cli.py copy, show and get tests unchanged; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit-render the list and the popup, assert no Copy or Show button
+  - test-tags: UNIT
+  - log: 2026-09-26T19:44:17Z @kj added
+  - log: 2026-09-28T00:23:24Z @kj closed
+- [x] `ACC-PANEL-169` **Plain capability names** - LOW; the capabilities are named in plain words that read yes when safer: Never in swap, Never in crash dumps, Locks on server restart, and for vault status only Expires on its own and Isolated from containers
+  - evidence: test_vault_holders.py test_describe_explains_every_capability_in_order (labels equal the five names); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: unit: holders.describe() labels equal the five names
+  - test-tags: UNIT
+  - log: 2026-09-26T19:44:31Z @kj added
+  - log: 2026-09-26T20:37:17Z @kj amended text "the capabilities are named in plain words that read yes when safer: Never in swap, Never in crash dumps, Expires on its own, Locks on restart, and for vault status Isolated from containers" -> "the capabilities are named in plain words that read yes when safer: Never in swap, Never in crash dumps, Expires on its own, Locks on server restart, and for vault status Isolated from containers"
+  - log: 2026-09-26T21:20:09Z @kj amended text "the capabilities are named in plain words that read yes when safer: Never in swap, Never in crash dumps, Expires on its own, Locks on server restart, and for vault status Isolated from containers" -> "LOW; the capabilities are named in plain words that read yes when safer: Never in swap, Never in crash dumps, Locks on server restart, and for vault status only Expires on its own and Isolated from containers"
+  - log: 2026-09-28T00:23:26Z @kj closed
+- [x] `ACC-PANEL-171` **Eye joined to the password field** - MEDIUM; in the entry popup the eye button is attached to the right end of the password field as one control: no gap, one shared border, the same height as the field; the eye icon is centred in the button, vertically and horizontally
+  - evidence: Galata vault.spec.ts 'an entry opens read-only in a popup, and its password shows only after a passkey' (eye edges equal the field's, icon centre equals button centre within 1 px); three-theme screenshots; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: Galata: eye top and bottom equal the field's, eye left edge equals the field's right edge, icon centre equals button centre within 1 px; three-theme screenshots
+  - test-tags: E2E, MANUAL
+  - log: 2026-09-26T20:32:42Z @kj added
+  - log: 2026-09-28T00:23:25Z @kj closed
+- [x] `ACC-PANEL-172` **Eye shows the password state** - MEDIUM; in the popup the eye icon is the password's state: crossed while hidden, open while shown; no border or outline lights up round the eye on hover, click or focus; hover colours the icon; keyboard focus fills the eye's box and leaves the icon its colour
+  - evidence: jest vault.spec.ts EntryView 'reveals once, then only hides and shows' (eye-off, eye, eye-off); Galata vault.spec.ts svg data-icon both states, outline none and the field's border colour after the click; three-theme screenshots; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: icon eye-off before the reveal, eye after, eye-off after Hide; Galata: svg data-icon both states, eye outline none and border colour equal to the field's after the click; opened from the keyboard, the eye is filled with outline none
+  - test-tags: UNIT, E2E, MANUAL
+  - log: 2026-09-26T20:52:31Z @kj added
+  - log: 2026-09-26T22:18:38Z @kj edited test "jest: icon eye-off before the reveal, eye after, eye-off after Hide; Galata: svg data-icon both states, eye outline none and border colour equal to the field's after the click" -> "jest: icon eye-off before the reveal, eye after, eye-off after Hide; Galata: svg data-icon both states, eye outline none and border colour equal to the field's after the click; opened from the keyboard, the eye is filled with outline none"
+  - log: 2026-09-26T22:18:41Z @kj amended text "in the entry popup the eye icon is the password's state: a crossed eye while the password is hidden, an open eye while it is shown; no border or outline lights up round the eye on hover, click or focus; hover and keyboard focus colour the icon" -> "MEDIUM; in the popup the eye icon is the password's state: crossed while hidden, open while shown; no border or outline lights up round the eye on hover, click or focus; hover colours the icon; keyboard focus fills the eye's box and leaves the icon its colour"
+  - log: 2026-09-28T00:23:25Z @kj closed
+- [x] `ACC-PANEL-174` **Passphrase when the passkey does not answer** - HIGH; when the proof's passkey request is refused or dismissed - this host's passkey is on another device, or lost - or the passkey gives no PRF, the panel and passkey:vault-register ask for the current recovery passphrase instead, for registering a passkey and for the recovery change
+  - evidence: jest vault.spec.ts 'falls back to the recovery passphrase when the passkey for this host does not answer', 'changes the recovery passphrase with the current one when the passkey does not answer'; jest src/__tests__/vault-plugin.spec.ts 'registers with the recovery passphrase when this host passkey does not answer, and answers ok', 'answers the CLI that the registration was cancelled, and creates nothing', 'asks for the recovery passphrase when the proof passkey gives no PRF'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: get rejects NotAllowedError, the passphrase dialog says no passkey answered, the proof sent is the passphrase, for register, recovery change and the passkey:vault-register command (which answers ok, or cancelled when the dialog is cancelled); a proof passkey with no PRF: the dialog says this passkey cannot unlock the vault, and the recovery change goes through with the passphrase
+  - test-tags: UNIT
+  - log: 2026-09-26T21:58:53Z @kj added
+  - log: 2026-09-26T22:42:08Z @kj edited test "jest: get rejects NotAllowedError, the passphrase dialog says no passkey answered, the proof sent is the passphrase, for register and for recovery change" -> "jest: get rejects NotAllowedError, the passphrase dialog says no passkey answered, the proof sent is the passphrase, for register, recovery change and the passkey:vault-register command (which answers ok, or cancelled when the dialog is cancelled)"
+  - log: 2026-09-27T05:46:45Z @kj amended text "when the proof's passkey request is refused or dismissed - this host's passkey is on another device, or lost - the panel and passkey:vault-register ask for the current recovery passphrase instead, for registering a passkey and for the recovery change" -> "HIGH; when the proof's passkey request is refused or dismissed - this host's passkey is on another device, or lost - or the passkey gives no PRF, the panel and passkey:vault-register ask for the current recovery passphrase instead, for registering a passkey and for the recovery change"; reason: adds the no-PRF passkey the round 27 review found stuck
+  - log: 2026-09-27T05:46:45Z @kj edited test "jest: get rejects NotAllowedError, the passphrase dialog says no passkey answered, the proof sent is the passphrase, for register, recovery change and the passkey:vault-register command (which answers ok, or cancelled when the dialog is cancelled)" -> "jest: get rejects NotAllowedError, the passphrase dialog says no passkey answered, the proof sent is the passphrase, for register, recovery change and the passkey:vault-register command (which answers ok, or cancelled when the dialog is cancelled); a proof passkey with no PRF: the dialog says this passkey cannot unlock the vault, and the recovery change goes through with the passphrase"; reason: one clause per proof test
+  - log: 2026-09-28T00:23:25Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-175` **Proof prompt is explained** - MEDIUM; during the proof's passkey request for registering or the recovery change, the panel says First confirm with a passkey you already have; the line clears once the proof is in, and on a cancel
+  - evidence: jest vault.spec.ts 'registers a passkey with an existing passkey as the proof' (the line shows right after the click), 'creates nothing when the proof is not given' (no line after a cancel); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: the line shows right after the Register click, before any dialog; it is gone when the browser creates the passkey after a passphrase fallback; a cancelled proof leaves no line
+  - test-tags: UNIT
+  - log: 2026-09-26T21:58:59Z @kj added
+  - log: 2026-09-26T22:21:42Z @kj amended text "before the proof's passkey request for registering or the recovery change, the panel says First confirm with a passkey you already have; a cancel clears the line" -> "MEDIUM; during the proof's passkey request for registering or the recovery change, the panel says First confirm with a passkey you already have; the line clears once the proof is in, and on a cancel"
+  - log: 2026-09-26T22:21:42Z @kj edited test "jest: the line shows right after the Register click, before any dialog; a cancelled proof leaves no line" -> "jest: the line shows right after the Register click, before any dialog; it is gone when the browser creates the passkey after a passphrase fallback; a cancelled proof leaves no line"
+  - log: 2026-09-28T00:23:25Z @kj closed
+- [x] `ACC-PANEL-176` **IP address named, with where to go** - MEDIUM; on a tab at an IP address the locked view, cog, create view, eye and unlock say where to open JupyterLab: the passkeys' hostnames (localhost marked as this computer) or its hostname over HTTPS; no Register in the cog, no passkey step in Create vault; passkey:vault-register stops first
+  - evidence: jest vault.spec.ts 'says an IP address cannot hold a passkey, and where to open JupyterLab instead', 'creates a vault at an IP address without a passkey step, saying so first', 'names localhost as a place on the computer that runs JupyterLab, and every passkey hostname'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: unlock at 127.0.0.1 names the passkey's hostname and HTTPS; the locked view and the cog say it, no Register; at 192.168.1.10 with no passkey the create view says it and Create vault runs no create; localhost marked as this computer, plural for several hostnames
+  - test-tags: UNIT
+  - log: 2026-09-26T22:42:06Z @kj added
+  - log: 2026-09-26T23:02:06Z @kj amended title "IP address named, not offered a passkey" -> "IP address named, with where to go"; text "on a tab opened at an IP address (such as 127.0.0.1) the locked view, the cog and the eye say an IP address cannot hold a passkey and to open JupyterLab by name, such as localhost; the cog offers no Register new passkey there" -> "MEDIUM; on a tab at an IP address the locked view, cog, create view, eye and unlock say it cannot hold a passkey and where to open JupyterLab - the passkeys' hostnames, else its hostname; no Register in the cog, no passkey step in Create vault; passkey:vault-register stops first"
+  - log: 2026-09-26T23:02:11Z @kj edited test "jest: unlock on 127.0.0.1 rejects with the IP sentence; the locked view shows it; the cog shows the hint and no Register button" -> "jest: unlock at 127.0.0.1 names the passkey's hostname; the locked view and the cog say it and the cog has no Register; at 192.168.1.10 with no passkey the create view says open by hostname and Create vault runs no create"
+  - log: 2026-09-27T00:04:54Z @kj amended text "on a tab at an IP address the locked view, cog, create view, eye and unlock say it cannot hold a passkey and where to open JupyterLab - the passkeys' hostnames, else its hostname; no Register in the cog, no passkey step in Create vault; passkey:vault-register stops first" -> "MEDIUM; on a tab at an IP address the locked view, cog, create view, eye and unlock say where to open JupyterLab: the passkeys' hostnames (localhost marked as this computer) or its hostname over HTTPS; no Register in the cog, no passkey step in Create vault; passkey:vault-register stops first"
+  - log: 2026-09-27T00:19:31Z @kj edited test "jest: unlock at 127.0.0.1 names the passkey's hostname; the locked view and the cog say it and the cog has no Register; at 192.168.1.10 with no passkey the create view says open by hostname and Create vault runs no create" -> "jest: unlock at 127.0.0.1 names the passkey's hostname and HTTPS; the locked view and the cog say it, no Register; at 192.168.1.10 with no passkey the create view says it and Create vault runs no create; localhost marked as this computer, plural for several hostnames"
+  - log: 2026-09-28T00:23:25Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-177` **No form after the vault locked** - MEDIUM; when the unlock ran out since the last read - behind an entry's popup, or before + is clicked - Edit, Delete and Add open nothing; the panel draws the locked view, with its unlock, and says The vault locked - unlock it, then try again, in amber
+  - evidence: jest vault.spec.ts 'opens no form when the unlock ran out behind the popup, before the next read', 'opens no form when the vault locked while the popup was open', 'opens no Add form when the unlock ran out before the next read'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: the countdown runs out behind the popup, Edit chosen, no form, locked view with its unlock; a read says locked behind the popup, no form; Add clicked after the countdown ran out, no form, locked view, amber line
+  - test-tags: UNIT
+  - log: 2026-09-26T23:02:11Z @kj added
+  - log: 2026-09-26T23:58:31Z @kj amended text "when the unlock ran out while an entry's popup was open, its Edit and Delete open nothing; the panel says The vault locked - unlock it, then try again, in amber" -> "when the unlock ran out while an entry's popup was open, its Edit and Delete open nothing; the panel draws the locked view, with its unlock, and says The vault locked - unlock it, then try again, in amber"
+  - log: 2026-09-27T00:04:55Z @kj amended title "No form after the vault locked" -> "No form after the vault locked"; text "when the unlock ran out while an entry's popup was open, its Edit and Delete open nothing; the panel draws the locked view, with its unlock, and says The vault locked - unlock it, then try again, in amber" -> "MEDIUM; when the unlock ran out since the last read - behind an entry's popup, or before + is clicked - Edit, Delete and Add open nothing; the panel draws the locked view, with its unlock, and says The vault locked - unlock it, then try again, in amber"
+  - log: 2026-09-27T00:19:37Z @kj edited test "jest: the status turns locked while the popup is open, Edit is chosen, no form opens, the amber line shows" -> "jest: the countdown runs out behind the popup, Edit chosen, no form, locked view with its unlock; a read says locked behind the popup, no form; Add clicked after the countdown ran out, no form, locked view, amber line"
+  - log: 2026-09-28T00:23:25Z @kj closed
+- [x] `ACC-PANEL-178` **Banner lines** - MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of the recovery change or an Edit, a passkey Create or Register left unused, and a red action line whose request got no answer, or got a refusal while its final read failed, which reads '<action> not confirmed by the vault - do it again once the server answers' or 'Not confirmed by the vault' (Create's reads 'Vault creation not confirmed by the vault' and is not kept, ACC-PANEL-183); lines of Create, Register, the recovery change and an Edit name their action ('<action>: <reason>') unless they say what they report; a refusal made in the page keeps its reason; the next action, or a CLI step done in this tab, clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list
+  - evidence: jest vault.spec.ts 'keeps the success line beside a read that fails after the action', 'keeps the unused-passkey line when the read after the action fails', 'keeps the unused-passkey line when the server returns with the vault Create made, whichever read comes first', 'shows a failed Refresh under an older warning', 'says on the next tick that the server stopped answering, and clears it once it answers', 'drops the lock line after a failed read, once the vault is unlocked elsewhere', 'says an action was not confirmed when it fails while the server cannot be read, and keeps that once the server answers', 'keeps the not-confirmed line when the server returns with the vault locked by its restart, whichever read comes first', 'keeps a refused recovery change when the vault is changed elsewhere', 'names the recovery change it could not confirm while the server is gone', 'names the registration a dismissed create prompt stopped, and drops that line once the passkeys change', 'drops the line of a Create whose passkey step was dismissed once the vault changes', 'says a recovery change whose answer was lost is not confirmed, though the server answers again', 'names the entry whose change it could not confirm', 'shows why a passkey without a PRF cannot unlock, not a lost answer', 'says an action answered by a proxy page is not confirmed while the server cannot be read', 'keeps the reason of a refusal made in the page while the server cannot be read', 'keeps the reason of a browser error while the server cannot be read', 'leaves the list alone when an action starts while a tick is reading', 'keeps the unused-passkey line of a refused registration when the vault is changed elsewhere', 'keeps a refusal as a red line when the read after it succeeds', 'drops the old read failure when the status answers and the unlock ran out before the entries read'; jest vault-plugin.spec.ts 'registers with the recovery passphrase when this host passkey does not answer, and answers ok' (the line is cleared); 'clears a kept line through a CLI step, as the next action does'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF and a browser error keep their reason while reads fail; refused recovery change kept and named; refused registration kept; a registration or Create stopped at a dismissed create prompt named, dropped once the passkeys change; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears a line, a kept one too
+  - test-tags: UNIT
+  - log: 2026-09-27T01:50:27Z @kj added
+  - log: 2026-09-27T02:15:28Z @kj edited test "jest: success line beside a failed read; failed Refresh under an older warning; lock line dropped after a failed read once unlocked elsewhere; unused-passkey line kept once the server answers, tick or Refresh first; one red line when the server is down" -> "jest: success line beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; unused-passkey line kept once the server answers, then dropped by a change elsewhere; one red line when the server is down"
+  - log: 2026-09-27T02:32:49Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a change made elsewhere drops it, the action's own change read late does not; an action failing like its read shows one red line" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a change made elsewhere drops it, the action's own change read late does not, unless the panel was hidden since; an action failing like its read shows one red line"; reason: the hide exception is a rule of its own; each clause names one banner rule the tests pin
+  - log: 2026-09-27T02:32:53Z @kj edited test "jest: success line beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; unused-passkey line kept once the server answers, then dropped by a change elsewhere; one red line when the server is down" -> "jest: success line beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; unused-passkey line kept once the server answers, then dropped by a change elsewhere; unread line dropped after a hide; one red line when the server is down"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T02:38:23Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a change made elsewhere drops it, the action's own change read late does not, unless the panel was hidden since; an action failing like its read shows one red line" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action failing like its read shows one red line"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T02:38:27Z @kj edited test "jest: success line beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; unused-passkey line kept once the server answers, then dropped by a change elsewhere; unread line dropped after a hide; one red line when the server is down" -> "jest: success line beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer, a filter matching nothing still says so; lock line dropped once unlocked elsewhere; one red line when the server is down"
+  - log: 2026-09-27T03:01:10Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action failing like its read shows one red line" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action whose error comes while its final read fails shows only the read's red line"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T03:01:12Z @kj edited test "jest: success line beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer, a filter matching nothing still says so; lock line dropped once unlocked elsewhere; one red line when the server is down" -> "jest: success line beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer, a filter matching nothing still says so; lock line dropped once unlocked elsewhere; one red line when the server is down, and behind JupyterHub"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T03:28:11Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action whose error comes while its final read fails shows only the read's red line" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action that fails while its final read fails says 'Not done - the Jupyter server did not answer' beside the read's line"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T03:28:12Z @kj edited test "jest: success line beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer, a filter matching nothing still says so; lock line dropped once unlocked elsewhere; one red line when the server is down, and behind JupyterHub" -> "jest: success line beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer, a filter matching nothing still says so; lock line dropped once unlocked elsewhere; 'Not done' beside the read's line, with and without JupyterHub; a refusal kept beside a successful read"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T03:46:39Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action that fails while its final read fails says 'Not done - the Jupyter server did not answer' beside the read's line" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action whose red line comes while its final read fails says 'Not done' beside the read's line"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T03:48:06Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action whose red line comes while its final read fails says 'Not done' beside the read's line" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action whose red line comes while its final read fails says 'Not done' beside the read's line; an amber line keeps its text"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T03:48:08Z @kj edited test "jest: success line beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer, a filter matching nothing still says so; lock line dropped once unlocked elsewhere; 'Not done' beside the read's line, with and without JupyterHub; a refusal kept beside a successful read" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer, filter hint unchanged; lock line dropped once unlocked elsewhere; 'Not done' beside the read's line, with and without JupyterHub; a refusal kept beside a successful read; a 423 after a failed read clears it"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T03:52:45Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action whose red line comes while its final read fails says 'Not done' beside the read's line; an amber line keeps its text" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action whose red line comes while its final read fails says 'Not confirmed by the vault' beside the read's line, and no change of state drops that; an amber line keeps its text"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T03:52:47Z @kj edited test "jest: success line beside a failed read; unused-passkey line kept beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer, filter hint unchanged; lock line dropped once unlocked elsewhere; 'Not done' beside the read's line, with and without JupyterHub; a refusal kept beside a successful read; a 423 after a failed read clears it" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer, filter hint unchanged; lock line dropped once unlocked elsewhere; 'Not confirmed' beside the read's line, with and without JupyterHub, kept when the server returns locked; a refusal kept beside a successful read; a 423 after a failed read clears it"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T04:19:52Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs; an action whose red line comes while its final read fails says 'Not confirmed by the vault' beside the read's line, and no change of state drops that; an amber line keeps its text" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register or the recovery change, and 'Not confirmed by the vault' (a red action line whose final read failed, shown beside the read's line); the next action or a CLI step done in this tab clears any line; an amber line keeps its text"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T04:19:54Z @kj edited test "jest: success line beside a failed read; unused-passkey line kept beside a failed read; failed Refresh under an older warning; failed tick read shown, cleared on the next answer, filter hint unchanged; lock line dropped once unlocked elsewhere; 'Not confirmed' beside the read's line, with and without JupyterHub, kept when the server returns locked; a refusal kept beside a successful read; a 423 after a failed read clears it" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns, tick or Refresh first; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; 'Not confirmed' beside the read's line, kept when the server returns locked, tick or Refresh first; refused recovery change and registration kept after a change elsewhere; a refusal kept beside a successful read; a 423 after a failed read clears it; plugin: a CLI step clears the line"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T04:43:25Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register or the recovery change, and 'Not confirmed by the vault' (a red action line whose final read failed, shown beside the read's line); the next action or a CLI step done in this tab clears any line; an amber line keeps its text" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register or the recovery change (a red one names the action), and 'Not confirmed by the vault' (a red action line whose final read failed, beside the read's line; named for those three actions); the next action or a CLI step done in this tab clears any line; an amber line keeps its text"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T04:43:25Z @kj edited test "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns, tick or Refresh first; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; 'Not confirmed' beside the read's line, kept when the server returns locked, tick or Refresh first; refused recovery change and registration kept after a change elsewhere; a refusal kept beside a successful read; a 423 after a failed read clears it; plugin: a CLI step clears the line" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns, tick or Refresh first; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; 'Not confirmed' beside the read's line, kept when the server returns locked, tick or Refresh first; recovery change not confirmed, named; refused recovery change (named) and registration kept after a change elsewhere; a refusal kept beside a successful read; a 423 after a failed read clears it; plugin: a CLI step clears the line"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T05:02:54Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register or the recovery change (a red one names the action), and 'Not confirmed by the vault' (a red action line whose final read failed, beside the read's line; named for those three actions); the next action or a CLI step done in this tab clears any line; an amber line keeps its text" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action> failed - <reason>' unless it says what it reports), and a red action line whose answer was lost or whose final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; the next action or a CLI step done in this tab clears any line; a tick whose read ends after an action began redraws nothing"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T05:02:54Z @kj edited test "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns, tick or Refresh first; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; 'Not confirmed' beside the read's line, kept when the server returns locked, tick or Refresh first; recovery change not confirmed, named; refused recovery change (named) and registration kept after a change elsewhere; a refusal kept beside a successful read; a 423 after a failed read clears it; plugin: a CLI step clears the line" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines beside the read's line, kept when the server returns locked, named for the recovery change and an Edit, and for a lost answer; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears the line"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T05:04:17Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action> failed - <reason>' unless it says what it reports), and a red action line whose answer was lost or whose final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; the next action or a CLI step done in this tab clears any line; a tick whose read ends after an action began redraws nothing" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose answer was lost or whose final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; the next action or a CLI step done in this tab clears any line; a tick whose read ends after an action began redraws nothing"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T05:23:08Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose answer was lost or whose final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; the next action or a CLI step done in this tab clears any line; a tick whose read ends after an action began redraws nothing" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose request got no answer or whose final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; a refusal made in the page keeps its reason; the next action or a CLI step done in this tab clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T05:23:08Z @kj edited test "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines beside the read's line, kept when the server returns locked, named for the recovery change and an Edit, and for a lost answer; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears the line" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines beside the read's line, kept when the server returns locked, named for the recovery change and an Edit, and for a request with no answer; a passkey with no PRF shows its reason; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears the line"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T05:43:33Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose request got no answer or whose final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; a refusal made in the page keeps its reason; the next action or a CLI step done in this tab clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose request got no answer, or got an answer while its final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; a refusal made in the page keeps its reason; the next action or a CLI step done in this tab clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T05:43:34Z @kj edited test "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines beside the read's line, kept when the server returns locked, named for the recovery change and an Edit, and for a request with no answer; a passkey with no PRF shows its reason; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears the line" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF shows its reason, also while reads fail; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears the line"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T05:46:45Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose request got no answer, or got an answer while its final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; a refusal made in the page keeps its reason; the next action or a CLI step done in this tab clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose request got no answer, or got an answer while its final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; a refusal made in the page keeps its reason; the next action clears any line, a CLI step done in this tab one that is not kept; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T05:46:45Z @kj edited test "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF shows its reason, also while reads fail; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears the line" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF shows its reason, also while reads fail; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears a line, not a kept one"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T06:03:27Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose request got no answer, or got an answer while its final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; a refusal made in the page keeps its reason; the next action clears any line, a CLI step done in this tab one that is not kept; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose request got no answer, or got an answer while its final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; a refusal made in the page keeps its reason; the next action clears any line, a CLI step done in this tab any line but a kept one that names its action; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T06:03:27Z @kj edited test "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF shows its reason, also while reads fail; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears a line, not a kept one" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF shows its reason, also while reads fail; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears a line and an unnamed not-confirmed line, not a named kept one"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T06:04:26Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose request got no answer, or got an answer while its final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; a refusal made in the page keeps its reason; the next action clears any line, a CLI step done in this tab any line but a kept one that names its action; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose request got no answer, or got an answer while its final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; a refusal made in the page keeps its reason; the next action, or a CLI step done in this tab, clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T06:04:26Z @kj edited test "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF shows its reason, also while reads fail; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears a line and an unnamed not-confirmed line, not a named kept one" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF shows its reason, also while reads fail; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears a line, a kept one too"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T06:05:32Z @kj edited test "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF shows its reason, also while reads fail; refused recovery change, refused and dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears a line, a kept one too" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF and a browser error keep their reason while reads fail; refused recovery change kept and named; refused registration kept; dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears a line, a kept one too"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T06:08:09Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of Create, Register, the recovery change or an Edit (named '<action>: <reason>' unless it says what it reports), and a red action line whose request got no answer, or got an answer while its final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; a refusal made in the page keeps its reason; the next action, or a CLI step done in this tab, clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of the recovery change or an Edit, a passkey Create or Register left unused, and a red action line whose request got no answer, or got an answer while its final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; lines of Create, Register, the recovery change and an Edit name their action ('<action>: <reason>') unless they say what they report; a refusal made in the page keeps its reason; the next action, or a CLI step done in this tab, clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T06:08:09Z @kj edited test "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF and a browser error keep their reason while reads fail; refused recovery change kept and named; refused registration kept; dismissed registration kept and named; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears a line, a kept one too" -> "jest: success line beside a failed read; unused-passkey line kept beside a failed read and when the server returns; failed Refresh under an older warning; failed tick read shown, cleared on the next answer; lock line dropped once unlocked elsewhere; not-confirmed lines for a request with no answer (named for the recovery change and an Edit, kept when the server returns locked) and for a proxy page while reads fail; a passkey with no PRF and a browser error keep their reason while reads fail; refused recovery change kept and named; refused registration kept; a registration or Create stopped at a dismissed create prompt named, dropped once the passkeys change; a refusal kept beside a successful read; a 423 after a failed read clears it; a tick reading as an action starts leaves the list; plugin: a CLI step clears a line, a kept one too"; reason: one clause per banner test, so each test is named
+  - log: 2026-09-27T06:29:33Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of the recovery change or an Edit, a passkey Create or Register left unused, and a red action line whose request got no answer, or got an answer while its final read failed, which reads '<action> not confirmed by the vault' or 'Not confirmed by the vault'; lines of Create, Register, the recovery change and an Edit name their action ('<action>: <reason>') unless they say what they report; a refusal made in the page keeps its reason; the next action, or a CLI step done in this tab, clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of the recovery change or an Edit, a passkey Create or Register left unused, and a red action line whose request got no answer, or got a refusal while its final read failed, which reads '<action> not confirmed by the vault - do it again once the server answers' or 'Not confirmed by the vault'; lines of Create, Register, the recovery change and an Edit name their action ('<action>: <reason>') unless they say what they report; a refusal made in the page keeps its reason; the next action, or a CLI step done in this tab, clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-27T06:46:19Z @kj amended text "the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of the recovery change or an Edit, a passkey Create or Register left unused, and a red action line whose request got no answer, or got a refusal while its final read failed, which reads '<action> not confirmed by the vault - do it again once the server answers' or 'Not confirmed by the vault'; lines of Create, Register, the recovery change and an Edit name their action ('<action>: <reason>') unless they say what they report; a refusal made in the page keeps its reason; the next action, or a CLI step done in this tab, clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list" -> "MEDIUM; the banner shows the action's line, plus a failed read's error as its own red line while reads fail; a read never replaces the action's line; a read that finds the vault changed drops it, except while an action runs and except a line the vault's state cannot show: the outcome of the recovery change or an Edit, a passkey Create or Register left unused, and a red action line whose request got no answer, or got a refusal while its final read failed, which reads '<action> not confirmed by the vault - do it again once the server answers' or 'Not confirmed by the vault' (Create's reads 'Vault creation not confirmed by the vault' and is not kept, ACC-PANEL-183); lines of Create, Register, the recovery change and an Edit name their action ('<action>: <reason>') unless they say what they report; a refusal made in the page keeps its reason; the next action, or a CLI step done in this tab, clears any line; a tick whose read ends after an action began redraws only the status line and a failed read's line, never the list"; reason: each clause names one banner rule the tests pin
+  - log: 2026-09-28T00:23:25Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-179` **Stopped server behind JupyterHub** - MEDIUM; reads ask for JSON, so JupyterHub answers a read for a stopped lab server with its JSON 424, and the panel shows the hub's message (restart URL included); a 404 without the vault's error reads 'the vault is not loaded on this Jupyter server - restart the server'; any other answer without it (the hub's pages, the Jupyter server's Forbidden after a hub logout) reads 'the vault did not answer (HTTP <status>) - reload the page to sign in again or start the server'
+  - evidence: jest src/__tests__/vault-api.spec.ts: all six tests; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest vault-api.spec.ts: the hub's 424 message is the error text; the request carries Accept: application/json; an HTML 403, a 200 sign-in page and a JSON 403 Forbidden read 'the vault did not answer ...'; an HTML 404 reads 'the vault is not loaded ...'; a broken-off body reads 'cannot reach the Jupyter server'
+  - test-tags: UNIT
+  - log: 2026-09-27T02:38:35Z @kj added
+  - log: 2026-09-27T03:01:15Z @kj amended text "vault requests ask for JSON, so JupyterHub answers a stopped lab server with its JSON 424; the panel shows the hub's message (restart URL included), never a vault or passkey failure" -> "MEDIUM; reads ask for JSON, so JupyterHub answers a read for a stopped lab server with its JSON 424, and the panel shows the hub's message (restart URL included); a page in place of the vault's JSON (the hub's 403 for an action, its sign-in page) reads 'the vault did not answer (HTTP <status>)'; never a vault or passkey failure"; reason: names the read and action answers of the hub separately
+  - log: 2026-09-27T03:01:17Z @kj edited test "jest: a 424 with the hub's message becomes the VaultError text; the request carries Accept: application/json" -> "jest vault-api.spec.ts: a 424 with the hub's message becomes the error text, the request carries Accept: application/json; an HTML 403 and a 200 sign-in page read 'the vault did not answer (HTTP <status>)'"
+  - log: 2026-09-27T03:28:15Z @kj amended text "reads ask for JSON, so JupyterHub answers a read for a stopped lab server with its JSON 424, and the panel shows the hub's message (restart URL included); a page in place of the vault's JSON (the hub's 403 for an action, its sign-in page) reads 'the vault did not answer (HTTP <status>)'; never a vault or passkey failure" -> "MEDIUM; reads ask for JSON, so JupyterHub answers a read for a stopped lab server with its JSON 424, and the panel shows the hub's message (restart URL included); any other answer without the vault's error (the hub's pages, the Jupyter server's Forbidden after a hub logout) reads 'the vault did not answer (HTTP <status>) - reload the page to sign in again or start the server'"; reason: names each answer that is not the vault's and the step shown for it
+  - log: 2026-09-27T03:28:23Z @kj edited test "jest vault-api.spec.ts: a 424 with the hub's message becomes the error text, the request carries Accept: application/json; an HTML 403 and a 200 sign-in page read 'the vault did not answer (HTTP <status>)'" -> "jest vault-api.spec.ts: a 424 with the hub's message becomes the error text; the request carries Accept: application/json; an HTML 403, a 200 sign-in page and a JSON 403 Forbidden read 'the vault did not answer (HTTP <status>) - reload ...'; a broken-off body reads 'cannot reach the Jupyter server'"; reason: one clause per test in vault-api.spec.ts
+  - log: 2026-09-27T03:48:10Z @kj amended text "reads ask for JSON, so JupyterHub answers a read for a stopped lab server with its JSON 424, and the panel shows the hub's message (restart URL included); any other answer without the vault's error (the hub's pages, the Jupyter server's Forbidden after a hub logout) reads 'the vault did not answer (HTTP <status>) - reload the page to sign in again or start the server'" -> "MEDIUM; reads ask for JSON, so JupyterHub answers a read for a stopped lab server with its JSON 424, and the panel shows the hub's message (restart URL included); a 404 without the vault's error reads 'the vault is not loaded on this Jupyter server - restart the server'; any other answer without it (the hub's pages, the Jupyter server's Forbidden after a hub logout) reads 'the vault did not answer (HTTP <status>) - reload the page to sign in again or start the server'"; reason: names each answer that is not the vault's and the step shown for it
+  - log: 2026-09-27T03:48:12Z @kj edited test "jest vault-api.spec.ts: a 424 with the hub's message becomes the error text; the request carries Accept: application/json; an HTML 403, a 200 sign-in page and a JSON 403 Forbidden read 'the vault did not answer (HTTP <status>) - reload ...'; a broken-off body reads 'cannot reach the Jupyter server'" -> "jest vault-api.spec.ts: the hub's 424 message is the error text; the request carries Accept: application/json; an HTML 403, a 200 sign-in page and a JSON 403 Forbidden read 'the vault did not answer ...'; an HTML 404 reads 'the vault is not loaded ...'; a broken-off body reads 'cannot reach the Jupyter server'"; reason: one clause per test in vault-api.spec.ts
+  - log: 2026-09-28T00:23:25Z @kj closed
+- [x] `ACC-PANEL-180` **Edit keeps changes made elsewhere** - HIGH; Edit opens with the entry as last read and saves only the fields the user changed, compared with what the form loaded (its textarea turns CRLF into LF, a one-line field drops line breaks), so a field changed elsewhere while the popup or form was open stays; an entry deleted elsewhere opens no form and says so; a save with nothing changed sends nothing
+  - evidence: jest vault.spec.ts 'edits the entry as last read and sends the fields the form answers', 'opens no form for an entry deleted elsewhere while its popup was open', 'opens Edit when the entries could not be read, not calling the entry deleted', 'sends nothing when Edit is saved unchanged'; editEntry 'answers only the name when nothing was changed, whatever the form did on load', 'answers the fields the user changed and a typed password'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: Edit opens with a URL changed while the popup was open and sends what editEntry answers; editEntry answers only the name for a CRLF entry saved untouched, and the changed username and typed password; an entry deleted elsewhere gives an amber line and no form; a failed entries read still opens Edit; an unchanged save sends nothing
+  - test-tags: UNIT
+  - log: 2026-09-27T03:28:19Z @kj added
+  - log: 2026-09-27T03:52:49Z @kj amended text "Edit opens with the entry as last read and saves only the fields the form changed, so a field changed elsewhere (CLI, agent, another tab) while the popup or form was open stays" -> "HIGH; Edit opens with the entry as last read and saves only the fields the form changed, so a field changed elsewhere (CLI, agent, another tab) while the popup or form was open stays; an entry deleted elsewhere opens no form and says so; a save with nothing changed sends nothing"; reason: adds the deleted and unchanged cases the tests pin
+  - log: 2026-09-27T03:52:50Z @kj edited test "jest: the URL changes while the popup is open; Edit opens with the new URL; saving a notes change sends only notes" -> "jest: Edit opens with a URL changed while the popup was open and sends only notes; an entry deleted elsewhere gives an amber line and no form; a failed entries read still opens Edit; an unchanged save sends nothing"
+  - log: 2026-09-27T04:19:57Z @kj amended text "Edit opens with the entry as last read and saves only the fields the form changed, so a field changed elsewhere (CLI, agent, another tab) while the popup or form was open stays; an entry deleted elsewhere opens no form and says so; a save with nothing changed sends nothing" -> "HIGH; Edit opens with the entry as last read and saves only the fields the user changed, compared with what the form loaded (its textarea turns CRLF into LF, a one-line field drops line breaks), so a field changed elsewhere while the popup or form was open stays; an entry deleted elsewhere opens no form and says so; a save with nothing changed sends nothing"; reason: adds the form's own load changes the comparison must ignore
+  - log: 2026-09-27T04:19:59Z @kj edited test "jest: Edit opens with a URL changed while the popup was open and sends only notes; an entry deleted elsewhere gives an amber line and no form; a failed entries read still opens Edit; an unchanged save sends nothing" -> "jest: Edit opens with a URL changed while the popup was open and sends what editEntry answers; editEntry answers only the name for a CRLF entry saved untouched, and the changed username and typed password; an entry deleted elsewhere gives an amber line and no form; a failed entries read still opens Edit; an unchanged save sends nothing"; reason: one clause per Edit test
+  - log: 2026-09-28T00:23:25Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-181` **Saved entry shows through the filter** - MEDIUM; a successful Add, or an Edit that sent a change, clears the filter, so the saved row shows whatever was typed there
+  - evidence: jest vault.spec.ts 'clears the filter after Add, so the new entry shows', 'clears the filter after a saved Edit, so the edited entry shows'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: filter 'github', Add 'new/one' with no match; filter 'konrad', Edit its username to 'k2'; each time the filter is empty and the row shows
+  - test-tags: UNIT
+  - log: 2026-09-27T03:52:52Z @kj added
+  - log: 2026-09-27T04:20:02Z @kj amended title "Added entry shows through the filter" -> "Saved entry shows through the filter"; text "a successful Add clears the filter, so the new row shows whatever was typed there" -> "MEDIUM; a successful Add, or an Edit that sent a change, clears the filter, so the saved row shows whatever was typed there"
+  - log: 2026-09-27T04:20:02Z @kj edited test "jest: filter 'github', Add 'new/one'; the filter is empty and the row shows" -> "jest: filter 'github', Add 'new/one' with no match; filter 'konrad', Edit its username to 'k2'; each time the filter is empty and the row shows"
+  - log: 2026-09-28T00:23:25Z @kj closed
+- [x] `ACC-PANEL-182` **Hidden tab reads nothing** - MEDIUM; the panel's 15 s read pauses while the browser tab is hidden, as JupyterLab's own polls do, so the panel adds no traffic from a background tab; shown again, the tab reads at once; moved to the other sidebar, the panel stops reading until it is next shown
+  - evidence: jest vault.spec.ts 'reads nothing while the browser tab is hidden', 'reads at once when the browser tab is shown again', 'stops reading when it is moved to the other sidebar'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: with document.hidden the tick reads no status; shown again it reads at once and shows a lock made meanwhile; a hidden panel stops listening; a detached panel stops its timer and listener
+  - test-tags: UNIT
+  - log: 2026-09-27T03:52:54Z @kj added
+  - log: 2026-09-27T04:20:04Z @kj amended title "Panel reads leave idle culling working" -> "Hidden tab reads nothing"; text "the panel's GETs carry no_track_activity=1, so its 15 s reads do not count as user activity and JupyterHub's idle culler can still stop the server; actions count" -> "MEDIUM; the panel's 15 s read pauses while the browser tab is hidden, as JupyterLab's own polls do, so JupyterHub's proxy sees no traffic from a background tab and its idle culler can stop the server"
+  - log: 2026-09-27T04:20:04Z @kj edited test "jest vault-api.spec.ts: status is requested with ?no_track_activity=1, lock without it" -> "jest: with document.hidden the tick reads no status; shown again it reads"
+  - log: 2026-09-27T04:43:19Z @kj amended text "the panel's 15 s read pauses while the browser tab is hidden, as JupyterLab's own polls do, so JupyterHub's proxy sees no traffic from a background tab and its idle culler can stop the server" -> "MEDIUM; the panel's 15 s read pauses while the browser tab is hidden, as JupyterLab's own polls do, so the panel adds no traffic from a background tab; shown again, the tab reads at once"
+  - log: 2026-09-27T04:43:19Z @kj edited test "jest: with document.hidden the tick reads no status; shown again it reads" -> "jest: with document.hidden the tick reads no status; shown again it reads at once and shows a lock made meanwhile; a hidden panel stops listening"
+  - log: 2026-09-27T05:04:17Z @kj amended text "the panel's 15 s read pauses while the browser tab is hidden, as JupyterLab's own polls do, so the panel adds no traffic from a background tab; shown again, the tab reads at once" -> "MEDIUM; the panel's 15 s read pauses while the browser tab is hidden, as JupyterLab's own polls do, so the panel adds no traffic from a background tab; shown again, the tab reads at once; moved to the other sidebar, the panel stops reading until it is next shown"
+  - log: 2026-09-27T05:04:17Z @kj edited test "jest: with document.hidden the tick reads no status; shown again it reads at once and shows a lock made meanwhile; a hidden panel stops listening" -> "jest: with document.hidden the tick reads no status; shown again it reads at once and shows a lock made meanwhile; a hidden panel stops listening; a detached panel stops its timer and listener"
+  - log: 2026-09-28T00:23:25Z @kj closed
+- [x] `ACC-PANEL-183` **Create survives a lost answer** - HIGH; when Create's init answer is lost, a status read settles it: a vault that exists goes on to its passkey step; otherwise the line reads 'Vault creation not confirmed by the vault', with no advice to create again, and is not kept: it goes at the next action, or when a later read finds the vault changed
+  - evidence: jest vault.spec.ts 'goes on to the passkey step when a read shows the vault that a lost Create answer wrote', 'says a Create whose answer was lost is not confirmed while the server cannot be read, with no advice to create again', 'offers Create again when the read after a lost answer shows no vault', 'reads nothing more when Create is refused with an answer'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: init rejects NoAnswer and the read shows the vault: the passkey is registered, 'Vault created' shows; the read shows no vault: no passkey is created, Create is offered again; the read fails: the line shows beside the read error, and goes once a later read finds the vault
+  - test-tags: UNIT
+  - log: 2026-09-27T06:46:19Z @kj added
+  - log: 2026-09-27T07:06:02Z @kj amended text "when Create's init answer is lost, a status read settles it: a vault that exists goes on to its passkey step; otherwise the line reads 'Vault creation not confirmed by the vault', with no advice to create again, and a later read that finds the vault drops it" -> "HIGH; when Create's init answer is lost, a status read settles it: a vault that exists goes on to its passkey step; otherwise the line reads 'Vault creation not confirmed by the vault', with no advice to create again, and is not kept: it goes at the next action, or when a later read finds the vault changed"; reason: the action's own final read never drops its line; a later change does
+  - log: 2026-09-27T07:06:12Z @kj edited test "jest: init rejects NoAnswer and the read shows the vault, the passkey is registered and 'Vault created' shows; the read fails, the line shows beside the read error and goes once the vault shows" -> "jest: init rejects NoAnswer and the read shows the vault: the passkey is registered, 'Vault created' shows; the read shows no vault: no passkey is created, Create is offered again; the read fails: the line shows beside the read error, and goes once a later read finds the vault"; reason: one clause per Create test
+  - log: 2026-09-28T00:23:25Z @kj closed; reason: names each test that proves a many-case criterion
+- [x] `ACC-PANEL-184` **Header buttons keep their place** - MEDIUM; in the cog view the + button is hidden but keeps its place, so Lock never moves to where + was and a click aimed at + cannot lock the vault
+  - evidence: jest vault.spec.ts 'keeps the header buttons in place in the cog view, with + hidden', 'does not return focus to the hidden + in the cog view'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: open the cog view; + keeps its layout (display) and is hidden (visibility)
+  - test-tags: UNIT
+  - log: 2026-09-27T08:10:20Z @kj added
+  - log: 2026-09-28T00:23:25Z @kj closed
+- [x] `ACC-PANEL-185` **Settings view follows a restart** - MEDIUM; a read that finds a different key holder, holder notice or vault file redraws the settings view, so its Key holder, Protection, capability rows and Vault file show the server's current setup
+  - evidence: jest vault.spec.ts 'redraws the settings view when a restart changed the key holder, its notice or the file'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: jest: in the cog view the holder changes to memory/memfd_secret, then one capability changes, then it gains a notice, then the file moves; each read redraws the matching row
+  - test-tags: UNIT
+  - log: 2026-09-27T09:31:12Z @kj added
+  - log: 2026-09-27T09:33:27Z @kj edited test "jest: in the cog view the holder changes to memory/memfd_secret, then gains a notice, then the file moves; each read redraws the matching row" -> "jest: in the cog view the holder changes to memory/memfd_secret, then one capability changes, then it gains a notice, then the file moves; each read redraws the matching row"
+  - log: 2026-09-28T00:23:25Z @kj closed
+
+## Vault settings `CONFIG`
+
+Vault settings in the JupyterLab Settings Editor
+
+- [x] `ACC-CONFIG-142` **Unlock duration setting** - HIGH; `unlockMinutes` in the Settings Editor sets how long the vault stays unlocked: default 240, range 1 to 1440
+  - evidence: test_vault_routes.py test_the_settings_schema_declares_the_unlock_duration_and_sidebar, test_the_unlock_duration_must_be_1_to_1440; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: read the schema, assert default and bounds
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:11Z @kj added
+  - log: 2026-09-28T00:23:26Z @kj closed
+- [x] `ACC-CONFIG-143` **Setting reaches the server** - HIGH; the frontend sends the unlock duration to the server on load and on change; CLI unlocks use the same value
+  - evidence: test_vault_routes.py test_the_unlock_duration_setting_reaches_the_holder; jest vault.spec.ts 'sends the unlock duration and docks the panel, now and on every change'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: post the setting over REST, init, assert status shows it and the key's remaining time; jest: connectSettings sends it on load and on change
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:11Z @kj added
+  - log: 2026-09-27T20:54:23Z @kj edited test "change the setting, unlock from the CLI stub, assert the holder TTL" -> "post the setting over REST, init, assert status shows it and the key's remaining time; jest: connectSettings sends it on load and on change"
+  - log: 2026-09-28T00:23:26Z @kj closed
+- [x] `ACC-CONFIG-144` **Sidebar setting** - LOW; `sidebar` is `right` or `left` and moves the panel without a reload
+  - evidence: jest vault.spec.ts 'sends the unlock duration and docks the panel, now and on every change' (moves on a change of side only); jest vault-plugin.spec.ts 'docks the panel on the side the setting names, and moves it when the setting changes'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - test: change the setting, assert the panel area
+  - test-tags: UNIT
+  - log: 2026-09-26T15:32:11Z @kj added
+  - log: 2026-09-28T00:23:26Z @kj closed
+
+## Vault documentation `VDOCS`
+
+What the README and the CLI reference say about the vault
+
+- [x] `ACC-VDOCS-145` **GnuPG requirement documented** - HIGH; the README states that the vault needs GnuPG (`apt install gnupg`) and what happens without it
+  - evidence: README Vault section 'Where the unlocked key is kept' table (GnuPG, apt install gnupg) and Requirements bullet; read 2026-09-26
+  - test: read the README requirements section
+  - test-tags: MANUAL
+  - log: 2026-09-26T15:32:11Z @kj added
+  - log: 2026-09-28T00:23:26Z @kj closed
+- [x] `ACC-VDOCS-146` **Vault commands documented** - MEDIUM; docs/cli-reference.md documents every vault subcommand, with worked examples for the common ones
+  - evidence: docs/cli-reference.md 'vault' section: every subcommand in the table, rules and an example block; read 2026-09-26
+  - test: compare the documented commands with `vault --help`
+  - test-tags: MANUAL
+  - log: 2026-09-26T15:32:11Z @kj added
+  - log: 2026-09-27T06:46:19Z @kj amended text "docs/cli-reference.md documents every `vault` subcommand with an example" -> "MEDIUM; docs/cli-reference.md documents every vault subcommand, with worked examples for the common ones"; reason: the examples cover 8 of 16 subcommands; the rest are documented by table and help
+  - log: 2026-09-28T00:23:26Z @kj closed
+

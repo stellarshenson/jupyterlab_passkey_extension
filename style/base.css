@@ -85,3 +85,527 @@
   border-radius: var(--jp-border-radius);
   background: var(--jp-layout-color1);
 }
+
+/* Vault panel - follows the family's side-panel look (jupyterlab_share_files_extension):
+   an upper-case header at --jp-ui-font-size0, 20px icon buttons, sections with
+   upper-case headers, rows that open a popup. */
+
+.jp-PasskeyVaultPanel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  background-color: var(--jp-layout-color1);
+  color: var(--jp-ui-font-color1);
+  font-family: var(--jp-ui-font-family);
+  font-size: var(--jp-ui-font-size1);
+}
+
+.jp-PasskeyVaultPanel-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--jp-border-color2);
+  background: var(--jp-layout-color2);
+}
+
+.jp-PasskeyVaultPanel-headerTitle {
+  flex: 1 1 auto;
+  font-size: var(--jp-ui-font-size0);
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.jp-PasskeyVaultPanel-iconButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: 2px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--jp-ui-font-color2);
+  cursor: pointer;
+}
+
+.jp-PasskeyVaultPanel-iconButton:hover {
+  background: var(--jp-layout-color3);
+  color: var(--jp-ui-font-color1);
+}
+
+.jp-PasskeyVaultPanel-iconButton.jp-mod-active {
+  background: var(--jp-layout-color3);
+  color: var(--jp-brand-color1);
+}
+
+.jp-PasskeyVaultPanel-iconButton svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* JupyterLab's lock icon uses its faintest icon colour, which reads as disabled in a dark theme. */
+.jp-PasskeyVaultPanel-iconButton .jp-icon4[fill] {
+  fill: var(--jp-inverse-layout-color3);
+}
+
+.jp-PasskeyVaultPanel-status {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--jp-border-color3);
+}
+
+.jp-PasskeyVaultPanel-diode {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--jp-layout-color4);
+}
+
+.jp-PasskeyVaultPanel-diode.jp-mod-active {
+  background: var(--jp-success-color1);
+}
+
+.jp-PasskeyVaultPanel-stateText {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.jp-PasskeyVaultPanel-holder {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--jp-ui-font-color2);
+  font-size: var(--jp-ui-font-size0);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status accent line, as the family uses inside dialogs. */
+.jp-PasskeyVaultPanel-notice,
+.jp-PasskeyVaultPanel-message {
+  padding: 6px 12px;
+  border-left: 2px solid var(--jp-warn-color1);
+  background: var(--jp-layout-color2);
+  font-size: var(--jp-ui-font-size0);
+}
+
+.jp-PasskeyVaultPanel-message[data-kind='error'] {
+  border-left-color: var(--jp-error-color1);
+}
+
+.jp-PasskeyVaultPanel-message[data-kind='info'] {
+  border-left-color: var(--jp-success-color1);
+}
+
+/*
+ * As tall as its content, so the banner after it sits right under the entries -
+ * next to the action that set it - and a long list still scrolls.
+ */
+.jp-PasskeyVaultPanel-body {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.jp-PasskeyVaultPanel-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 8px;
+}
+
+.jp-PasskeyVaultPanel-hint {
+  margin: 0;
+  color: var(--jp-ui-font-color2);
+}
+
+.jp-PasskeyVaultPanel-list > .jp-PasskeyVaultPanel-hint {
+  padding: 8px;
+}
+
+.jp-PasskeyVaultPanel-section > .jp-PasskeyVaultPanel-hint {
+  padding: 0 8px;
+}
+
+.jp-PasskeyVaultPanel-filterBox {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--jp-border-color3);
+}
+
+.jp-PasskeyVaultPanel-filterInput {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--jp-border-color2);
+  border-radius: 2px;
+  outline: none;
+  background: var(--jp-input-background, var(--jp-layout-color1));
+  color: var(--jp-ui-font-color1);
+  font-family: var(--jp-ui-font-family);
+  font-size: var(--jp-ui-font-size1);
+}
+
+.jp-PasskeyVaultPanel-filterInput:focus {
+  border-color: var(--jp-brand-color1);
+}
+
+.jp-PasskeyVaultPanel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 0 8px;
+  border-bottom: 1px solid var(--jp-border-color3);
+}
+
+.jp-PasskeyVaultPanel-sectionHeader {
+  padding: 6px 8px 2px;
+  color: var(--jp-ui-font-color2);
+  font-size: var(--jp-ui-font-size0);
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.jp-PasskeyVaultPanel-rowLine,
+.jp-PasskeyVaultPanel-passkey {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 8px;
+}
+
+/* The row is a button, so it takes a tab stop and Enter / Space. */
+.jp-PasskeyVaultPanel-rowLine {
+  box-sizing: border-box;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jp-PasskeyVaultPanel-rowLine:hover {
+  background: var(--jp-layout-color2);
+}
+
+.jp-PasskeyVaultPanel-rowLine:focus-visible {
+  outline: 1px solid var(--jp-brand-color1);
+  outline-offset: -1px;
+}
+
+.jp-PasskeyVaultPanel-passkey {
+  align-items: center;
+}
+
+.jp-PasskeyVaultPanel-passkeyText {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.jp-PasskeyVaultPanel-rowName {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jp-PasskeyVaultPanel-rowUser {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--jp-ui-font-color2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The date line wraps: the minute is what tells two same-day passkeys apart. */
+.jp-PasskeyVaultPanel-passkeyText .jp-PasskeyVaultPanel-rowUser {
+  white-space: normal;
+}
+
+/*
+ * Specific enough to beat the lab's `button.jp-mod-styled`, which outside a dialog
+ * sets no background: without these the browser's light button face shows through
+ * in a dark theme.
+ */
+button.jp-mod-styled.jp-PasskeyVaultPanel-button,
+button.jp-mod-styled.jp-PasskeyVaultForm-generate {
+  width: auto;
+  height: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--jp-layout-color3);
+  border-radius: 2px;
+
+  /* The design system's secondary button: the border keeps it visible on the panel. */
+  background: var(--jp-layout-color1);
+  color: var(--jp-ui-font-color0);
+  font-size: var(--jp-ui-font-size1);
+  line-height: normal;
+  cursor: pointer;
+}
+
+/*
+ * The eye that shows the password, joined to the right end of the password field as
+ * one control: the field's border runs round both, the icon sits in the middle.
+ */
+button.jp-mod-styled.jp-PasskeyVaultForm-eye {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: auto;
+  padding: 0;
+  border: var(--jp-border-width) solid var(--jp-border-color1);
+  border-left: none;
+  border-radius: 0 var(--jp-border-radius) var(--jp-border-radius) 0;
+  background: var(--jp-input-background);
+  cursor: pointer;
+}
+
+.jp-PasskeyVaultForm-eye > span {
+  display: flex;
+}
+
+.jp-PasskeyVaultForm-eye svg {
+  width: 16px;
+  height: 16px;
+}
+
+/*
+ * No border or outline lights up round the eye. Keyboard focus fills the eye's box
+ * and leaves the icon its own colour, so the state it shows stays readable; the
+ * pointer colours the icon.
+ */
+button.jp-mod-styled.jp-PasskeyVaultForm-eye:focus-visible {
+  outline: none;
+  background: var(--jp-layout-color3);
+}
+
+button.jp-mod-styled.jp-PasskeyVaultForm-eye:hover .jp-icon3[fill] {
+  fill: var(--jp-brand-color1);
+}
+
+/*
+ * A panel button has one of two sizes. In a row it is the design system's small
+ * button; a view's or a section's own action spans the panel width (below).
+ */
+button.jp-mod-styled.jp-PasskeyVaultPanel-button {
+  height: 20px;
+  padding: 0 8px;
+  font-size: var(--jp-ui-font-size0);
+}
+
+.jp-PasskeyVaultPanel-empty > button.jp-mod-styled.jp-PasskeyVaultPanel-button,
+.jp-PasskeyVaultPanel-section
+  > button.jp-mod-styled.jp-PasskeyVaultPanel-button {
+  align-self: stretch;
+  height: 24px;
+  font-size: var(--jp-ui-font-size1);
+}
+
+.jp-PasskeyVaultPanel-section
+  > button.jp-mod-styled.jp-PasskeyVaultPanel-button {
+  margin: 0 8px;
+}
+
+button.jp-mod-styled.jp-PasskeyVaultPanel-button:hover,
+button.jp-mod-styled.jp-PasskeyVaultForm-generate:hover {
+  border-color: var(--jp-brand-color1);
+}
+
+button.jp-mod-styled.jp-PasskeyVaultPanel-button:focus-visible,
+button.jp-mod-styled.jp-PasskeyVaultForm-generate:focus-visible {
+  outline: 1px solid var(--jp-brand-color1);
+  outline-offset: 1px;
+}
+
+button.jp-mod-styled.jp-PasskeyVaultPanel-button.jp-mod-accept {
+  border-color: var(--jp-brand-color1);
+  background: var(--jp-brand-color1);
+  color: white;
+}
+
+/* Destructive and not yet armed: an outline, so arming (the red fill) is the signal. */
+button.jp-mod-styled.jp-PasskeyVaultPanel-button.jp-mod-warn {
+  border-color: var(--jp-error-color1);
+  background: transparent;
+}
+
+button.jp-mod-styled.jp-PasskeyVaultPanel-button.jp-mod-warn.jp-mod-confirm {
+  background: var(--jp-error-color1);
+  color: white;
+}
+
+/*
+ * While an action runs, nothing else in the body can be started. The dimming waits
+ * 300 ms, so a quick action such as a lock does not flash the list.
+ */
+.jp-PasskeyVaultPanel.jp-mod-busy .jp-PasskeyVaultPanel-body {
+  opacity: 0.6;
+  pointer-events: none;
+  transition: opacity 0s 300ms;
+}
+
+/* The values are short, so the label takes the free width and the value sits right. */
+.jp-PasskeyVaultPanel-pair {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 1px 8px;
+}
+
+.jp-PasskeyVaultPanel-pairLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--jp-ui-font-color2);
+}
+
+/* Whole unless it is wider than 60% of the row: `yes` never breaks, a long name wraps. */
+.jp-PasskeyVaultPanel-pairValue {
+  flex: 0 0 auto;
+  max-width: 60%;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+/* A path under its label. */
+.jp-PasskeyVaultPanel-pathPair {
+  padding: 1px 8px;
+}
+
+/* Each part whole on its line; only a part wider than the line breaks inside. */
+.jp-PasskeyVaultPanel-pathValue > span {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* A protection's value in colour; the yes or no says the same without it. */
+.jp-PasskeyVaultPanel-capability[data-protection='present']
+  .jp-PasskeyVaultPanel-pairValue {
+  color: var(--jp-success-color1);
+}
+
+.jp-PasskeyVaultPanel-capability[data-protection='missing']
+  .jp-PasskeyVaultPanel-pairValue {
+  color: var(--jp-warn-color1);
+}
+
+/*
+ * An action that is a fallback, drawn as a JupyterLab link: accent text, underlined on
+ * hover. A button element, so it keeps keyboard activation.
+ */
+.jp-PasskeyVaultPanel-link {
+  align-self: flex-start;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--jp-content-link-color);
+  font: inherit;
+  cursor: pointer;
+}
+
+.jp-PasskeyVaultPanel-link:hover {
+  color: var(--jp-content-link-hover-color, var(--jp-content-link-color));
+  text-decoration: underline;
+}
+
+.jp-PasskeyVaultPanel-link:focus-visible {
+  outline: 1px solid var(--jp-brand-color1);
+  outline-offset: 1px;
+}
+
+/* The add / edit dialog and the entry popup: wide and tall enough for JSON in Notes. */
+.jp-PasskeyVaultForm-dialog .jp-Dialog-content {
+  width: min(560px, 90vw);
+  max-height: 90vh;
+}
+
+.jp-PasskeyVaultForm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 320px;
+}
+
+.jp-PasskeyVaultForm-row {
+  display: flex;
+  gap: 6px;
+}
+
+.jp-PasskeyVaultForm-row .jp-PasskeyVaultForm-input {
+  flex: 1 1 auto;
+}
+
+.jp-PasskeyVaultForm-row.jp-PasskeyVaultForm-joined {
+  gap: 0;
+}
+
+.jp-PasskeyVaultForm-joined input.jp-mod-styled.jp-PasskeyVaultForm-input {
+  border-right: none;
+  border-radius: var(--jp-border-radius) 0 0 var(--jp-border-radius);
+}
+
+/* The name an edit is addressed by: shown like Add, dimmed because it cannot change. */
+.jp-PasskeyVaultForm:not(.jp-mod-view) .jp-PasskeyVaultForm-input:read-only {
+  color: var(--jp-ui-font-color2);
+}
+
+.jp-PasskeyVaultForm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.jp-PasskeyVaultForm-label {
+  color: var(--jp-ui-font-color1);
+  font-size: var(--jp-ui-font-size1);
+}
+
+.jp-PasskeyVaultForm-help {
+  color: var(--jp-ui-font-color2);
+  font-size: var(--jp-ui-font-size0);
+}
+
+.jp-PasskeyVaultForm-help:empty {
+  display: none;
+}
+
+textarea.jp-mod-styled.jp-PasskeyVaultForm-notes {
+  box-sizing: border-box;
+
+  /* At least 12 lines at the normal line height of about 1.2em */
+  height: 16em;
+  min-height: 60px;
+  padding: 4px 6px;
+  border: 1px solid var(--jp-border-color1);
+  background: var(--jp-input-background, var(--jp-layout-color1));
+  color: var(--jp-ui-font-color1);
+  font-family: var(--jp-ui-font-family);
+  font-size: var(--jp-ui-font-size2);
+  resize: vertical;
+}
+
+textarea.jp-mod-styled.jp-PasskeyVaultForm-notes:focus {
+  border-color: var(--jp-input-active-border-color);
+  outline: none;
+  box-shadow: var(--jp-input-box-shadow);
+}

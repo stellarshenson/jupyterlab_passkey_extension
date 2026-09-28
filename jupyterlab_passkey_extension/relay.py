@@ -9,8 +9,9 @@ Two backends, one chosen per process at first use:
 - **shm** - the /dev/shm 0600 file relay, guarded against a co-tenant squatting
   the predictable path. The fallback when keyctl is not functional.
 
-The writer and the reader are different processes (the Jupyter server and the
-CLI), so the backend is a property of the environment, not a per-call choice:
+The writer and the reader are usually different processes (the Jupyter server and
+the CLI; for `vault copy` and `vault show` the server is both), so the backend is a
+property of the environment, not a per-call choice:
 each probes independently. They usually agree, but they can split - a server
 still running the pre-keyctl code stages a /dev/shm file while a newer,
 keyctl-preferred CLI reads the keyring. So a keyctl reader also cross-reads the
@@ -47,8 +48,9 @@ _TTL = {"json": 300, "pass": 300, "secret": 900, "code": 900, "cancel": 60}
 # A `show` code is a short human-readable value (an authenticator code, a pairing
 # code), and rendering it to a PNG costs time and memory that grow with its length
 # on the server's event loop. Cap it so a mistaken `show` of a large file cannot
-# freeze the server rendering it. Enforced by the CLI (before staging) and the
-# render handler (before rendering) - both import relay, neither imports Pillow.
+# freeze the server rendering it. Enforced by both writers before staging (the CLI,
+# `VaultService.stage`) and by the render handler before rendering - all import
+# relay, none imports Pillow.
 MAX_CODE_CHARS = 256
 
 _backend_cache = None
@@ -60,6 +62,38 @@ _warned = False
 # at all, and no package fixes that. The probe records what it actually saw here so
 # the fallback warning and --debug can name the real cause instead of guessing.
 _probe_detail = None
+
+
+def _say(message: str) -> None:
+    """Tell the user something on stderr, and never fail the command doing it.
+
+    Catching the write error is not enough on its own. stderr is buffered, so a
+    failed write leaves the bytes sitting in it; CPython retries that flush at
+    interpreter shutdown - long after main() has returned, where no except can
+    reach it - and exits 120 when it fails again. So the whole command reports
+    failure because a progress message could not be printed.
+
+    That is not cosmetic here. `copy` answers a failed trigger by destroying the
+    secret it staged, precisely so a retry cannot strand another copy; a caller
+    that reads 120 as "the trigger failed" retries, and strands one anyway. And
+    `passphrase` prints a reference its caller captures with `|| exit 1`, which a 120
+    throws away while the relay stays staged.
+
+    Setting sys.stderr to None drops the stream, so shutdown has nothing left to
+    flush. It is not closed: in the server the log handlers write to the same object,
+    and a closed one would drop every later log record.
+    """
+    stderr = sys.stderr
+    # None: started with `2>&-`, or an earlier call dropped it. print(file=None) falls
+    # back to STDOUT, and stdout is load-bearing here - it carries the cred_id, the PRF,
+    # the relay reference. Chatter must never land there.
+    if stderr is None:
+        return
+    try:
+        print(message, file=stderr)
+    except (OSError, ValueError):
+        # ValueError: something closed it.
+        sys.stderr = None
 
 
 # --------------------------------------------------------------------------- #
@@ -226,7 +260,7 @@ def _shm_collect_opportunistic(nonce, kind):
         # shm only as a fallback must not crash, but a squat is a real security signal,
         # so surface it to stderr (collect runs once per flow, not in a poll loop)
         # rather than bury it in a bare timeout.
-        print(f"jlab-passkey: shm relay dir unreadable ({e}); ignoring", file=sys.stderr)
+        _say(f"jlab-passkey: shm relay dir unreadable ({e}); ignoring")
         return None
     except OSError:
         # A benign race - the file vanished between the exists check and the open - is
@@ -413,11 +447,10 @@ def _warn_shm_fallback():
     # stderr, never stdout: stdout carries the CLI's result (a cred_id, a PRF, a
     # relay reference), and a warning there would contaminate a `$(...)` capture. In
     # the server this lands in the Jupyter log, which is the right place for it.
-    print(
+    _say(
         f"keyctl unavailable ({_probe_detail or 'the probe round-trip failed'}); "
         "using the /dev/shm file relay instead - swappable, orphaned on crash. "
-        "Run any subcommand with --debug for the full backend decision.",
-        file=sys.stderr,
+        "Run any subcommand with --debug for the full backend decision."
     )
 
 

@@ -2,9 +2,10 @@
 """jupyterlab-passkey - drive the browser passkey ceremony from a local process.
 
 A proxy to the extension's JupyterLab commands. WebAuthn needs a user gesture and a
-browser; a terminal has neither. So each subcommand posts a notification whose action
-button is bound to the command, then (all but `copy`) waits for the relay the server
-writes and returns the result - turning a browser ceremony into a blocking call.
+browser; a terminal has neither. So a subcommand that needs the browser posts a
+notification whose action button is bound to the command, then (all but `copy` and
+`show`) waits for the relay the server writes and returns the result - turning a
+browser ceremony into a blocking call.
 
     cred_id=$(jupyterlab-passkey create --rp-id lab.example)
     prf=$(jupyterlab-passkey get --rp-id lab.example --cred-id "$cred_id" --prf-salt "$salt")
@@ -44,6 +45,7 @@ import urllib.error
 import urllib.request
 
 from . import relay
+from .relay import _say
 
 INGEST = "jupyterlab-notifications-extension/ingest"
 RUN_COMMAND = "passkey:run"
@@ -56,9 +58,10 @@ SHOW_COMMAND = "passkey:show"
 # server event loop hangs the CLI forever, ignoring --timeout entirely.
 TRIGGER_TIMEOUT = 10
 
-# How long any subcommand waits for the click, unless --timeout says otherwise. ONE
-# definition, fed to argparse and interpolated into the help text below: all four
-# commands wait for the same thing - a human noticing a notification and clicking it -
+# How long a subcommand waits for the click, unless --timeout says otherwise; `vault
+# init` and `vault passkey add` wait vault.cli.REGISTER_TIMEOUT instead. ONE
+# definition, fed to argparse and interpolated into the help text below: the commands
+# that take it wait for the same thing - a human noticing a notification and clicking it -
 # and a second literal would drift from this one the first time anybody retunes it.
 CLICK_TIMEOUT = 120.0
 
@@ -79,52 +82,24 @@ def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def _say(message: str) -> None:
-    """Tell the user something on stderr, and never fail the command doing it.
-
-    Catching the write error is not enough on its own. stderr is buffered, so a
-    failed write leaves the bytes sitting in it; CPython retries that flush at
-    interpreter shutdown - long after main() has returned, where no except can
-    reach it - and exits 120 when it fails again. So the whole command reports
-    failure because a progress message could not be printed.
-
-    That is not cosmetic here. `copy` answers a failed trigger by destroying the
-    secret it staged, precisely so a retry cannot strand another copy; a caller
-    that reads 120 as "the trigger failed" retries, and strands one anyway. And
-    `passphrase` prints a reference its caller captures with `|| exit 1`, which a 120
-    throws away while the relay stays on disk.
-
-    Dropping the stream takes the poisoned buffer with it, so shutdown has nothing
-    left to retry.
-    """
-    stderr = sys.stderr
-    # None: print(file=None) falls back to STDOUT, and stdout is load-bearing here -
-    # it carries the cred_id, the PRF, the relay path. Chatter must never land there.
-    # Closed: an earlier call already dropped it, and printing to a closed stream
-    # raises ValueError, which would take the command down over a progress message.
-    if stderr is None or getattr(stderr, "closed", False):
-        return
-    try:
-        print(message, file=stderr)
-    except (OSError, ValueError):
-        try:
-            stderr.close()
-        except (OSError, ValueError):
-            pass
+# The SIGHUP disposition this process started with (ignored under nohup), read before
+# main() ignores it: `vault exec` hands it on to its command.
+STARTED_HANGUP = signal.getsignal(signal.SIGHUP) if hasattr(signal, "SIGHUP") else None
 
 
 def _ignore_hangup() -> None:
     """Survive the controlling terminal going away, so a detached run still lands.
 
-    Every subcommand raises a browser notification and then waits for a human to
-    click it - a popup, a passphrase query, a copy, a code to show - work that
+    A subcommand that raises a browser notification and waits for a human to
+    click it - a popup, a passphrase query, a blocking copy - does work that
     outlives the shell that launched it. Backgrounded with a bare `&` and the
     terminal then closed, the default SIGHUP disposition kills the process
     mid-wait; the click afterwards writes (or reads) a relay nobody is left to
-    handle, and for `copy`/`show` it strands one this process staged and can no
+    handle, and for `copy` it strands one this process staged and can no
     longer clean up. Ignoring SIGHUP gives every command nohup's behaviour without
     the caller having to remember nohup, so notifications, popups and queries work
-    the same whether the process is attached or detached.
+    the same whether the process is attached or detached. The command `vault exec`
+    runs gets STARTED_HANGUP instead.
 
     POSIX only - Windows has no SIGHUP. Best-effort: on a non-main thread or a
     platform that refuses, the command still works when launched under nohup/setsid,
@@ -183,9 +158,29 @@ def _token(info: dict) -> str | None:
     return os.environ.get("JUPYTER_TOKEN") or None
 
 
+# Found once per process: `jupyter server list` takes about a second, and one vault
+# command can need the server several times.
+_found: tuple[str, str | None] | None = None
+
+
 def _server() -> tuple[str, str | None]:
-    info = _server_list()
-    return _base_url(info), _token(info)
+    global _found
+    if _found is None:
+        info = _server_list()
+        _found = (_base_url(info), _token(info))
+    return _found
+
+
+def _forget_server() -> None:
+    """Look the server up again next time: after a 401/403 (a restarted server has a
+    new token) or no answer (it may come back on another port)."""
+    global _found
+    _found = None
+
+
+# Requests to the local server bypass any proxy: urlopen follows http_proxy even for
+# 127.0.0.1, and would hand the proxy the token and whatever the body carries.
+_LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
@@ -212,9 +207,11 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
         f"{base}/{INGEST}", data=json.dumps(payload).encode(), headers=headers, method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=TRIGGER_TIMEOUT) as r:
+        with _LOOPBACK.open(req, timeout=TRIGGER_TIMEOUT) as r:
             r.read()
     except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            _forget_server()
         if e.code == 404:
             raise SystemExit(
                 f"trigger rejected (404) by {base}/{INGEST} - the notifications extension "
@@ -222,13 +219,15 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
             )
         raise SystemExit(f"trigger rejected ({e.code} {e.reason}) by {base}/{INGEST}")
     except urllib.error.URLError as e:
+        _forget_server()
         raise SystemExit(f"cannot reach {base} ({e.reason}) - is JupyterLab running?")
     except OSError as e:
         # Must come after URLError, which subclasses OSError. TimeoutError and
-        # ConnectionResetError are OSError but NOT URLError, and urlopen raises them
+        # ConnectionResetError are OSError but NOT URLError, and open() raises them
         # bare out of the read phase - so without this the one case TRIGGER_TIMEOUT
         # exists to bound, a server that accepts the connection and then wedges, ends
         # in a traceback instead of the sentence that names the problem.
+        _forget_server()
         raise SystemExit(f"cannot reach {base} ({e}) - is JupyterLab running?")
 
     # The POST has landed by here and the button is live in the browser, so a broken
@@ -296,8 +295,12 @@ def _wait_gone(nonce: str, kind: str, timeout: float, on_timeout: str) -> None:
     raise SystemExit(f"not copied after {timeout:.0f}s - {on_timeout}")
 
 
-def _run(args_obj: dict, label: str, message: str, timeout: float) -> dict:
-    """Drive passkey:run and consume its relay, destroying it on every path out of here.
+def _run(args_obj: dict, label: str, message: str, timeout: float,
+         command_id: str = RUN_COMMAND) -> dict:
+    """Drive a ceremony command and consume its relay, destroying it on every path out.
+
+    `passkey:run` by default; the vault's unlock and register commands answer through
+    the same result relay.
 
     The relay carries the PRF, so the destroy sits in a finally that also covers the
     timeout - `_wait` is inside the try for exactly that reason. A malformed body, or a
@@ -311,7 +314,7 @@ def _run(args_obj: dict, label: str, message: str, timeout: float) -> dict:
     the consumer's job.
     """
     nonce = args_obj["nonce"]
-    _trigger(RUN_COMMAND, args_obj, label, message)
+    _trigger(command_id, args_obj, label, message)
     try:
         _wait(nonce, "json", timeout, "was the button clicked and the prompt approved?")
         # collect destroys the relay as it reads it.
@@ -341,7 +344,9 @@ def _run(args_obj: dict, label: str, message: str, timeout: float) -> dict:
             raise SystemExit(
                 "ceremony failed: rp-id-mismatch - --rp-id does not match the "
                 "JupyterLab tab's URL. It must be the tab's hostname, or a parent "
-                "domain of it, with no scheme, port or path."
+                "domain of it, with no scheme, port or path - and a name: a tab "
+                "open at an IP address such as 127.0.0.1 has no valid RP ID, so "
+                "open JupyterLab by name - over HTTPS, or at localhost."
             )
         raise SystemExit(f"ceremony failed: {error}")
     return data
@@ -415,27 +420,36 @@ def cmd_passphrase(a) -> int:
         "Enter the secret - click to open the dialog." if a.once
         else "Enter the passphrase - click to open the dialog.",
     )
-    # The dialog relays nothing on cancel, or on two entries that differ, so a timeout
-    # here usually means a deliberate refusal, not an unnoticed button.
-    refused = "cancelled or the button was never clicked" if a.once else (
-        "cancelled, the two entries differed, or the button was never clicked"
-    )
+    # A cancel stages a marker that ends the wait at once, and two entries that differ
+    # cannot be submitted, so a timeout means the dialog was never finished.
+    refused = "the button was never clicked, or the dialog was left open"
     try:
         _wait(nonce, "pass", a.timeout, refused, watch_cancel=True)
-        print(relay.reference(nonce, "pass"))
+        ref = relay.reference(nonce, "pass")
     except OSError as e:
         # An operator who forced JLAB_PASSKEY_RELAY_BACKEND=keyctl on a host whose
         # keyring is not functional gets a clean line here, not a traceback - the same
         # bar the other commands hold. (A missing/quota'd backend surfaces the same way.)
         raise SystemExit(f"relay backend unavailable: {e}")
+    # Flushed here, not at shutdown: a caller who cannot receive the reference (stdout
+    # closed, its reader gone) would leave the secret staged with nobody to remove it.
+    try:
+        if sys.stdout is None:
+            raise OSError("stdout is closed")
+        print(ref, flush=True)
+    except (OSError, ValueError) as e:
+        relay.unstage(nonce, "pass")
+        # Dropped, so shutdown does not retry the flush and exit 120 over this line.
+        sys.stdout = None
+        raise SystemExit(f"could not write the reference ({e}) - the secret was removed")
     return 0
 
 
 def _read_stdin_or_file(file_arg, noun, empty_msg, nontext_msg):
     """Read a text value from FILE or stdin, strict utf-8, one trailing newline dropped.
 
-    Shared by `copy` and `show`: both read a secret the same careful way and differ
-    only in the words of their errors. `noun` names the value in the terminal-refusal
+    Shared by `copy`, `show` and the vault's secret and import readers: all read a
+    value the same careful way and differ only in the words of their errors. `noun` names the value in the terminal-refusal
     message; `empty_msg` and `nontext_msg` (which may reference `{source}`) are the
     caller's own wording, since copy's strings are pinned by its tests. Keeping the one
     subtle part - strict decode at the boundary, strip exactly one trailing newline -
@@ -475,18 +489,19 @@ def _read_stdin_or_file(file_arg, noun, empty_msg, nontext_msg):
 def cmd_copy(a) -> int:
     """Stage a secret from a file or stdin and offer it to the browser's clipboard.
 
-    The only command that runs outward: the caller already holds the secret and wants
+    It runs outward, as `show` does: the caller already holds the secret and wants
     it in the clipboard of the browser they are sitting in front of, to paste
     somewhere this bridge knows nothing about.
 
-    The value is staged in a 0600 relay and the notification carries only the nonce.
+    The value is staged in a relay (a kernel key or a 0600 file) and the notification
+    carries only the nonce.
     Putting the secret in the notification instead would be simpler and wrong - the
     notifications extension pushes every payload to every connected socket and parks
     it in an in-memory queue until a client drains it.
 
     Fire and forget by default: the relay is one-shot, so the click consumes it, but
-    nothing here waits for the click. A secret nobody clicks sits in tmpfs until
-    reboot - the button is up and the user can see it, which is a different thing
+    nothing here waits for the click. A secret nobody clicks self-destructs at its TTL
+    on keyctl, and sits in tmpfs until reboot on shm - the button is up and the user can see it, which is a different thing
     from the stranded case the unstage below exists to prevent.
 
     `--block` waits for the relay to be consumed and deletes it if it never is, so an
@@ -646,11 +661,14 @@ def _glue_b64url(argv: list[str]) -> list[str]:
 
     Only the separator changes; the value is passed through untouched. A flag already
     written as `--cred-id=...` never matches and is left alone, and a flag with no value
-    left to take is left alone too, so argparse still reports the real mistake.
+    left to take is left alone too, so argparse still reports the real mistake. Nothing
+    after a bare `--` is touched: that is another program's command line (`vault exec`).
     """
     out: list[str] = []
     i = 0
     while i < len(argv):
+        if argv[i] == "--":
+            return out + argv[i:]
         if argv[i] in _B64URL_FLAGS and i + 1 < len(argv):
             out.append(f"{argv[i]}={argv[i + 1]}")
             i += 2
@@ -683,12 +701,12 @@ def main() -> int:
         prog="jupyterlab-passkey",
         description=__doc__,
         epilog="""
-Every subcommand has its own --help with examples: `jupyterlab-passkey copy --help`.
+Every bridge subcommand has its own --help with examples: `jupyterlab-passkey copy --help`.
 
 Exit status is the contract: 0 succeeded, 1 refused, timed out, or could not reach the
-server (the reason is one line on stderr). Only the result goes to stdout - a cred_id,
-a PRF, or a passphrase reference - so `$(...)` captures it clean and progress chatter
-cannot contaminate it.
+server (the reason is on stderr), 2 an argument the parser rejects; `vault exec`
+exits with its command's status. Only the result goes to stdout, so `$(...)` captures it
+clean and progress chatter cannot contaminate it.
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -700,14 +718,14 @@ cannot contaminate it.
         metavar="SECONDS",
         help=f"how long to wait for the click before giving up and exiting 1 (default {CLICK_TIMEOUT:.0f})",
     )
-    # --debug rides its own parent so EVERY subcommand takes it, including the two that
+    # --debug rides its own parent so EVERY subcommand takes it, including the ones that
     # want no --timeout. It reports which relay backend was chosen and, when keyctl was
     # rejected, exactly which step the kernel refused - the question that otherwise costs
     # a manual keyctl round-trip to answer. stderr only: stdout carries the result.
     debugp = argparse.ArgumentParser(add_help=False)
     debugp.add_argument(
         "--debug", action="store_true",
-        help="report the relay backend decision on stderr before running",
+        help="report the relay backend and, for vault commands, the key-holder decision on stderr",
     )
     sub = p.add_subparsers(dest="op", required=True, metavar="COMMAND")
 
@@ -728,7 +746,8 @@ example:
     )
     c.add_argument(
         "--rp-id", required=True, metavar="HOSTNAME",
-        help="WebAuthn RP ID: your JupyterLab tab's hostname, bare - no scheme, port or path",
+        help="WebAuthn RP ID: your JupyterLab tab's hostname, bare - no scheme, port or path; "
+             "a name, never an IP address",
     )
     c.add_argument(
         "--user-name", default="jupyterlab-passkey", metavar="NAME",
@@ -784,8 +803,8 @@ keystore's recovery slot. An AI agent can run this and pipe the reference onward
 the secret ever entering its transcript. The consumer resolves the scheme itself.
 
 The value is entered twice and Submit stays disabled until the two match. --once drops
-the confirm field for a secret being pasted rather than typed. Cancelling stages
-nothing, so the command times out and exits 1.
+the confirm field for a secret being pasted rather than typed. Cancelling exits 1 at
+once.
 """,
         """
 examples:
@@ -824,8 +843,8 @@ Read a secret from FILE or stdin and raise a notification whose button puts it o
 browser's clipboard. The mirror of `passphrase`: that one brings a secret in from the
 user, this one sends one out to them, to paste wherever it is wanted.
 
-The secret is never in the notification - it is staged in a 0600 relay and the
-notification carries only a nonce, which is useless without the Jupyter token. The
+The secret is never in the notification - it is staged in a relay (a kernel key or a
+0600 file) and the notification carries only a nonce, which is useless without the Jupyter token. The
 click collects it and the relay is deleted in the same breath, so a second click finds
 nothing. An AI agent can hand a user a secret this way without the value appearing in
 its transcript or in any file the user has to clean up.
@@ -885,8 +904,8 @@ Read a code from FILE or stdin and raise a notification whose button shows it in
 dialog as a distorted image. For a value the user must READ off the screen and type
 somewhere else - a one-time authenticator code, a pairing code - rather than paste.
 
-The code never reaches the page as text. It is staged in a 0600 relay, the
-notification carries only a nonce, and the click fetches a PNG the server draws from
+The code never reaches the page as text. It is staged in a relay (a kernel key or a
+0600 file), the notification carries only a nonce, and the click fetches a PNG the server draws from
 the relay and consumes in the same breath. So the code is absent from the
 notifications broadcast, the DOM, and the accessibility tree; a screen scraper sees
 an image, and an OCR pass still has to beat the distortion.
@@ -915,6 +934,10 @@ examples:
     )
     sh.set_defaults(func=cmd_show)
 
+    from .vault.cli import add_vault_parser
+
+    add_vault_parser(sub, common, debugp)
+
     argv = _glue_b64url(sys.argv[1:])
     if not argv:
         # argparse answers a bare invocation with a usage line and "the following
@@ -922,7 +945,7 @@ examples:
         # agent probing what this thing does - nothing at all. The full help is the
         # honest answer to "what are you?". On stderr and still exit 2, because it is
         # still a usage error and stdout carries results, not prose.
-        p.print_help(sys.stderr)
+        _say(p.format_help().rstrip("\n"))
         return 2
 
     a = p.parse_args(argv)
@@ -934,4 +957,8 @@ examples:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # The package module's main, not this copy's: `vault exec` imports that module, and
+    # it must read STARTED_HANGUP before main() ignores SIGHUP.
+    from jupyterlab_passkey_extension.cli import main as _main
+
+    raise SystemExit(_main())

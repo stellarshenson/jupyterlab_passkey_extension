@@ -123,8 +123,6 @@ class PassphraseBody extends Widget {
     // ahead of Dialog's and validity is fresh by the time Dialog looks.
     document.addEventListener('input', this._revalidate, true);
 
-    this.first.focus();
-
     // Dialog only re-checks on `input`, and nothing has typed yet, so Submit
     // would open enabled over empty fields. Seed the gate once Dialog's own
     // listener exists; a microtask suffices, as both onAfterAttach calls land in
@@ -208,7 +206,8 @@ class PassphraseBody extends Widget {
  *
  * Two entries are confirmed to match in the dialog; a single entry need only be
  * non-empty. Either way the value is POSTed to the "passphrase" endpoint, which
- * writes it raw to an atomic 0600 relay file so a local client can read it -
+ * writes it raw to a relay (a keyctl key, or an atomic 0600 file) so a local
+ * client can read it -
  * a vault, a .env, anything that should never see the value cross a terminal.
  * Returns true when a value was relayed, false when the user cancelled. The
  * value is never logged.
@@ -218,46 +217,12 @@ export async function runPassphrase(
   serverSettings: ServerConnection.ISettings
 ): Promise<boolean> {
   const once = args.once === true;
-  const body = new PassphraseBody(
+  const { accepted, value: passphrase } = await askSecret(
     args.prompt ?? (once ? 'Enter the secret' : 'Enter the passphrase twice'),
     once
   );
 
-  // Built directly rather than via showDialog (which is exactly this) so the
-  // instance is in hand for reject() below.
-  const dialog = new Dialog({
-    title: once ? 'Secret' : 'Passphrase',
-    body,
-    // Cancel and Submit are the only ways out. hasClose:true would add a close
-    // button AND dismiss on any click outside the dialog - and a passphrase
-    // prompt that vanishes on a stray click leaves the CLI blocked on a relay
-    // that is never coming, looking like a hang rather than a cancel.
-    hasClose: false,
-    buttons: [
-      Dialog.cancelButton(),
-      Dialog.okButton({ label: 'Submit', accept: true })
-    ]
-  });
-
-  // hasClose:false switches Escape off along with the rest, and Escape is the one
-  // dismissal worth keeping. Dialog's own keydown handler sits on its node in the
-  // capture phase and swallows Escape without acting on it, so a listener on that
-  // node or below never sees the event - document capture runs first.
-  const onEscape = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      dialog.reject();
-    }
-  };
-  document.addEventListener('keydown', onEscape, true);
-
-  let result: Dialog.IResult<unknown>;
-  try {
-    result = await dialog.launch();
-  } finally {
-    document.removeEventListener('keydown', onEscape, true);
-  }
-
-  if (!result.button.accept) {
+  if (!accepted) {
     // Say so, rather than saying nothing. The relay is the only channel back to the
     // waiting CLI, so a silent dismissal is indistinguishable from a button nobody
     // has clicked - and the caller sits out its whole timeout before reporting a
@@ -273,7 +238,6 @@ export async function runPassphrase(
   // last point before a value the user never confirmed reaches disk. Nothing is
   // signalled here - an accepted dialog with no value is a bug in the gate, not a
   // decision the user made, and it must not be reported to the caller as a refusal.
-  const passphrase = body.value;
   if (passphrase === null) {
     return false;
   }
@@ -284,4 +248,75 @@ export async function runPassphrase(
   });
 
   return true;
+}
+
+/**
+ * Launch a dialog built with hasClose:false, keeping Escape as a way out.
+ *
+ * hasClose:false switches Escape off along with the rest, and Escape is the one
+ * dismissal worth keeping. Dialog's own keydown handler sits on its node in the
+ * capture phase and swallows Escape without acting on it, so a listener on that
+ * node or below never sees the event - document capture runs first.
+ */
+export async function launchWithEscape<T>(
+  dialog: Dialog<T>
+): Promise<Dialog.IResult<T>> {
+  const onEscape = (event: KeyboardEvent) => {
+    // A dialog launched while another is open waits in a queue; only the one on
+    // screen closes. Closing it attaches the next before that one's listener runs,
+    // so the first listener marks the key as used.
+    if (
+      event.key === 'Escape' &&
+      dialog.isAttached &&
+      !event.defaultPrevented
+    ) {
+      event.preventDefault();
+      dialog.reject();
+    }
+  };
+  document.addEventListener('keydown', onEscape, true);
+  try {
+    return await dialog.launch();
+  } finally {
+    document.removeEventListener('keydown', onEscape, true);
+  }
+}
+
+/**
+ * Ask for a secret in the passphrase dialog and return it, relaying nothing.
+ *
+ * `accepted` is false when the user cancelled; `value` is null when the dialog
+ * was accepted without a confirmed value, which the Submit gate should prevent.
+ * The vault panel asks for its recovery passphrase through this.
+ */
+export async function askSecret(
+  prompt: string,
+  once: boolean,
+  title?: string
+): Promise<{ accepted: boolean; value: string | null }> {
+  const body = new PassphraseBody(prompt, once);
+
+  // Built directly rather than via showDialog (which is exactly this) so the
+  // instance can be passed to launchWithEscape.
+  const dialog = new Dialog({
+    title: title ?? (once ? 'Secret' : 'Passphrase'),
+    body,
+    // hasClose:true would add a close button AND dismiss on any click outside the
+    // dialog - and a passphrase prompt that vanishes on a stray click leaves the
+    // CLI blocked on a relay that is never coming, looking like a hang rather than
+    // a cancel.
+    hasClose: false,
+    // Dialog focuses its default button after the body attaches; this names the
+    // passphrase field instead, so typing starts there.
+    focusNodeSelector: 'input',
+    buttons: [
+      Dialog.cancelButton(),
+      Dialog.okButton({ label: 'Submit', accept: true })
+    ]
+  });
+
+  const result = await launchWithEscape(dialog);
+  return result.button.accept
+    ? { accepted: true, value: body.value }
+    : { accepted: false, value: null };
 }
