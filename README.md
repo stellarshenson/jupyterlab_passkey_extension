@@ -32,10 +32,10 @@ The `passphrase` and `copy` features are what make this usable when an AI agent 
 
 The CLI's and the bridge subcommands' `--help` are written to be read by an agent, and each of those subcommands carries worked examples.
 
-The package also ships an agent skill, `skills/jupyterlab-passkey/SKILL.md` inside the Python package. It tells an agent which vault and bridge commands keep a secret out of its output, and what each error asks for next. To make it available to Claude Code, link it into the skills directory:
+The repository carries an agent skill, [`.agents/skills/jupyterlab-passkey/SKILL.md`](.agents/skills/jupyterlab-passkey/SKILL.md). It tells an agent which vault and bridge commands keep a secret out of its output, and what each error asks for next. Agents that read `.agents/skills` find it in a clone of this repository; to make it available to Claude Code everywhere, link it into the skills directory from the clone:
 
 ```bash
-ln -s "$(python -c 'import jupyterlab_passkey_extension as m, os; print(os.path.dirname(m.__file__))')/skills/jupyterlab-passkey" ~/.claude/skills/jupyterlab-passkey
+ln -s "$PWD/.agents/skills/jupyterlab-passkey" ~/.claude/skills/jupyterlab-passkey
 ```
 
 > [!IMPORTANT]

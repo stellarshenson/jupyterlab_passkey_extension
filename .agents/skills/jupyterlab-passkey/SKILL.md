@@ -133,14 +133,14 @@ esac
 
 ## Errors
 
-| Message on stderr | Next step |
-| --- | --- |
+| Message on stderr                                                     | Next step                                                               |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `the vault is not loaded on this Jupyter server - restart the server` | the extension was installed into a running server; the user restarts it |
-| `no vault at <path> - run jupyterlab-passkey vault init` | create the vault |
-| `no passkey is registered with the vault - ...` | `vault unlock --recovery --in-browser` |
-| `the vault is locked - run jupyterlab-passkey vault unlock` | unlock, then run the command again |
-| `cannot reach <url> (...) - is JupyterLab running?` | JupyterLab is not running, or `jupyter server list` does not show it |
-| `no relay after <N>s - ...` | nobody clicked in time; ask the user, then run it again |
+| `no vault at <path> - run jupyterlab-passkey vault init`              | create the vault                                                        |
+| `no passkey is registered with the vault - ...`                       | `vault unlock --recovery --in-browser`                                  |
+| `the vault is locked - run jupyterlab-passkey vault unlock`           | unlock, then run the command again                                      |
+| `cannot reach <url> (...) - is JupyterLab running?`                   | JupyterLab is not running, or `jupyter server list` does not show it    |
+| `no relay after <N>s - ...`                                           | nobody clicked in time; ask the user, then run it again                 |
 
 Exit status: 0 success, 1 a refusal or a timeout (one line on stderr, nothing on stdout), 2 an argument the parser rejects. `vault exec` exits with its command's status.
 
