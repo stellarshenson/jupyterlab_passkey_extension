@@ -9,3 +9,5 @@ Progress logs for background jobs in this project.
 - `galata-full.log` - the whole Galata suite (all specs, vault included) after a `make install`, on `JUPYTER_TEST_PORT=8899`
 - `galata-ci-mode.log` - the same suite run with `CI=true`, which disables server reuse so a fresh test server is started exactly as GitHub Actions does
 - `passkey-cli.log` - output of a manual `jupyterlab-passkey` run (on-demand: notify trigger → ceremony → relay read)
+- `ci-<short sha>.log` - poll of the GitHub Actions runs for one pushed commit: time, then each run's name, status, conclusion and id
+- `rebuild-r<N>.log` - rebuild before adversarial review round N: lint check, jest, `make install`, Galata on port 8899, review screenshots

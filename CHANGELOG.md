@@ -2,6 +2,37 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.0] - 2026-09-28
+
+Adds a password vault that the Jupyter server holds, unlocked with a passkey or a recovery passphrase, for the terminal, the CLI and notebooks, which have no browser of their own.
+
+### Added
+
+- The vault is one file, `$XDG_DATA_HOME/jupyterlab-passkey/vault.json`, mode `0600`. Every entry, names included, is one AES-256-GCM ciphertext under a random 32-byte data key. The data key is wrapped once per keyslot - the recovery passphrase (scrypt) and each passkey (HKDF of its WebAuthn PRF) - so adding or removing a passkey never re-encrypts the entries
+- Vault panel in the right sidebar; the `sidebar` setting moves it left. It creates and unlocks the vault, lists entries by category with a filter, and adds, edits and deletes them. An entry's password is revealed only by a passkey request whose PRF opens one of the vault's passkey slots. The cog icon opens the security view: the key holder and what it protects on this host, the passkeys and the recovery passphrase
+- `jupyterlab-passkey vault` commands: `init`, `unlock`, `lock`, `status`, `list`, `get`, `add`, `edit`, `rm`, `generate`, `copy`, `show`, `exec`, `import`, `passkey`, `recovery`. No command takes a secret as an option value
+- Python API: `Vault().get("github/api")` from `jupyterlab_passkey_extension.vault`, which unlocks through a notification when the vault is locked
+- Authenticated REST endpoints under `<base>/jupyterlab-passkey-extension/vault/<action>`
+- While the vault is unlocked, its data key is in the first key holder that works on the host: the kernel keyring (`keyctl`), a gpg-agent with its own GnuPG home, or the server process's memory. The vault therefore works where keyctl syscalls are blocked. `JLAB_PASSKEY_VAULT_HOLDER` pins a holder, and `vault status` reports what the holder protects, measured on the host
+- `unlockMinutes` setting: default 240, range 1 to 1440, applies to every client
+- Registering a passkey and changing the recovery passphrase each need a proof in the same step: a passkey registered for this hostname, or the current recovery passphrase when the hostname has none or the passkey does not answer
+
+### Changed
+
+- `copy` and `show` also deliver a value the server staged, which `vault copy` and `vault show` use
+- `--debug` also reports the vault's key-holder decision
+- The `show` code dialog closes on Escape
+- The `--rp-id` mismatch error says that a tab opened at an IP address has no valid RP ID
+
+### Fixed
+
+- CLI requests to the local Jupyter server no longer go through `http_proxy`; with a proxy set, the CLI sent the Jupyter token to the proxy
+- A request body that is not valid JSON is no longer written to the server log at DEBUG level; these bodies carry a PRF, a passphrase or a secret
+- `passphrase` removes its staged secret and exits 1 when it cannot write the reference to stdout, instead of leaving the secret staged with nobody to remove it
+- A relay warning that cannot be written to stderr no longer makes the command exit 120
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.0.44] - 2026-08-04
 
 Turns a passkey ceremony that fails because the RP ID does not match the tab's URL into an error the caller can act on, instead of a dead-end `error` code.
@@ -9,8 +40,6 @@ Turns a passkey ceremony that fails because the RP ID does not match the tab's U
 ### Fixed
 
 - A ceremony that fails because `--rp-id` is not the JupyterLab tab's hostname (nor a parent domain of it) now exits with a message that says exactly that, instead of the opaque `ceremony failed: error`. WebAuthn throws this synchronously as a `SecurityError`, distinct from the privacy-conflated `NotAllowedError` it uses for a cancel or a missing credential, so it is safe to name. Any other unexpected ceremony exception now carries its name through (`error: <name>`) rather than collapsing to a bare `error`
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.43] - 2026-07-24
 
