@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.2] - 2026-09-28
+
+Adds an agent skill for the `jupyterlab-passkey` CLI to the repository.
+
+### Added
+
+- `.agents/skills/jupyterlab-passkey/SKILL.md` at the repository root tells an agent which vault and bridge commands keep a secret out of its output: `vault exec`, `vault copy` and `vault show` instead of printing a value, and `--in-browser` for a new secret. It covers reading, storing, `import`, unlock and recovery, passkeys per hostname, `passphrase` references and what each error asks for next. The skill is in the repository, not in the pip package; the README gives the `ln -s` line that makes it available to Claude Code
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.1.0] - 2026-09-28
 
 Adds a password vault that the Jupyter server holds, unlocked with a passkey or a recovery passphrase, for the terminal, the CLI and notebooks, which have no browser of their own.
@@ -30,8 +40,6 @@ Adds a password vault that the Jupyter server holds, unlocked with a passkey or 
 - A request body that is not valid JSON is no longer written to the server log at DEBUG level; these bodies carry a PRF, a passphrase or a secret
 - `passphrase` removes its staged secret and exits 1 when it cannot write the reference to stdout, instead of leaving the secret staged with nobody to remove it
 - A relay warning that cannot be written to stderr no longer makes the command exit 120
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.0.44] - 2026-08-04
 
