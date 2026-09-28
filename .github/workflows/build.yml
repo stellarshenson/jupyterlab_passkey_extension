@@ -168,4 +168,6 @@ jobs:
         with:
           # This package's npm/PyPI/pepy badges 404 until first release - ignore
           # only those four, scoped to the package name so other links still check.
-          ignore_links: "https://www.npmjs.com/package/jupyterlab_passkey_extension https://pypi.org/project/jupyterlab-passkey-extension.* https://pepy.tech/project/jupyterlab-passkey-extension https://static.pepy.tech/badge/jupyterlab-passkey-extension"
+          # http://proxy:3128 is the example proxy in DEF-VAULT-13's reproduction
+          # command (docs/defects.md); the host does not exist.
+          ignore_links: "https://www.npmjs.com/package/jupyterlab_passkey_extension https://pypi.org/project/jupyterlab-passkey-extension.* https://pepy.tech/project/jupyterlab-passkey-extension https://static.pepy.tech/badge/jupyterlab-passkey-extension http://proxy:3128"
