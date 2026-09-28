@@ -32,6 +32,12 @@ The `passphrase` and `copy` features are what make this usable when an AI agent 
 
 The CLI's and the bridge subcommands' `--help` are written to be read by an agent, and each of those subcommands carries worked examples.
 
+The package also ships an agent skill, `skills/jupyterlab-passkey/SKILL.md` inside the Python package. It tells an agent which vault and bridge commands keep a secret out of its output, and what each error asks for next. To make it available to Claude Code, link it into the skills directory:
+
+```bash
+ln -s "$(python -c 'import jupyterlab_passkey_extension as m, os; print(os.path.dirname(m.__file__))')/skills/jupyterlab-passkey" ~/.claude/skills/jupyterlab-passkey
+```
+
 > [!IMPORTANT]
 > This is not a sandbox, and it is not a defence against a hostile caller. Any process running as your uid can also read the relay it points at (a kernel key or a `0600` file). What it buys is that a secret is never _incidentally_ captured - not echoed to a terminal, not printed into a transcript, not left in `~/.bash_history` or a process argument, and not broadcast in a notification payload.
 
