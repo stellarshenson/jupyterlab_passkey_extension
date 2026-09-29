@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.3] - 2026-09-29
+
+Adds a design document for the password vault.
+
+### Added
+
+- `docs/design-vault.md` describes the vault: the file format and its encryption, the unlock paths, the key holders and what each protects, the passkey hostnames, the requests that need a proof, the path each value takes to each client, the REST API, the security limits and the configuration. It states that a passkey is recorded for the hostname in the browser tab, so a server on localhost behind proxies records the hostname the user opens
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.1.2] - 2026-09-28
 
 Adds an agent skill for the `jupyterlab-passkey` CLI to the repository.
@@ -9,8 +19,6 @@ Adds an agent skill for the `jupyterlab-passkey` CLI to the repository.
 ### Added
 
 - `.agents/skills/jupyterlab-passkey/SKILL.md` at the repository root tells an agent which vault and bridge commands keep a secret out of its output: `vault exec`, `vault copy` and `vault show` instead of printing a value, and `--in-browser` for a new secret. It covers reading, storing, `import`, unlock and recovery, passkeys per hostname, `passphrase` references and what each error asks for next. The skill is in the repository, not in the pip package; the README gives the `ln -s` line that makes it available to Claude Code
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.1.0] - 2026-09-28
 

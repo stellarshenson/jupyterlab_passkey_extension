@@ -11,3 +11,5 @@ Progress logs for background jobs in this project.
 - `passkey-cli.log` - output of a manual `jupyterlab-passkey` run (on-demand: notify trigger → ceremony → relay read)
 - `ci-<short sha>.log` - poll of the GitHub Actions runs for one pushed commit: time, then each run's name, status, conclusion and id
 - `rebuild-r<N>.log` - rebuild before adversarial review round N: lint check, jest, `make install`, Galata on port 8899, review screenshots
+- `lint-<version>.log` - `jlpm run lint:check` output before the release of that version
+- `publish-<version>.log` - `make publish` output for that version: tests, version bump, build, npm and PyPI upload, metadata commit
