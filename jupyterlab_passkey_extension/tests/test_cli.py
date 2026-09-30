@@ -1261,6 +1261,9 @@ def test_a_bare_call_prints_the_help_on_stderr_only(monkeypatch, capsys):
     # help goes nowhere, never to stdout, which carries results.
     monkeypatch.setattr(cli, "_ignore_hangup", lambda: None)
     monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey"])
+    # Python 3.14 argparse colours the help when FORCE_COLOR is set; PYTHON_COLORS=0
+    # outranks every colour variable.
+    monkeypatch.setenv("PYTHON_COLORS", "0")
     assert cli.main() == 2
     out, err = capsys.readouterr()
     assert out == "" and err.startswith("usage:") and "vault" in err
