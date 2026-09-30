@@ -1,7 +1,7 @@
 {
     "name": "jupyterlab_passkey_extension",
-    "version": "1.1.3",
-    "description": "Jupyterlab extension to allow passkeys to be captured by Jupyterlab with supporting API, CLI etc - to allow internal functionality such as vaults or secrets to be using the passkey functionality of the user's browser or operating system",
+    "version": "1.1.4",
+    "description": "JupyterLab extension that gives the terminal, scripts, CLIs and AI agents on the Jupyter server the passkeys of the user's browser or operating system, moves secrets between the browser and local processes without printing them, and keeps a password vault that a passkey unlocks",
     "keywords": [
         "jupyter",
         "jupyterlab",

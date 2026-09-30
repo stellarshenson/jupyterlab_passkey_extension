@@ -10,6 +10,11 @@ from jupyterlab.galata import configure_jupyter_server
 
 configure_jupyter_server(c)
 
+# The GalaxaHub message-of-the-day extension, where installed, opens its own tab at lab
+# start. Galata waits for the Launcher tab to be active, so every test would time out
+# in page.goto(). Ignored where the extension is not installed.
+c.GalaxaHubMotd.open_on_start = False
+
 # configure_jupyter_server pins port 8888 with port_retries=0, so the server dies
 # rather than move when that port is taken - which is what stopped this suite running
 # beside a developer's own lab. Kept in lockstep with playwright.config.js, which reads

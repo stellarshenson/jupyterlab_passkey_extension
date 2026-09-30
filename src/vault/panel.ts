@@ -686,7 +686,7 @@ export class VaultPanel extends Widget {
       if (this._view === 'settings') {
         this._renderSettings(s);
       } else if (!s.initialized) {
-        this._renderCreate(s);
+        this._renderCreate();
       } else if (!s.unlocked) {
         this._renderLocked(s);
       } else {
@@ -789,15 +789,8 @@ export class VaultPanel extends Widget {
     }
   }
 
-  private _renderCreate(s: IStatus): void {
+  private _renderCreate(): void {
     const section = el('div', `${C}-empty`);
-    const hint = el('p', `${C}-hint`);
-    hint.append(
-      'No vault at ',
-      pathValue(s.path),
-      ' yet. A vault keeps passwords encrypted under a key that your passkey, or a recovery passphrase, unlocks.'
-    );
-    section.appendChild(hint);
     if (isIpAddress(this._host)) {
       // Said before the passphrase is typed: here the vault gets no passkey.
       section.appendChild(el('p', `${C}-hint`, sentence(ipAddressAdvice())));

@@ -52,7 +52,9 @@ test = [
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
-    "pytest-jupyter[server]>=0.6.0"
+    "pytest-jupyter[server]>=0.6.0",
+    # The Galata test server: ui-tests/jupyter_server_test_config.py imports jupyterlab.galata
+    "jupyterlab>=4.6,<5"
 ]
 
 [tool.hatch.version]

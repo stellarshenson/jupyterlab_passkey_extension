@@ -497,17 +497,8 @@ describe('VaultPanel', () => {
         )
       })
     );
-    expect(text(panel)).toContain(
-      'No vault at ~/.local/share/jupyterlab-passkey/vault.json yet.'
-    );
-    // Drawn as the cog view draws it: one element per part.
-    expect(
-      Array.from(
-        panel.node.querySelectorAll(
-          '.jp-PasskeyVaultPanel-hint .jp-PasskeyVaultPanel-pathValue > span'
-        )
-      ).map(part => part.textContent)
-    ).toEqual(['~/', '.local/', 'share/', 'jupyterlab-passkey/', 'vault.json']);
+    // The button alone: the vault file path is in the cog view.
+    expect(panel.node.querySelector('.jp-PasskeyVaultPanel-hint')).toBeNull();
     expect(button(panel, 'Create vault')).toBeTruthy();
   });
 
@@ -2575,6 +2566,18 @@ describe('VaultPanel', () => {
       expect(text(panel)).toContain(
         'Vault file~/.local/share/jupyterlab-passkey/vault.json'
       );
+      // One element per part, so a line breaks after a slash.
+      expect(
+        Array.from(
+          panel.node.querySelectorAll('.jp-PasskeyVaultPanel-pathValue > span')
+        ).map(part => part.textContent)
+      ).toEqual([
+        '~/',
+        '.local/',
+        'share/',
+        'jupyterlab-passkey/',
+        'vault.json'
+      ]);
       button(panel, 'Open settings').click();
       expect(openSettings).toHaveBeenCalled();
     });
