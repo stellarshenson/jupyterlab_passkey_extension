@@ -2,6 +2,28 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.6] - 2026-09-30
+
+Writes the vault help for agents, ships the agent skill in the wheel, and removes the text from the vault panel's create view.
+
+### Added
+
+- The wheel installs the agent skill at `<sys.prefix>/share/jupyter/agents/skills/jupyterlab-passkey-extension/SKILL.md`; the README gives the two link lines that make it readable to an agent
+
+### Changed
+
+- The `--help` of every `jupyterlab-passkey vault` subcommand states what the command prints, whether it waits for the user, and that a locked vault is unlocked first, and ends with examples. The top-level `--help` lists the environment variables the CLI reads; `vault --help` lists the two the Jupyter server reads
+- The agent skill moved to `.agents/skills/jupyterlab-passkey-extension/SKILL.md` and now holds only the rules the help cannot state, pointing at `--help` for commands and flags
+- The vault panel shows only the Create vault button when there is no vault, plus the advice to open JupyterLab by hostname when the page was opened by IP address. The vault path is in the cog view
+- The package description names the passkey bridge, the secret handover between browser and local processes, and the vault
+- The `test` extra installs `jupyterlab>=4.6,<5`, which the Galata test server imports
+
+### Fixed
+
+- The test suite passes in a shell that sets `FORCE_COLOR`
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.1.3] - 2026-09-29
 
 Adds a design document for the password vault.
@@ -9,8 +31,6 @@ Adds a design document for the password vault.
 ### Added
 
 - `docs/design-vault.md` describes the vault: the file format and its encryption, the unlock paths, the key holders and what each protects, the passkey hostnames, the requests that need a proof, the path each value takes to each client, the REST API, the security limits and the configuration. It states that a passkey is recorded for the hostname in the browser tab, so a server on localhost behind proxies records the hostname the user opens
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.1.2] - 2026-09-28
 
