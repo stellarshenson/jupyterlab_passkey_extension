@@ -348,6 +348,10 @@ examples:
   jupyterlab-passkey vault copy github/api           # to the browser clipboard
   jupyterlab-passkey vault exec --env GITHUB_TOKEN=github/api -- gh repo list
   jupyterlab-passkey vault status
+
+server side - the Jupyter server reads these, not this CLI; set them where it starts:
+  JLAB_PASSKEY_VAULT         the vault file (default $XDG_DATA_HOME/jupyterlab-passkey/vault.json)
+  JLAB_PASSKEY_VAULT_HOLDER  auto (default), keyctl, gpg-agent or memory: where the unlocked key is kept
 """.strip("\n"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -365,8 +369,13 @@ examples:
              f"recovery passphrase kept offline - two more passkey prompts and a name)")
     registering = [slow, debugp]
 
-    def add(name, help_, fn, parents=both):
-        p = vs.add_parser(name, help=help_, description=help_, parents=parents)
+    def add(name, help_, fn, parents=both, description=None, examples=()):
+        # The description says what the command does, what it prints and whether it
+        # waits for the browser; an agent reads this help instead of a manual.
+        epilog = "examples:\n" + "\n".join(f"  {line}" for line in examples) if examples else None
+        p = vs.add_parser(name, help=help_, description=(description or help_).strip("\n"),
+                          epilog=epilog, parents=parents,
+                          formatter_class=argparse.RawDescriptionHelpFormatter)
         p.set_defaults(vault_func=fn)
         return p
 
@@ -374,34 +383,92 @@ examples:
         p.add_argument("--in-browser", action="store_true",
                        help="type the secret in a JupyterLab dialog instead of this terminal")
 
-    p = add("init", "create the vault: a recovery passphrase, then a passkey", cmd_init, registering)
+    unlocks_first = "A locked vault is unlocked first: a notification to click, then the passkey."
+
+    p = add("init", "create the vault: a recovery passphrase, then a passkey", cmd_init, registering,
+            description="""
+create the vault: a recovery passphrase, typed twice, then a passkey registered in the
+JupyterLab tab, which asks for the passphrase once more as its proof. Store the recovery
+passphrase offline: it is the only way in without a passkey. Each browser step raises a
+notification and waits for the click (--timeout, default 600 s).
+""",
+            examples=('jupyterlab-passkey vault init --in-browser --label "Work laptop"',
+                      "jupyterlab-passkey vault init --no-passkey        # recovery passphrase only"))
     in_browser(p)
     p.add_argument("--label", help="name for the passkey (default: the hostname)")
     p.add_argument("--no-passkey", action="store_true", help="skip registering a passkey")
 
-    p = add("unlock", "unlock with the passkey, or the recovery passphrase", cmd_unlock)
+    p = add("unlock", "unlock with the passkey, or the recovery passphrase", cmd_unlock,
+            description="""
+unlock the vault for the unlockMinutes setting (default 240 minutes), for every client:
+this CLI, the Python Vault class and the panel. With a passkey: a notification to click,
+then the passkey prompt in the tab. A passkey works only in a tab opened at the hostname it
+was registered on, or a subdomain of it; a tab at an IP address cannot use one.
+""",
+            examples=("jupyterlab-passkey vault unlock",
+                      "jupyterlab-passkey vault unlock --recovery --in-browser"))
     p.add_argument("--recovery", action="store_true", help="use the recovery passphrase")
     in_browser(p)
 
-    add("lock", "lock the vault now", cmd_lock, instant)
-    add("status", "state, time left, key holder and its capabilities", cmd_status, instant)
+    add("lock", "lock the vault now", cmd_lock, instant,
+        description="""
+remove the unlocked key from its key holder now. A value that copy or show staged and
+nobody clicked stays until its relay expires; lock does not remove it.
+""",
+        examples=("jupyterlab-passkey vault lock",))
+    add("status", "state, time left, key holder and its capabilities", cmd_status, instant,
+        description="""
+print the vault path, locked or unlocked with the time left, the key holder and what it
+protects on this host, the registered passkeys and the unlock duration. Never waits.
+""",
+        examples=("jupyterlab-passkey vault status",))
 
-    p = add("list", "entry names and metadata, never passwords", cmd_list)
+    p = add("list", "entry names and metadata, never passwords", cmd_list,
+            description=f"""
+print one line per entry, tab-separated: name, username, category, url. Never passwords.
+{unlocks_first}
+""",
+            examples=("jupyterlab-passkey vault list",
+                      "jupyterlab-passkey vault list --category infrastructure --json"))
     p.add_argument("--category", help="only this category")
     p.add_argument("--json", action="store_true", help="print JSON")
 
-    p = add("get", "print one value to stdout (unlocks if needed)", cmd_get)
-    p.add_argument("name")
-    p.add_argument("--field", default="password", choices=READABLE)
+    p = add("get", "print one value to stdout (unlocks if needed)", cmd_get,
+            description=f"""
+print one field of an entry and a newline to stdout. Whatever reads stdout receives the
+value: send it to a pipe or a file, not to a screen or a log. To give a value to a
+command, use exec; to give it to the user, use copy or show.
+{unlocks_first}
+""",
+            examples=("jupyterlab-passkey vault get github/api | gh auth login --with-token",
+                      "jupyterlab-passkey vault get github/api --field username"))
+    p.add_argument("name", help="entry name, such as github/api")
+    p.add_argument("--field", default="password", choices=READABLE, help="the field (default password)")
 
-    for name, help_, fn in (("add", "add an entry; the password is prompted, piped or generated", cmd_add),
-                            ("edit", "change fields of an entry", cmd_edit)):
-        p = add(name, help_, fn)
-        p.add_argument("name")
-        p.add_argument("-u", "--username")
-        p.add_argument("--url")
-        p.add_argument("-c", "--category")
-        p.add_argument("--notes")
+    new_password = f"""
+The password comes from a hidden prompt typed twice, from stdin, from a JupyterLab dialog
+with --in-browser (the value twice; Submit stays disabled until both match, Cancel exits
+1), or from --generate; never from an option. --generate makes {GENERATE_LENGTH} characters by default,
+without l I 1 | O 0, quotes, backslash, backtick and space.
+{unlocks_first}
+"""
+    for name, help_, fn, description, examples in (
+            ("add", "add an entry; the password is prompted, piped or generated", cmd_add,
+             "add an entry." + new_password,
+             ('jupyterlab-passkey vault add github/api -u me -c infrastructure --url https://github.com --in-browser',
+              "jupyterlab-passkey vault add db/prod -u app --generate --length 32",
+              "<producer> | jupyterlab-passkey vault add gitlab/api -u me    # the password on stdin")),
+            ("edit", "change fields of an entry", cmd_edit,
+             "change fields of an entry; a field not given keeps its value. --password or\n"
+             "--generate also sets a new password." + new_password,
+             ("jupyterlab-passkey vault edit github/api --password --in-browser",
+              'jupyterlab-passkey vault edit github/api --notes "rotated 2026-09"'))):
+        p = add(name, help_, fn, description=description, examples=examples)
+        p.add_argument("name", help="entry name, such as github/api")
+        p.add_argument("-u", "--username", help="the account name")
+        p.add_argument("--url", help="where the entry is used")
+        p.add_argument("-c", "--category", help="a group name that list --category filters on")
+        p.add_argument("--notes", help="free text")
         p.add_argument("--generate", action="store_true", help="generate the password")
         p.add_argument("--length", type=int, help=f"generated password length (default {GENERATE_LENGTH})")
         in_browser(p)
@@ -409,40 +476,110 @@ examples:
             p.add_argument("--password", action="store_true",
                            help="also set a new password (prompted, piped or --in-browser)")
 
-    p = add("rm", "remove an entry", cmd_rm)
-    p.add_argument("name")
+    p = add("rm", "remove an entry", cmd_rm,
+            description=f"""
+remove an entry. It cannot be restored.
+{unlocks_first}
+""",
+            examples=("jupyterlab-passkey vault rm old/entry",))
+    p.add_argument("name", help="entry name, such as github/api")
 
-    p = add("generate", "print a random password", cmd_generate, instant)
+    p = add("generate", "print a random password", cmd_generate, instant,
+            description=f"""
+print a random password to stdout without storing it: {GENERATE_LENGTH} characters by default, 8 to
+256, without l I 1 | O 0, quotes, backslash, backtick and space. Never waits.
+""",
+            examples=("jupyterlab-passkey vault generate --length 32 --no-symbols",))
     p.add_argument("--length", type=int, help=f"password length (default {GENERATE_LENGTH})")
-    p.add_argument("--no-symbols", action="store_true")
+    p.add_argument("--no-symbols", action="store_true", help="letters and digits only")
 
-    for name, help_, fn in (("copy", "put a value on the browser clipboard", cmd_copy),
-                            ("show", "show a value in the browser as a distorted image", cmd_show)):
-        p = add(name, help_, fn)
-        p.add_argument("name")
-        p.add_argument("--field", default="password", choices=READABLE)
+    staged = f"""
+The server stages the value and raises a notification; the value never enters this
+process. Exit 0 means the notification was raised, not that it was clicked: nothing is
+reported back. An unclicked value stays staged for 900 s on the kernel keyring, or until
+reboot in /dev/shm; lock does not remove it.
+{unlocks_first}
+"""
+    for name, help_, fn, description, examples in (
+            ("copy", "put a value on the browser clipboard", cmd_copy,
+             "put a value on the browser clipboard: the click copies it." + staged,
+             ("jupyterlab-passkey vault copy github/api",
+              "jupyterlab-passkey vault copy github/api --field username")),
+            ("show", "show a value in the browser as a distorted image", cmd_show,
+             f"show a value in the browser as a distorted image, to type elsewhere; at most\n"
+             f"{relay.MAX_CODE_CHARS} characters." + staged,
+             ("jupyterlab-passkey vault show wifi/guest",))):
+        p = add(name, help_, fn, description=description, examples=examples)
+        p.add_argument("name", help="entry name, such as github/api")
+        p.add_argument("--field", default="password", choices=READABLE, help="the field (default password)")
 
-    p = add("exec", "run a command with vault values in its environment", cmd_exec)
+    p = add("exec", "run a command with vault values in its environment", cmd_exec,
+            description=f"""
+run COMMAND with vault values in its environment only. This process becomes the command,
+so the exit status, the signals and the output are the command's own: do not run a
+command that prints the values it was given. Fields: {", ".join(READABLE)}.
+{unlocks_first}
+""",
+            examples=("jupyterlab-passkey vault exec --env GITHUB_TOKEN=github/api -- gh repo list",
+                      "jupyterlab-passkey vault exec --env DB_USER=db/prod:username --env DB_PASS=db/prod -- ./migrate.sh"))
     p.add_argument("--env", action="append", default=[], metavar="VAR=NAME[:FIELD]",
                    help="set VAR to the entry's field (password by default); repeatable")
     p.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND [ARGS...]")
 
-    p = add("import", "add entries from a JSON list (pass-cli `service` names accepted)", cmd_import)
-    p.add_argument("file", nargs="?", default="-", metavar="FILE")
+    p = add("import", "add entries from a JSON list (pass-cli `service` names accepted)", cmd_import,
+            description=f"""
+add entries from a JSON list in FILE or on stdin: objects with name (or pass-cli's
+service), username, password, url, category and notes. Names that already exist are
+skipped and listed. Refuses a terminal on stdin. A file of entries holds plaintext
+passwords: pipe them in instead of writing one.
+{unlocks_first}
+""",
+            examples=("<producer> | jupyterlab-passkey vault import",))
+    p.add_argument("file", nargs="?", default="-", metavar="FILE", help="JSON file (default: stdin)")
 
-    pk = vs.add_parser("passkey", help="register, list or remove passkeys")
+    pk = vs.add_parser("passkey", help="register, list or remove passkeys",
+                       description="register, list or remove the vault's passkeys")
     pks = pk.add_subparsers(dest="passkey_op", required=True, metavar="PASSKEY_COMMAND")
-    p = pks.add_parser("add", help="register a passkey (a notification to click; the browser asks "
-                                   "for an existing passkey, or the recovery passphrase)",
-                       parents=registering)
+
+    def add_passkey_command(name, help_, fn, parents, description, examples):
+        p = pks.add_parser(name, help=help_, description=description.strip("\n"),
+                           epilog="examples:\n" + "\n".join(f"  {line}" for line in examples),
+                           parents=parents, formatter_class=argparse.RawDescriptionHelpFormatter)
+        p.set_defaults(vault_func=fn)
+        return p
+
+    p = add_passkey_command(
+        "add", "register a passkey (a notification to click; the browser asks for an existing "
+               "passkey, or the recovery passphrase)", cmd_passkey_add, registering,
+        """
+register a passkey in the JupyterLab tab: a notification to click, then the browser asks
+for a proof - a passkey already registered for this hostname, or the recovery passphrase -
+and creates the new passkey. It opens the vault only from the tab's hostname or a
+subdomain of it; a tab at an IP address cannot register one. Waits for each step
+(--timeout, default 600 s).
+""",
+        ('jupyterlab-passkey vault passkey add --label "Work laptop"',))
     p.add_argument("--label", help="name for the passkey (default: the hostname)")
-    p.set_defaults(vault_func=cmd_passkey_add)
-    p = pks.add_parser("list", help="cred_id, label, hostname and date of each passkey", parents=instant)
-    p.set_defaults(vault_func=cmd_passkey_list)
-    p = pks.add_parser("rm", help="remove a passkey", parents=instant)
-    p.add_argument("--cred-id", required=True, metavar="B64URL")
-    p.set_defaults(vault_func=cmd_passkey_rm)
+    add_passkey_command(
+        "list", "cred_id, label, hostname and date of each passkey", cmd_passkey_list, instant,
+        """
+print one line per passkey, tab-separated: cred_id, label, hostname, creation time. Never
+waits.
+""",
+        ("jupyterlab-passkey vault passkey list",))
+    p = add_passkey_command(
+        "rm", "remove a passkey", cmd_passkey_rm, instant,
+        """
+remove a passkey; the vault must be unlocked. The cred_id comes from passkey list.
+""",
+        ("jupyterlab-passkey vault passkey rm --cred-id <cred_id>",))
+    p.add_argument("--cred-id", required=True, metavar="B64URL", help="the passkey's cred_id, as passkey list prints it")
 
     p = add("recovery", "replace the recovery passphrase: the current one, then the new one twice",
-            cmd_recovery)
+            cmd_recovery,
+            description="""
+replace the recovery passphrase: the current one, then the new one twice. Needs a
+terminal or --in-browser, because it reads two secrets. Store the new one offline.
+""",
+            examples=("jupyterlab-passkey vault recovery --in-browser",))
     in_browser(p)

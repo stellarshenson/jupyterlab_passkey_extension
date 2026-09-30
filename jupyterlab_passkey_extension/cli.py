@@ -707,6 +707,17 @@ Exit status is the contract: 0 succeeded, 1 refused, timed out, or could not rea
 server (the reason is on stderr), 2 an argument the parser rejects; `vault exec`
 exits with its command's status. Only the result goes to stdout, so `$(...)` captures it
 clean and progress chatter cannot contaminate it.
+
+The server is the first one `jupyter server list` reports. With two servers running, the
+notification can appear in a tab nobody watches, and the command times out.
+
+environment:
+  JUPYTERHUB_API_TOKEN, JPY_API_TOKEN  the token; under JupyterHub it outranks the server's own
+  JUPYTER_TOKEN                        the token when `jupyter server list` reports no server
+  JUPYTER_PORT, JUPYTERHUB_SERVICE_PREFIX
+                                       where the server answers when the list reports none
+  JLAB_PASSKEY_RELAY_BACKEND           auto (default), keyctl or shm: where a relayed secret waits
+  JLAB_PASSKEY_RELAY_DIR               the shm relay directory (default /dev/shm/jlab-passkey-<uid>)
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

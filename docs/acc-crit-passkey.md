@@ -947,6 +947,12 @@ The `jupyterlab-passkey vault` subcommands
   - test-tags: UNIT
   - log: 2026-09-26T19:44:24Z @kj added
   - log: 2026-09-28T00:23:26Z @kj closed
+- [x] `ACC-VAULT-186` **Help written for agents** - MEDIUM; every vault subcommand's --help says what it does and prints, whether it waits for the browser and for how long, and gives at least one example; an agent holding only the help runs each command correctly
+  - evidence: pytest test_vault_cli.py test_every_vault_subcommand_help_has_a_description_and_examples: 16 vault subcommands and 3 passkey subcommands; pytest 436/436 2026-09-30 v1.1.5
+  - test: pytest: every vault subcommand parser has a description and an examples: epilog
+  - test-tags: UNIT
+  - log: 2026-09-30T09:37:47Z @kj added
+  - log: 2026-09-30T09:43:44Z @kj closed
 
 ## Vault Python API `PYAPI`
 
@@ -1471,4 +1477,10 @@ What the README and the CLI reference say about the vault
   - log: 2026-09-26T15:32:11Z @kj added
   - log: 2026-09-27T06:46:19Z @kj amended text "docs/cli-reference.md documents every `vault` subcommand with an example" -> "MEDIUM; docs/cli-reference.md documents every vault subcommand, with worked examples for the common ones"; reason: the examples cover 8 of 16 subcommands; the rest are documented by table and help
   - log: 2026-09-28T00:23:26Z @kj closed
+- [x] `ACC-VDOCS-187` **Agent skill in the wheel** - MEDIUM; the agent skill is .agents/skills/jupyterlab-passkey-extension/SKILL.md, under 30 lines, pointing at --help and carrying only rules --help cannot state; the wheel installs it at share/jupyter/agents/skills/jupyterlab-passkey-extension; README gives both link lines
+  - evidence: pytest test_agent_skill.py: installed copy equals repository copy, skill under 30 lines points at --help; wheel 1.1.5 lists share/jupyter/agents/skills/jupyterlab-passkey-extension/SKILL.md; pytest 436/436 2026-09-30
+  - test: pytest test_agent_skill.py: the installed copy equals the repository copy
+  - test-tags: UNIT
+  - log: 2026-09-30T09:37:47Z @kj added
+  - log: 2026-09-30T09:43:44Z @kj closed
 

@@ -30,12 +30,20 @@ The way in is the **CLI** (`jupyterlab-passkey`, shipped with the package). Behi
 
 The `passphrase` and `copy` features are what make this usable when an AI agent is at the keyboard. An agent can run `jupyterlab-passkey passphrase --once --prompt "GitHub token"`; the user types the token into a browser dialog, and the agent receives a reference it hands to a consumer - so the token never appears in the agent's output, its context, or the session transcript. In the other direction, `pass-cli get github/api ... | jupyterlab-passkey copy` moves a secret from a vault to the user's clipboard through a pipe between two processes, so the bytes never pass through the agent either.
 
-The CLI's and the bridge subcommands' `--help` are written to be read by an agent, and each of those subcommands carries worked examples.
+The CLI's `--help` is written to be read by an agent: every subcommand, bridge and vault alike, says what it prints and whether it waits for the browser, and carries worked examples.
 
-The repository carries an agent skill, [`.agents/skills/jupyterlab-passkey/SKILL.md`](.agents/skills/jupyterlab-passkey/SKILL.md). It tells an agent which vault and bridge commands keep a secret out of its output, and what each error asks for next. Agents that read `.agents/skills` find it in a clone of this repository; to make it available to Claude Code everywhere, link it into the skills directory from the clone:
+The agent skill, [`.agents/skills/jupyterlab-passkey-extension/SKILL.md`](.agents/skills/jupyterlab-passkey-extension/SKILL.md), points an agent at that help and adds only the rules the help cannot state: which commands keep a secret out of its output, and when to tell the user that a command waits. The skill ships in the repository and in the wheel, which installs it at `<sys.prefix>/share/jupyter/agents/skills/jupyterlab-passkey-extension/SKILL.md`. No agent reads that directory, and a wheel cannot write into the home directory, so one of the two links below is what makes it readable.
+
+After `pip install`, with the Python that runs the lab:
 
 ```bash
-ln -s "$PWD/.agents/skills/jupyterlab-passkey" ~/.claude/skills/jupyterlab-passkey
+mkdir -p ~/.agents/skills && ln -sfn "$(python -c 'import sys; print(sys.prefix)')/share/jupyter/agents/skills/jupyterlab-passkey-extension" ~/.agents/skills/jupyterlab-passkey-extension
+```
+
+From a clone, into Claude Code:
+
+```bash
+ln -sfn "$PWD/.agents/skills/jupyterlab-passkey-extension" ~/.claude/skills/jupyterlab-passkey-extension
 ```
 
 > [!IMPORTANT]

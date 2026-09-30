@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import pathlib
+import re
 import signal
 import subprocess
 import sys
@@ -671,3 +672,29 @@ def test_the_package_exports_vault():
     from jupyterlab_passkey_extension import vault
 
     assert vault.Vault is client.Vault
+
+
+def _help(monkeypatch, capsys, *words):
+    monkeypatch.setattr(cli, "_ignore_hangup", lambda: None)
+    monkeypatch.setenv("PYTHON_COLORS", "0")
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", *words, "--help"])
+    with pytest.raises(SystemExit) as exit_:
+        cli.main()
+    assert exit_.value.code == 0
+    return capsys.readouterr().out
+
+
+def test_every_vault_subcommand_help_has_a_description_and_examples(monkeypatch, capsys):
+    # The agent skill sends an agent to --help first, so each subcommand's help says what
+    # it does and prints, and shows it run (ACC-VAULT-186).
+    listed = re.compile(r"^    ([a-z]+) ", re.M)
+    commands = listed.findall(_help(monkeypatch, capsys, "vault"))
+    passkey = listed.findall(_help(monkeypatch, capsys, "vault", "passkey"))
+    assert "exec" in commands and "rm" in passkey
+    words = [("vault", c) for c in commands if c != "passkey"]
+    words += [("vault", "passkey", c) for c in passkey]
+    for w in words:
+        text = _help(monkeypatch, capsys, *w)
+        description = text.split("\n\n")[1]
+        examples = text.partition("\nexamples:\n")[2]
+        assert description.strip() and "jupyterlab-passkey vault " in examples, w

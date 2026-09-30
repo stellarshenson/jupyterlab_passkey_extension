@@ -71,6 +71,7 @@ exclude = [".github", "binder"]
 "jupyterlab_passkey_extension/labextension" = "share/jupyter/labextensions/jupyterlab_passkey_extension"
 "install.json" = "share/jupyter/labextensions/jupyterlab_passkey_extension/install.json"
 "jupyter-config/server-config" = "etc/jupyter/jupyter_server_config.d"
+".agents/skills/jupyterlab-passkey-extension" = "share/jupyter/agents/skills/jupyterlab-passkey-extension"
 
 [tool.hatch.build.hooks.version]
 path = "jupyterlab_passkey_extension/_version.py"

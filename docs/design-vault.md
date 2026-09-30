@@ -323,7 +323,7 @@ The CLI is `jupyterlab-passkey vault <command>`. Its full reference is [cli-refe
 - **No secret on the command line** - a new secret comes from a hidden prompt typed twice, from stdin, from a browser dialog with `--in-browser`, or from `--generate`
 - **Locked vault** - a read raises the unlock notification, then runs once more
 - **Waiting** - a browser step waits 120 s for the click by default, 600 s for `vault init` and `vault passkey add`
-- **Agent skill** - `.agents/skills/jupyterlab-passkey/SKILL.md` tells an agent which commands keep a value out of its output
+- **Agent skill** - `.agents/skills/jupyterlab-passkey-extension/SKILL.md`, also installed with the wheel, points an agent at `--help` and states which commands keep a value out of its output
 
 ### 9.2 Python API
 
