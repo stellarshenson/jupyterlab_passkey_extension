@@ -237,6 +237,7 @@ This section describes which hostname a passkey belongs to. WebAuthn binds each 
 - **One passkey per hostname** - JupyterLab opened at two hostnames needs a passkey registered at each
 - **IP address** - a tab at an IP address such as `127.0.0.1` cannot use a passkey; the tab refuses and names the hostnames that have passkeys
 - **Two requests to register** - a WebAuthn `create` makes the passkey, then a `get` with a new random `prf_salt` returns the PRF, because some authenticators, Windows Hello among them, return a PRF only at `get`
+- **Two dialogs to register** - the user names the passkey in a dialog before the `create`, and confirms it in a second dialog before the `get`; each button is the click the browser needs for its request
 - **Name in the passkey manager** - `JupyterLab vault - <UTC time> - <hostname>`, so two passkeys of one vault can be told apart
 - **No PRF** - an authenticator that returns no PRF cannot hold a vault key; the registration fails and names the passkey the browser created, so the user can delete it
 
@@ -339,7 +340,7 @@ The panel sits in the right sidebar by default; the `sidebar` setting moves it t
 
 - **Refresh** - while visible, it reads the state and, when unlocked, the entry list every 15 s, and at once when it is shown again
 - **Changes from elsewhere** - a new `revision` or a changed slot list redraws the panel, so changes made from the CLI or another tab appear
-- **Eye button** - a password shows only after a new passkey request, even when the vault is unlocked
+- **Eye button** - a password shows only after a new passkey request, even when the vault is unlocked; while that request runs the eye shows a spinner and the line under the field reads `Waiting for your passkey`
 - **Cog view** - the key holder and its capabilities, the passkeys with hostname and date, register and remove a passkey, change the recovery passphrase, and the unlock duration with a button that opens the settings
 
 ## 10. Security limits

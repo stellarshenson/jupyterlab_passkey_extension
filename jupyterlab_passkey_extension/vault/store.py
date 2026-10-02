@@ -78,8 +78,13 @@ def b64url_decode(s):
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
+def _stamp(when):
+    """A date as the vault writes it: UTC, to the second."""
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _stamp(datetime.now(timezone.utc))
 
 
 # --------------------------------------------------------------------------- #

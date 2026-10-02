@@ -63,21 +63,35 @@ async function submitSecret(page: any, value: string, twice: boolean) {
   await dialog.getByRole('button', { name: 'Submit' }).click();
 }
 
-async function confirmPasskey(page: any) {
+/** The two registration dialogs: name the passkey, then confirm it once created. */
+async function nameAndConfirmPasskey(page: any, name = '') {
   const dialog = page.locator('.jp-Dialog');
-  const confirm = dialog.getByRole('button', { name: 'Confirm passkey' });
+  const create = dialog.getByRole('button', { name: 'Create passkey' });
   // Create vault first waits for the server to create the vault, which took about
   // 5 s in this suite - longer than an expect's default wait.
-  await confirm.waitFor({ timeout: 20000 });
+  await create.waitFor({ timeout: 20000 });
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
+    'Name the new passkey'
+  );
   // Typing starts in the name field, not on the button.
-  await expect(dialog.getByLabel('Name', { exact: true })).toBeFocused();
+  const field = dialog.getByLabel('Name', { exact: true });
+  await expect(field).toBeFocused();
+  await field.fill(name);
+  await create.click();
+  const confirm = dialog.getByRole('button', { name: 'Confirm passkey' });
+  await confirm.waitFor({ timeout: 20000 });
+  // The confirm step names the passkey and has nothing to type.
+  await expect(dialog.locator('input')).toHaveCount(0);
+  await expect(dialog).toContainText(
+    `The passkey "${name || 'localhost'}" was created`
+  );
   await confirm.click();
 }
 
 async function createVault(page: any): Promise<void> {
   await panel(page).getByRole('button', { name: 'Create vault' }).click();
   await submitSecret(page, RECOVERY, true);
-  await confirmPasskey(page);
+  await nameAndConfirmPasskey(page);
   await expect(state(page)).toContainText('Unlocked');
   // A status refresh can show Unlocked while Create still waits on the last passkey
   // request, and the panel ignores a click while an action runs.
@@ -99,12 +113,45 @@ test('create vault sets the recovery passphrase, registers a passkey and unlocks
   page
 }) => {
   await openVault(page);
+  // With no vault the sidebar icon is one shade dimmer than the other icons.
+  const tabIcon = page
+    .locator(`.lm-TabBar-tab[data-id="${PANEL_ID}"] path`)
+    .first();
+  await expect(tabIcon).toHaveClass(/jp-icon4/);
   await createVault(page);
+  // With a vault it has their colour.
+  await expect(tabIcon).toHaveClass(/jp-icon3/);
+  const fill = (locator: any) =>
+    locator.evaluate((path: Element) => getComputedStyle(path).fill);
+  const other = page
+    .locator(
+      `.jp-SideBar .lm-TabBar-tab:not([data-id="${PANEL_ID}"]) path.jp-icon3`
+    )
+    .first();
+  expect(await fill(tabIcon)).toBe(await fill(other));
   await openCog(page);
   await expect(
     panel(page).locator('.jp-PasskeyVaultPanel-passkey')
   ).toHaveCount(1);
   await expect(panel(page)).toContainText('localhost');
+});
+
+test('a hidden panel leaves the settings view', async ({ page }) => {
+  await openVault(page);
+  await createVault(page);
+  await openCog(page);
+  const register = panel(page).getByRole('button', {
+    name: 'Register new passkey'
+  });
+  await expect(register).toBeVisible();
+  await page.sidebar.close('right');
+  await page.sidebar.openTab(PANEL_ID);
+  // Shown again, the panel is in its main view.
+  await expect(panel(page).getByLabel('Filter by name')).toBeVisible();
+  await expect(register).toHaveCount(0);
+  await expect(
+    panel(page).getByRole('button', { name: 'Vault settings and security' })
+  ).not.toHaveClass(/jp-mod-active/);
 });
 
 test('lock, then unlock with the passkey', async ({ page }) => {
@@ -168,6 +215,18 @@ test('an entry opens read-only in a popup, and its password shows only after a p
     hasText: 'github/api'
   });
   await expect(row).toHaveText('github/apime');
+  // The filter box is filled with the panel's background, as the search field of
+  // the AI assistants panel, not with the colour of a dialog input.
+  expect(
+    await panel(page)
+      .getByPlaceholder('Filter entries')
+      .evaluate(
+        (input: HTMLElement) =>
+          getComputedStyle(input).backgroundColor ===
+          getComputedStyle(input.closest('.jp-PasskeyVaultPanel') as Element)
+            .backgroundColor
+      )
+  ).toBe(true);
   await row.click();
   await expect(dialog.locator('.jp-Dialog-header')).toHaveText('github/api');
   for (const label of ['Name', 'Username', 'Password', 'URL', 'Notes']) {
@@ -201,8 +260,37 @@ test('an entry opens read-only in a popup, and its password shows only after a p
     'data-icon',
     'jupyterlab-passkey-extension:eye-off'
   );
-  await dialog.getByRole('button', { name: 'Show password' }).click();
+  // The reveal is held on its way to the server: until it ends the eye turns a
+  // spinner and the line under the field says what is waited for.
+  // JupyterLab ends every request URL with a cache-busting query.
+  const REVEAL = /\/vault\/reveal(\?|$)/;
+  let release = (): void => undefined;
+  const held = new Promise<void>(resolve => (release = resolve));
+  await page.route(REVEAL, async (route: any) => {
+    await held;
+    await route.continue();
+  });
+  const show = dialog.getByRole('button', { name: 'Show password' });
+  const spinner = dialog.locator('.jp-PasskeyVaultForm-spinner');
+  const waiting = dialog.getByText('Waiting for your passkey');
+  // The line's place is kept while it is empty, so the eye stays under the pointer.
+  const eyeTop = async () =>
+    (await dialog.locator('.jp-PasskeyVaultForm-eye').boundingBox())!.y;
+  const before = await eyeTop();
+  await show.click();
+  await expect(spinner).toBeVisible();
+  await expect(waiting).toBeVisible();
+  await expect(show).toHaveAttribute('aria-busy', 'true');
+  expect(await eyeTop()).toBe(before);
+  expect(
+    await spinner.evaluate(node => getComputedStyle(node).animationName)
+  ).toBe('jp-passkey-vault-spin');
+  release();
   await expect(password).toHaveValue(SECRET);
+  await expect(spinner).toHaveCount(0);
+  await expect(waiting).toHaveCount(0);
+  expect(await eyeTop()).toBe(before);
+  await page.unroute(REVEAL);
   await expect(password).toHaveAttribute('type', 'text');
   await expect(eyeIcon).toHaveAttribute(
     'data-icon',
@@ -345,16 +433,16 @@ test('a passkey is registered with a passkey as the proof, or the recovery passp
     await rows.nth(n).getByRole('button', { name: 'Confirm remove' }).click();
   };
 
-  // This host has a passkey: it is the proof, then a click lets the browser create
-  // the new one. No passphrase is asked.
+  // This host has a passkey: it is the proof, then the user names the new passkey
+  // and that click lets the browser create it. No passphrase is asked.
   await register.click();
   await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
-    'Register new passkey'
+    'Name the new passkey'
   );
   await expect(dialog.locator('input[type="password"]')).toHaveCount(0);
-  await dialog.getByRole('button', { name: 'Create passkey' }).click();
-  await confirmPasskey(page);
+  await nameAndConfirmPasskey(page, 'Work laptop');
   await expect(rows).toHaveCount(2);
+  await expect(rows.nth(1)).toContainText('Work laptop');
   const removeBox = await rows
     .nth(1)
     .getByRole('button', { name: 'Remove' })
@@ -371,7 +459,7 @@ test('a passkey is registered with a passkey as the proof, or the recovery passp
     'Register new passkey'
   );
   await submitSecret(page, RECOVERY, false);
-  await confirmPasskey(page);
+  await nameAndConfirmPasskey(page);
   await expect(rows).toHaveCount(1);
 });
 

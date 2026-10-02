@@ -280,6 +280,133 @@ def test_import(ready, monkeypatch, capsys, tmp_path):
         run(monkeypatch, "vault", "import")
 
 
+def _names(monkeypatch, capsys):
+    capsys.readouterr()
+    run(monkeypatch, "vault", "list", "--json")
+    return {e["name"]: e for e in json.loads(capsys.readouterr().out)}
+
+
+def test_import_refuses_a_field_it_does_not_know_and_imports_nothing(ready, monkeypatch, capsys):
+    # pass-cli's own JSON spells the fields `Username`, `URL`, `Notes`: dropped without a
+    # word, the entry would be counted as added with those fields empty.
+    items = [{"name": "ok/one", "password": "p"},
+             {"name": "bad/two", "password": "p", "Username": "u"}]
+    with pytest.raises(SystemExit, match="imported entry 2: `Username` is not a field - the fields are "
+                                         "name, username, password, url, category, notes, created, updated; "
+                                         "nothing was imported"):
+        run(monkeypatch, "vault", "import", stdin=json.dumps(items))
+    assert set(_names(monkeypatch, capsys)) == {"github/api"}
+
+
+def test_import_keeps_the_dates_an_entry_gives(ready, monkeypatch, capsys):
+    items = [{"name": "dated/both", "password": "p",
+              # as pass-cli writes them: nine fraction digits and an offset
+              "created": "2026-03-23T20:37:13.736252971+01:00", "updated": "2026-05-26T15:23:19Z"},
+             {"name": "dated/none", "password": "p", "created": "", "updated": None}]
+    run(monkeypatch, "vault", "import", stdin=json.dumps(items))
+    entries = _names(monkeypatch, capsys)
+    assert (entries["dated/both"]["created"], entries["dated/both"]["updated"]) == \
+        ("2026-03-23T19:37:13Z", "2026-05-26T15:23:19Z")
+    # Without a date the entry gets the time of the import.
+    none = entries["dated/none"]
+    assert none["created"] == none["updated"] and none["created"] > "2026-05-26T15:23:19Z"
+    bad = [{"name": "dated/bad", "password": "p", "created": "yesterday"}]
+    with pytest.raises(SystemExit, match="imported entry 1: `created` must be a date and time"):
+        run(monkeypatch, "vault", "import", stdin=json.dumps(bad))
+    assert "dated/bad" not in _names(monkeypatch, capsys)
+
+
+FAKE_PASS_CLI = r"""#!%s
+import json, sys
+print("Master password: ", file=sys.stderr)
+if sys.stdin.readline() != "old-master\n":
+    print("Error: failed to unlock vault: decryption failed", file=sys.stderr)
+    print("Usage:\n  pass-cli", file=sys.stderr)
+    sys.exit(1)
+ENTRIES = [
+    {"Service": "mig/one", "Username": "kj", "URL": "https://one.example", "Category": "infra",
+     "Notes": "{\"k\": 1}", "CreatedAt": "2026-03-23T20:37:13.736252971+01:00",
+     "UpdatedAt": "2026-05-26T15:23:19.01327459+02:00", "HasTOTP": False, "UsageCount": 81,
+     "GitRepositories": None},
+    {"Service": "-dash", "Username": "", "URL": "", "Category": "", "Notes": "",
+     "CreatedAt": "2026-04-01T00:00:00Z", "UpdatedAt": "2026-04-01T00:00:00Z", "HasTOTP": False},
+    {"Service": "totp/one", "Username": "x", "HasTOTP": True},
+]
+PASSWORDS = {"mig/one": "pw one with spaces ", "-dash": "pw-dash"}
+if sys.argv[1:] == ["list", "--format", "json"]:
+    print(json.dumps(ENTRIES, indent=2))
+elif sys.argv[1:-1] == ["get", "--field", "password", "--quiet", "--no-clipboard", "--"]:
+    print(PASSWORDS[sys.argv[-1]])
+else:
+    print("Error: unexpected arguments " + repr(sys.argv[1:]), file=sys.stderr)
+    sys.exit(2)
+""" % sys.executable
+
+
+@pytest.fixture
+def pass_cli(tmp_path, monkeypatch):
+    """A `pass-cli` on PATH that answers as the real one does when stdin is a pipe."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / "pass-cli"
+    script.write_text(FAKE_PASS_CLI)
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    return bin_dir
+
+
+def test_import_from_pass_cli_moves_every_field_and_names_the_totp_entries(ready, pass_cli, monkeypatch, capsys):
+    run(monkeypatch, "vault", "import", "--pass-cli", stdin="old-master\n")
+    err = capsys.readouterr().err
+    assert "reading 3 entries from pass-cli" in err and "added 2, skipped 0" in err
+    assert "not imported, pass-cli holds a TOTP secret for them: totp/one" in err
+    entries = _names(monkeypatch, capsys)
+    assert set(entries) == {"github/api", "mig/one", "-dash"}
+    one = entries["mig/one"]
+    assert (one["username"], one["url"], one["category"], one["notes"]) == \
+        ("kj", "https://one.example", "infra", '{"k": 1}')
+    assert (one["created"], one["updated"]) == ("2026-03-23T19:37:13Z", "2026-05-26T13:23:19Z")
+    # The password as pass-cli printed it, less the one newline it ends the line with.
+    run(monkeypatch, "vault", "get", "mig/one")
+    assert capsys.readouterr().out == "pw one with spaces \n"
+    # A second run adds nothing: every name exists.
+    run(monkeypatch, "vault", "import", "--pass-cli", stdin="old-master\n")
+    assert "added 0, skipped 2: " in capsys.readouterr().err
+
+
+def test_import_from_pass_cli_asks_the_vault_before_pass_cli(server, pass_cli, monkeypatch, capsys):
+    read = vcli._pass_cli
+
+    def recorded(master, *args):
+        server.calls.append(f"pass-cli {args[0]}")
+        return read(master, *args)
+
+    monkeypatch.setattr(vcli, "_pass_cli", recorded)
+    # No vault: said before the master password is read or pass-cli is run.
+    with pytest.raises(SystemExit, match="no vault at .* vault init"):
+        run(monkeypatch, "vault", "import", "--pass-cli", stdin="")
+    assert server.calls == []
+    # A locked vault: the unlock is asked first, as the help says.
+    run(monkeypatch, "vault", "init", stdin=PASS + "\n")
+    run(monkeypatch, "vault", "lock")
+    server.calls.clear()
+    run(monkeypatch, "vault", "import", "--pass-cli", stdin="old-master\n")
+    assert server.calls == [client.UNLOCK_COMMAND, "pass-cli list", "pass-cli get", "pass-cli get"]
+    assert "added 2, skipped 0" in capsys.readouterr().err
+
+
+def test_import_from_pass_cli_says_why_it_stopped(ready, pass_cli, monkeypatch, capsys):
+    # pass-cli's own reason, not its usage text.
+    with pytest.raises(SystemExit, match=r"^pass-cli list failed: failed to unlock vault: decryption failed$"):
+        run(monkeypatch, "vault", "import", "--pass-cli", stdin="wrong\n")
+    with pytest.raises(SystemExit, match="--pass-cli reads the pass-cli vault and takes no FILE"):
+        run(monkeypatch, "vault", "import", "--pass-cli", "export.json", stdin="old-master\n")
+    (pass_cli / "pass-cli").unlink()
+    with pytest.raises(SystemExit, match="pass-cli is not on PATH"):
+        run(monkeypatch, "vault", "import", "--pass-cli", stdin="old-master\n")
+    assert set(_names(monkeypatch, capsys)) == {"github/api"}
+
+
 # --------------------------------------------------------------------------- #
 # copy, show, exec
 # --------------------------------------------------------------------------- #

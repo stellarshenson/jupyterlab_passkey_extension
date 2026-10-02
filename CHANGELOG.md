@@ -2,6 +2,29 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.13] - 2026-10-02
+
+Asks the name of a new passkey before the browser creates it, shows that a password reveal is waiting for the passkey, and imports from a pass-cli vault.
+
+### Added
+
+- `jupyterlab-passkey vault import --pass-cli` reads a pass-cli vault. It checks and unlocks the vault first, asks for the pass-cli master password at a hidden prompt, on stdin or with `--in-browser`, imports every entry with its fields and dates, and names the entries it leaves out because pass-cli holds a TOTP secret for them
+- `vault import` keeps the `created` and `updated` dates an entry gives
+- The entry popup shows a spinner in place of the eye and the line `Waiting for your passkey` from the click on the eye until the passkey request ends
+
+### Changed
+
+- Registering a passkey asks its name in a dialog `Name the new passkey` before the browser creates the passkey. The dialog `Confirm the new passkey` that follows has no field
+- The sidebar icon of the vault has the colour of the other sidebar icons while a vault exists, and is dimmer while none exists
+- A panel hidden while its settings view was open shows its main view when shown again
+- The filter box of the panel is filled with the panel background
+
+### Fixed
+
+- `vault import` refuses an entry with a field it does not know, names the field, and imports nothing. Before, it dropped the field and counted the entry as added
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.1.6] - 2026-09-30
 
 Writes the vault help for agents, ships the agent skill in the wheel, and removes the text from the vault panel's create view.
@@ -21,8 +44,6 @@ Writes the vault help for agents, ships the agent skill in the wheel, and remove
 ### Fixed
 
 - The test suite passes in a shell that sets `FORCE_COLOR`
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.1.3] - 2026-09-29
 

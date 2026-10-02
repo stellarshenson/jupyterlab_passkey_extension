@@ -254,7 +254,9 @@
   border: 1px solid var(--jp-border-color2);
   border-radius: 2px;
   outline: none;
-  background: var(--jp-input-background, var(--jp-layout-color1));
+
+  /* The panel's own background, as the search field of the AI assistants panel. */
+  background: var(--jp-layout-color1);
   color: var(--jp-ui-font-color1);
   font-family: var(--jp-ui-font-family);
   font-size: var(--jp-ui-font-size1);
@@ -386,6 +388,23 @@ button.jp-mod-styled.jp-PasskeyVaultForm-eye {
 .jp-PasskeyVaultForm-eye svg {
   width: 16px;
   height: 16px;
+}
+
+/* The eye while its passkey request runs: a turning ring the size of the icon. */
+.jp-PasskeyVaultForm-spinner {
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--jp-border-color1);
+  border-top-color: var(--jp-brand-color1);
+  border-radius: 50%;
+  animation: jp-passkey-vault-spin 0.8s linear infinite;
+}
+
+@keyframes jp-passkey-vault-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /*
@@ -580,12 +599,17 @@ button.jp-mod-styled.jp-PasskeyVaultPanel-button.jp-mod-warn.jp-mod-confirm {
   font-size: var(--jp-ui-font-size1);
 }
 
+/*
+ * The read-only popup keeps the empty line's place: its one help line comes and
+ * goes during a reveal, and a line entering the layout would move the eye.
+ */
 .jp-PasskeyVaultForm-help {
+  min-height: 1lh;
   color: var(--jp-ui-font-color2);
   font-size: var(--jp-ui-font-size0);
 }
 
-.jp-PasskeyVaultForm-help:empty {
+.jp-PasskeyVaultForm:not(.jp-mod-view) .jp-PasskeyVaultForm-help:empty {
   display: none;
 }
 

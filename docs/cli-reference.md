@@ -187,7 +187,7 @@ The password vault the Jupyter server keeps - see the [README](../README.md#vaul
 | `copy NAME [--field F]`                                                                                  | puts a value on the browser clipboard                                                                   |
 | `show NAME [--field F]`                                                                                  | shows a value in the browser as a distorted image                                                       |
 | `exec --env VAR=NAME[:FIELD] -- CMD`                                                                     | becomes CMD (exec) with vault values in its environment - its signals and exit status are CMD's own     |
-| `import [FILE]`                                                                                          | adds entries from a JSON list; skips names that exist                                                   |
+| `import [FILE]`, `import --pass-cli [--in-browser]`                                                      | adds entries from a JSON list, or from a pass-cli vault; skips names that exist                         |
 | `passkey add [--label L]`, `passkey list`, `passkey rm --cred-id ID`                                     | registers, lists or removes passkeys                                                                    |
 | `recovery [--in-browser]`                                                                                | replaces the recovery passphrase: the current one, then the new one twice; a terminal or `--in-browser` |
 
@@ -198,7 +198,8 @@ The password vault the Jupyter server keeps - see the [README](../README.md#vaul
 - **Generated passwords** - leave out characters that look alike on the Show image or a phone keyboard (`l I 1 | O 0`), and quotes, backslash, backtick and space
 - **Server environment** - `JLAB_PASSKEY_VAULT` (the file) and `JLAB_PASSKEY_VAULT_HOLDER` (the key holder) are read by the Jupyter server, not by the CLI; set them where the server starts
 - **Copy and show** - the server stages the value in the one-shot relay the `copy` and `show` flows already use, so the value never enters the CLI process. Nothing is reported back: the click is what copies or shows it. An unclicked one stays in the relay - until its TTL on keyctl, until reboot on shm - and a `vault lock` does not remove it
-- **Import** - a JSON list of objects with `name` (or pass-cli's `service`), `username`, `password`, `url`, `category` and `notes`; a `notes` object is stored as JSON text
+- **Import** - a JSON list of objects with `name` (or `service`), `username`, `password`, `url`, `category`, `notes`, `created` and `updated`; a `notes` object is stored as JSON text. `created` and `updated` are dates such as `2026-03-23T20:37:13Z`; an entry without them gets the time of the import. Any other field is refused by name and nothing is imported
+- **Import from pass-cli** - `import --pass-cli` runs `pass-cli list --format json` and one `pass-cli get` per entry, about a second each, and takes the pass-cli master password from a hidden prompt, from stdin or, with `--in-browser`, from a JupyterLab dialog. It changes nothing in the pass-cli vault but its usage counters. An entry with a TOTP secret is named and not imported, because the vault has no field for it
 - **Errors** - one line on stderr and exit `1` for a locked vault, a missing entry, a missing vault or an unreachable server
 - **Debug** - `--debug` adds the server's key-holder decision: the holder chosen, its capabilities, and why each earlier holder was skipped
 
@@ -211,6 +212,7 @@ jupyterlab-passkey vault get github/api --field username
 jupyterlab-passkey vault copy github/api
 jupyterlab-passkey vault exec --env GITHUB_TOKEN=github/api --env GH_USER=github/api:username -- gh repo list
 jupyterlab-passkey vault import export.json
+jupyterlab-passkey vault import --pass-cli --in-browser                 # every entry of a pass-cli vault
 jupyterlab-passkey vault passkey add --label "Work laptop"
 jupyterlab-passkey vault status --debug
 ```

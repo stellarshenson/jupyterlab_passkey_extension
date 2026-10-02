@@ -3,6 +3,7 @@
 Progress logs for background jobs in this project.
 
 - `make-install.log` - output of `make install` (clean, version bump, prod labextension build via `python -m build`, wheel install)
+- `test-extra-install.log` - output of `pip install "jupyterlab_passkey_extension[test]"` (pytest and the server test dependencies, after a `make install` in a rebuilt container)
 - `ui-tests-install.log` - output of `jlpm install` + `jlpm playwright install chromium` in `ui-tests/` (Galata + Playwright deps and browser for the integration suite)
 - `jlpm-build.log` - output of `jlpm build` (dev tsc + labextension rebuild; no version bump)
 - `galata-cli.log` - output of the Galata integration run (`playwright test`) for the passkey E2E suite; pass `JUPYTER_TEST_PORT` when a lab already holds 8888

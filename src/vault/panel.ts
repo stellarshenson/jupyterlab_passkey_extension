@@ -144,6 +144,17 @@ function el<K extends keyof HTMLElementTagNameMap>(
 const C = 'jp-PasskeyVaultPanel';
 
 /**
+ * The sidebar tab icon while a vault exists: the lock of `lockIcon` in the colour
+ * class of the other sidebar icons. `lockIcon` is one shade dimmer (`jp-icon4`),
+ * which reads as inactive, and stays the tab icon while there is no vault.
+ */
+const vaultIcon = new LabIcon({
+  name: 'jupyterlab-passkey-extension:vault',
+  svgstr:
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" viewBox="0 0 24 23"><path class="jp-icon3" fill="#616161" d="M12 17a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h1V6a5 5 0 0 1 5-5 5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3"/></svg>'
+});
+
+/**
  * A path as one element per part, each ending in its slash, so that the line breaks
  * after a slash: a hyphen at a line end would read as a hyphenation mark, not as part
  * of the name.
@@ -265,6 +276,15 @@ export class VaultPanel extends Widget {
 
   protected onBeforeHide(msg: Message): void {
     this._stopTimer();
+    // A panel shown again starts in its main view, not in the settings it was left in.
+    if (this._view === 'settings') {
+      this._view = 'main';
+      this._armed = null;
+      // An action that runs redraws when it ends (`_act`).
+      if (!this._busy) {
+        this._render();
+      }
+    }
   }
 
   /** Moved to the other sidebar, the panel is detached with no hide message. */
@@ -492,12 +512,15 @@ export class VaultPanel extends Widget {
         }
         try {
           // The passphrase just chosen is the proof the server asks for a new passkey.
-          await registerWithProof(
+          const registered = await registerWithProof(
             this._api,
             { current: value },
             '',
             this._host
           );
+          if (!registered) {
+            throw new VaultError(0, 'passkey registration cancelled');
+          }
         } catch (e) {
           throw new PartlyDone(
             `Vault created, but no passkey was registered (${describeFailure(e)}). Add one under Vault settings and security (the cog).`,
@@ -764,6 +787,10 @@ export class VaultPanel extends Widget {
     this._statusLine.replaceChildren();
     if (!s) {
       return;
+    }
+    const icon = s.initialized ? vaultIcon : lockIcon;
+    if (this.title.icon !== icon) {
+      this.title.icon = icon;
     }
     const remaining = this._remaining();
     const unlocked = s.unlocked && remaining !== null && remaining > 0;

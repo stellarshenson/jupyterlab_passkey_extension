@@ -79,6 +79,14 @@ The vault server side, CLI and Python API
   - root-cause: 2026-09-26T17:18:30Z @kj urllib.request.urlopen builds its opener from the proxy environment and has no loopback exemption without no_proxy
   - log: 2026-09-26T17:18:30Z @kj added
   - log: 2026-09-26T17:18:36Z @kj closed
+- [x] `DEF-VAULT-25` **Import drops fields whose keys it does not know** - MEDIUM; `vault import` reads only lowercase `name`/`service`, `username`, `password`, `url`, `category`, `notes`; any other key, such as pass-cli's `Username`, `URL`, `Notes`, is dropped and the entry is still counted as added; `jupyterlab_passkey_extension/vault/service.py`
+  - evidence: pytest test_import_refuses_a_field_it_does_not_know_and_imports_nothing; pytest 441/441, review round 2 clean, build 1.1.12 2026-10-02
+  - repro: pipe `[{"name":"x","password":"p","Username":"u"}]` to `vault import`; `added 1`, username empty
+  - test-tags: UNIT
+  - root-cause: 2026-10-01T22:58:57Z @kj `_check_fields` copies only the keys in `FIELDS` and reports nothing about the rest
+  - log: 2026-10-01T22:58:57Z @kj added
+  - log: 2026-10-01T22:59:00Z @kj reported: found migrating 36 pass-cli entries; `pass-cli list --format json` emits `Service`, `Username`, `URL`, `Category`, `Notes`, so its output cannot be piped in as the help suggests
+  - log: 2026-10-02T02:01:57Z @kj closed
 
 ## Vault panel `PANEL`
 
@@ -199,4 +207,30 @@ The vault sidebar panel, its dialogs and styles
   - log: 2026-09-27T04:20:09Z @kj closed
   - log: 2026-09-27T04:43:20Z @kj amended text "Create vault (or Register, when a server restart locked the vault) loses the server after the browser made the passkey; the amber line naming the unused passkey goes when the server answers again, because that read finds the vault changed; deferred: keeping the line across that read left stale lines in review rounds 17-19" -> "MINOR; Create vault (or Register, when a server restart locked the vault) loses the server after the browser made the passkey; the amber line naming the unused passkey went when the server answered again, because that read found the vault changed"; reason: closed in round 24; the deferral clause is in the log
   - log: 2026-09-27T04:43:20Z @kj edited test-tags "MANUAL" -> "UNIT"
+- [x] `DEF-PANEL-23` **Passkey is named inside the confirm dialog** - MEDIUM; after the browser creates the passkey, dialog `Confirm the new passkey` holds the Name field, prefilled `default`; its title, text and `Confirm passkey` button speak only of confirming; expected: name the passkey first, then confirm it; `src/vault/dialogs.ts`
+  - related: ACC-PANEL-138 - the name is now given before the browser creates the passkey
+  - evidence: jest 'names the passkey in its own dialog, then confirms it in a dialog with no field' and 'creates no passkey when the naming dialog is cancelled'; Galata passkey test names it Work laptop; jest 216/216, Galata 37/37, review round 2 clean, build 1.1.12 2026-10-02
+  - repro: unlocked vault, cog view, add a passkey, let the browser create it, read the next dialog
+  - test-tags: UNIT
+  - root-cause: 2026-10-01T22:54:12Z @kj `PasskeyNameForm` is the body of `confirmNewPasskey`, the step whose click starts the PRF request; naming has no step of its own
+  - log: 2026-10-01T22:54:12Z @kj added
+  - log: 2026-10-01T22:54:14Z @kj reported: "this is misleading; user is to first name the passkey and then confirm it"
+  - log: 2026-10-02T02:01:40Z @kj closed
+- [x] `DEF-PANEL-24` **Sidebar icon dark grey when a vault exists** - MINOR; the vault's sidebar tab icon is dark grey, the colour of an inactive icon, also when a vault exists; expected: dark grey only with no vault, the colour of the other sidebar icons when a vault exists; `src/vault/panel.ts`
+  - evidence: jest 'draws the sidebar icon in the colour of the other icons only while a vault exists'; Galata create-vault test: class jp-icon4 before, jp-icon3 after, fill equal to a neighbour icon; jest 216/216, Galata 37/37, build 1.1.12 2026-10-02
+  - repro: dark theme, vault present, compare the lock icon in the sidebar with its neighbours
+  - test-tags: UNIT
+  - root-cause: 2026-10-01T22:54:59Z @kj `lockIcon` of `@jupyterlab/ui-components` carries class `jp-icon4`, the other sidebar icons `jp-icon3`; the panel sets `title.icon` once, whatever the vault state
+  - log: 2026-10-01T22:54:59Z @kj added
+  - log: 2026-10-01T22:55:03Z @kj reported: "passkey icon, it is dark gray (indicates inactive). This is ok if no vault; Must be the same colour like other icons when active (vault present)"
+  - log: 2026-10-02T02:01:57Z @kj closed
+- [x] `DEF-PANEL-26` **Filter box has the wrong colour** - MINOR; the panel's filter box is filled with the dialog input colour and differs from the search field of the AI assistants panel beside it; one design language: filled with the panel background
+  - evidence: Galata 'an entry opens read-only in a popup': the filter box background equals the panel background; the check failed on build 1.1.9 and passes on 1.1.12; Galata 37/37 2026-10-02
+  - repro: unlock the vault in a dark theme and compare the filter box with the AI assistants panel's search field
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-10-02T01:16:13Z @kj filter input background is `--jp-input-background`; the AI assistants search field uses `--jp-layout-color1`. The placeholder colour is the same in both: JupyterLab's `.jp-ThemedContainer input::placeholder` rule overrides either panel's own
+  - log: 2026-10-02T01:07:28Z @kj added
+  - log: 2026-10-02T01:16:09Z @kj edited text "the panel's filter box is filled with the dialog input colour and differs from the search field of the AI assistants panel beside it; one design language: filled with the panel background, placeholder in the faint text colour" -> "the panel's filter box is filled with the dialog input colour and differs from the search field of the AI assistants panel beside it; one design language: filled with the panel background"
+  - log: 2026-10-02T01:16:13Z @kj root-cause updated "2026-10-02T01:07:28Z @kj filter input background is `--jp-input-background`; the AI assistants search field uses `--jp-layout-color1` and placeholder `--jp-ui-font-color3`" -> "filter input background is `--jp-input-background`; the AI assistants search field uses `--jp-layout-color1`. The placeholder colour is the same in both: JupyterLab's `.jp-ThemedContainer input::placeholder` rule overrides either panel's own"
+  - log: 2026-10-02T02:01:57Z @kj closed
 

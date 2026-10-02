@@ -212,7 +212,7 @@ from jupyterlab_passkey_extension.vault import Vault
 token = Vault().get("github/api")  # unlocks with the passkey (a notification) if locked
 ```
 
-No command takes a secret as an option value. `copy` and `show` have the server stage the value for the existing clipboard and image flows, so it never enters the CLI process. `import FILE` adds entries from a JSON list and accepts pass-cli's `service` field as the name. Every subcommand: [docs/cli-reference.md](docs/cli-reference.md#vault).
+No command takes a secret as an option value. `copy` and `show` have the server stage the value for the existing clipboard and image flows, so it never enters the CLI process. `import FILE` adds entries from a JSON list, and `import --pass-cli` adds every entry of a pass-cli vault. Every subcommand: [docs/cli-reference.md](docs/cli-reference.md#vault).
 
 ### Where the unlocked key is kept
 

@@ -9,8 +9,10 @@ put in an exception message, so a refusal can be reported and logged as it is.
 import hashlib
 import json
 import os
+import re
 import secrets
 import string
+from datetime import datetime
 
 from .. import relay
 from . import holders, store
@@ -28,6 +30,13 @@ FIELDS = ("username", "password", "url", "category", "notes")
 READABLE = ("password", "username", "url", "category", "notes", "name")
 MAX_NAME = 200
 MAX_FIELD = 65536
+# What an imported entry can give besides its name. A field outside these is refused:
+# dropped without a word, an import would report an entry as added and lose part of it.
+IMPORT_DATES = ("created", "updated")
+IMPORT_FIELDS = ("name", *FIELDS, *IMPORT_DATES)
+# ISO 8601 as other password managers export it: fractional seconds of any length
+# (pass-cli writes nine digits), and a zone as Z, an offset, or none (taken as UTC).
+_IMPORT_DATE = re.compile(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})?")
 # A generated password is read off the Show image or typed on a phone, so characters
 # that look alike there are left out: l I 1 | O 0. So are quotes, backslash, backtick
 # and space.
@@ -84,6 +93,19 @@ def _check_fields(fields):
                 raise VaultError(f"`{key}` must be text of at most {MAX_FIELD} characters")
             clean[key] = value
     return clean
+
+
+def _check_date(n, key, value):
+    """The date `key` of imported entry `n`, as the vault writes dates."""
+    match = _IMPORT_DATE.fullmatch(value) if isinstance(value, str) else None
+    if match:
+        day, time, zone = match.groups()
+        try:
+            return store._stamp(datetime.fromisoformat(f"{day}T{time}{'+00:00' if zone in (None, 'Z') else zone}"))
+        except ValueError:
+            pass
+    raise VaultError(f"imported entry {n}: `{key}` must be a date and time such as 2026-03-23T20:37:13Z; "
+                     "nothing was imported")
 
 
 def generate(length=GENERATE_LENGTH, symbols=True):
@@ -297,22 +319,28 @@ class VaultService:
         if not isinstance(items, list):
             raise VaultError("import takes a JSON list of entries")
         clean = []
-        for item in items:
+        for n, item in enumerate(items, 1):
             if not isinstance(item, dict):
                 raise VaultError("each imported entry must be a JSON object")
+            unknown = sorted(set(item) - {"service", *IMPORT_FIELDS})
+            if unknown:
+                raise VaultError(f"imported entry {n}: `{unknown[0]}` is not a field - the fields are "
+                                 f"{', '.join(IMPORT_FIELDS)}; nothing was imported")
             name = item.get("name", item.get("service"))
-            clean.append((_check_name(name), _check_fields(item)))
+            # An empty date is an absent one, as other managers write a date they do not have.
+            dates = {key: _check_date(n, key, item[key]) for key in IMPORT_DATES if item.get(key)}
+            clean.append((_check_name(name), _check_fields(item), dates))
 
         def change(entries):
             names = {e["name"] for e in entries}
             added, skipped = 0, []
-            for name, fields in clean:
+            for name, fields, dates in clean:
                 if name in names:
                     skipped.append(name)
                     continue
                 now = store._now()
                 entries.append({"name": name, **{k: fields.get(k, "") for k in FIELDS},
-                                "created": now, "updated": now})
+                                "created": dates.get("created", now), "updated": dates.get("updated", now)})
                 names.add(name)
                 added += 1
             return {"added": added, "skipped": skipped}

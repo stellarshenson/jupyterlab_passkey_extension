@@ -143,7 +143,11 @@ it('registers with the recovery passphrase when this host passkey does not answe
   browser();
   mockAskSecret.mockResolvedValue({ accepted: true, value: 'recovery words' });
   mockLaunch.mockImplementation(async (dialog: any) => ({
-    button: { accept: dialog.options.title === 'Confirm the new passkey' }
+    button: {
+      accept: ['Name the new passkey', 'Confirm the new passkey'].includes(
+        dialog.options.title
+      )
+    }
   }));
   await commands.get(REGISTER_COMMAND).execute({ nonce: 'n1', label: 'CLI' });
   expect(mockAskSecret.mock.calls[0][0]).toBe(
@@ -174,7 +178,11 @@ it('clears a kept line through a CLI step, as the next action does', async () =>
   browser();
   mockAskSecret.mockResolvedValue({ accepted: true, value: 'recovery words' });
   mockLaunch.mockImplementation(async (dialog: any) => ({
-    button: { accept: dialog.options.title === 'Confirm the new passkey' }
+    button: {
+      accept: ['Name the new passkey', 'Confirm the new passkey'].includes(
+        dialog.options.title
+      )
+    }
   }));
   mockPanel._message = {
     kind: 'error',
@@ -210,7 +218,11 @@ it('proves a registration against the vault the server serves now, not the one t
   });
   mockAskSecret.mockResolvedValue({ accepted: true, value: 'recovery words' });
   mockLaunch.mockImplementation(async (dialog: any) => ({
-    button: { accept: dialog.options.title === 'Confirm the new passkey' }
+    button: {
+      accept: ['Name the new passkey', 'Confirm the new passkey'].includes(
+        dialog.options.title
+      )
+    }
   }));
   await commands.get(REGISTER_COMMAND).execute({ nonce: 'n5', label: 'CLI' });
   expect(mockAskSecret.mock.calls[0][0]).toBe(

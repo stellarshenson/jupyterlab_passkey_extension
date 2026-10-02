@@ -166,18 +166,19 @@ export async function revealWithPasskey(
  * `create` makes the credential; a `get` then evaluates a fresh PRF salt, because
  * several authenticators (Windows Hello among them) return a PRF only at `get`.
  * `confirm` runs between the two and must come from a click: some browsers accept
- * one WebAuthn request per user gesture. It is offered `label` as the passkey's name
- * (empty when none was given, so the user is asked rather than handed the hostname)
- * and returns the name chosen, or null when the user backs out; an empty name falls
- * back to the hostname. `proof` is what the server asks for a new slot.
+ * one WebAuthn request per user gesture. It is shown the passkey's name and returns
+ * false when the user backs out. `label` is the name the user chose before this
+ * call; an empty one falls back to the hostname. `proof` is what the server asks
+ * for a new slot.
  */
 export async function registerPasskey(
   api: VaultApi,
   label: string,
-  confirm: (suggested: string) => Promise<string | null>,
+  confirm: (name: string) => Promise<boolean>,
   proof: Proof,
   host: string
 ): Promise<void> {
+  const name = label || host;
   // Host and time in the user name, so the passkeys the OS manager lists for this
   // vault can be told apart - to the second, so can a retry and the unused passkey
   // a failed attempt left.
@@ -203,8 +204,7 @@ export async function registerPasskey(
   })) as PublicKeyCredential;
 
   try {
-    const name = await confirm(label);
-    if (name === null) {
+    if (!(await confirm(name))) {
       throw new VaultError(0, 'passkey registration cancelled');
     }
 
@@ -231,7 +231,7 @@ export async function registerPasskey(
         rp_id: host,
         prf_salt: b64urlEncode(salt.buffer),
         prf: b64urlEncode(first as ArrayBuffer),
-        label: name || host
+        label: name
       },
       proof
     );

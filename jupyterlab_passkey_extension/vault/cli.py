@@ -13,6 +13,7 @@ import json
 import os
 import secrets
 import signal
+import subprocess
 import sys
 
 from .. import cli as _cli
@@ -263,17 +264,67 @@ def cmd_exec(a, vault):
         raise SystemExit(f"cannot run {command[0]}: {e}")
 
 
-def cmd_import(a, vault):
-    if a.file == "-" and sys.stdin.isatty():
-        raise SystemExit("refusing to read secrets from a terminal - pipe the JSON in or pass a FILE")
-    raw = _cli._read_stdin_or_file(a.file, "JSON file", "nothing to import", "{source} is not text")
+def _pass_cli(master, *args):
+    """The stdout of `pass-cli ARGS`. pass-cli reads its master password from stdin when
+    stdin is not a terminal, and prints its prompt on stderr."""
     try:
-        items = json.loads(raw)
+        done = subprocess.run(["pass-cli", *args], input=master + "\n", capture_output=True, text=True)
+    except FileNotFoundError:
+        raise SystemExit("pass-cli is not on PATH")
+    if done.returncode:
+        # Its own reason, never its stdout: that is where a password is printed.
+        errors = [line[len("Error:"):].strip() for line in done.stderr.splitlines() if line.startswith("Error:")]
+        raise SystemExit(f"pass-cli {args[0]} failed: {errors[-1] if errors else f'exit {done.returncode}'}")
+    return done.stdout
+
+
+def _pass_cli_items(a):
+    """The entries of the pass-cli vault as import takes them, and the names left out
+    because pass-cli holds a TOTP secret for them, which the vault has no field for."""
+    master = _read_secret(a, "pass-cli master password", twice=False)
+    try:
+        listing = json.loads(_pass_cli(master, "list", "--format", "json"))
     except ValueError as e:
-        raise SystemExit(f"not JSON: {e}")
+        raise SystemExit(f"pass-cli list printed no JSON: {e}")
+    _cli._say(f"reading {len(listing)} entries from pass-cli, about a second each")
+    items, with_totp = [], []
+    for e in listing:
+        if e.get("HasTOTP"):
+            with_totp.append(e["Service"])
+            continue
+        password = _pass_cli(master, "get", "--field", "password", "--quiet", "--no-clipboard", "--", e["Service"])
+        items.append({"name": e["Service"], "password": password.removesuffix("\n"),
+                      "username": e.get("Username"), "url": e.get("URL"), "category": e.get("Category"),
+                      "notes": e.get("Notes"), "created": e.get("CreatedAt"), "updated": e.get("UpdatedAt")})
+    return items, with_totp
+
+
+def cmd_import(a, vault):
+    with_totp = []
+    if a.pass_cli:
+        if a.file != "-":
+            raise SystemExit("--pass-cli reads the pass-cli vault and takes no FILE")
+        # The vault answers before pass-cli is asked: a missing vault and the unlock of
+        # a locked one come before the master password and a read of a second an entry.
+        s = vault.status()
+        if not s["initialized"]:
+            raise SystemExit(_say_status(s))
+        if not s["unlocked"]:
+            vault.unlock()
+        items, with_totp = _pass_cli_items(a)
+    else:
+        if a.file == "-" and sys.stdin.isatty():
+            raise SystemExit("refusing to read secrets from a terminal - pipe the JSON in or pass a FILE")
+        raw = _cli._read_stdin_or_file(a.file, "JSON file", "nothing to import", "{source} is not text")
+        try:
+            items = json.loads(raw)
+        except ValueError as e:
+            raise SystemExit(f"not JSON: {e}")
     result = vault._unlocked(lambda: request("POST", "import", {"entries": items}))
     skipped = result["skipped"]
     _cli._say(f"added {result['added']}, skipped {len(skipped)}" + (f": {', '.join(skipped)}" if skipped else ""))
+    if with_totp:
+        _cli._say(f"not imported, pass-cli holds a TOTP secret for them: {', '.join(with_totp)}")
     return 0
 
 
@@ -526,16 +577,27 @@ command that prints the values it was given. Fields: {", ".join(READABLE)}.
                    help="set VAR to the entry's field (password by default); repeatable")
     p.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND [ARGS...]")
 
-    p = add("import", "add entries from a JSON list (pass-cli `service` names accepted)", cmd_import,
+    p = add("import", "add entries from a JSON list, or from a pass-cli vault", cmd_import,
             description=f"""
-add entries from a JSON list in FILE or on stdin: objects with name (or pass-cli's
-service), username, password, url, category and notes. Names that already exist are
+add entries from a JSON list in FILE or on stdin: objects with name (or service),
+username, password, url, category, notes, created and updated. created and updated are
+dates such as 2026-03-23T20:37:13Z; without them the entry gets the time of the import.
+Any other field is refused by name and nothing is imported. Names that already exist are
 skipped and listed. Refuses a terminal on stdin. A file of entries holds plaintext
 passwords: pipe them in instead of writing one.
+
+--pass-cli reads the entries from this user's pass-cli vault instead: it runs
+`pass-cli list` and one `pass-cli get` per entry, about a second each, and changes
+nothing in that vault but its usage counters. The pass-cli master password comes from
+a hidden prompt, from stdin, or from a JupyterLab dialog with --in-browser. An entry
+with a TOTP secret is named and not imported: the vault has no field for it.
 {unlocks_first}
 """,
-            examples=("<producer> | jupyterlab-passkey vault import",))
+            examples=("<producer> | jupyterlab-passkey vault import",
+                      "jupyterlab-passkey vault import --pass-cli --in-browser"))
     p.add_argument("file", nargs="?", default="-", metavar="FILE", help="JSON file (default: stdin)")
+    p.add_argument("--pass-cli", action="store_true", help="import every entry of the pass-cli vault")
+    in_browser(p)
 
     pk = vs.add_parser("passkey", help="register, list or remove passkeys",
                        description="register, list or remove the vault's passkeys")

@@ -363,21 +363,30 @@ export class EntryView extends Widget {
       return;
     }
     this._pending = true;
-    this._help.textContent = '';
+    // The passkey prompt is the browser's and can open late or behind the window:
+    // the eye and the line under the field say the click was taken.
+    const spinner = document.createElement('span');
+    spinner.className = 'jp-PasskeyVaultForm-spinner';
+    this.eye.replaceChildren(spinner);
+    this.eye.setAttribute('aria-busy', 'true');
+    this._help.textContent = 'Waiting for your passkey';
     try {
       this.password.value = await this._reveal();
       this._revealed = true;
       this._show(true);
-      if (!this.password.value) {
-        this._help.textContent = 'This entry has no password';
-      }
+      this._help.textContent = this.password.value
+        ? ''
+        : 'This entry has no password';
     } catch (e) {
+      this._show(false);
       // A cancelled passkey prompt is the user's choice: the dots stay, nothing is said.
-      if (mapCeremonyError(e) !== 'not-allowed') {
-        this._help.textContent = `The password was not shown: ${describeFailure(e)}`;
-      }
+      this._help.textContent =
+        mapCeremonyError(e) === 'not-allowed'
+          ? ''
+          : `The password was not shown: ${describeFailure(e)}`;
     } finally {
       this._pending = false;
+      this.eye.removeAttribute('aria-busy');
     }
   }
 
@@ -438,16 +447,15 @@ export async function confirmDelete(name: string): Promise<boolean> {
   return result.button.label === 'Delete';
 }
 
-/** The confirm step's body: what happens next, and a name for the passkey. */
+/** The naming step's body: what happens next, and a name for the passkey. */
 class PasskeyNameForm extends Widget {
   readonly input: HTMLInputElement;
 
-  constructor(suggested: string) {
+  constructor(suggested: string, intro: string) {
     super();
     this.addClass('jp-PasskeyVaultForm');
     const text = document.createElement('p');
-    text.textContent =
-      'The passkey was created. Confirm it once more so the vault can derive its key from it.';
+    text.textContent = intro;
     this.input = document.createElement('input');
     this.input.type = 'text';
     this.input.className = 'jp-mod-styled jp-PasskeyVaultForm-input';
@@ -465,18 +473,41 @@ class PasskeyNameForm extends Widget {
 }
 
 /**
- * The second step of a passkey registration. Its button is the fresh click the
- * PRF request needs. Resolves to the name for the passkey, or null when the user
- * backs out.
+ * The first step of a passkey registration: the user names the passkey. Its button
+ * is the fresh click the browser needs before it creates the passkey. Resolves to
+ * the name, or null when the user backs out.
  */
-async function confirmNewPasskey(suggested: string): Promise<string | null> {
-  const body = new PasskeyNameForm(suggested);
+async function nameNewPasskey(
+  suggested: string,
+  intro: string
+): Promise<string | null> {
+  const body = new PasskeyNameForm(suggested, intro);
+  const result = await launchWithEscape(
+    new Dialog({
+      title: 'Name the new passkey',
+      body,
+      // Typing starts in the name field; a space typed on the button would create.
+      focusNodeSelector: 'input',
+      hasClose: false,
+      buttons: [
+        Dialog.cancelButton(),
+        Dialog.okButton({ label: 'Create passkey', accept: true })
+      ]
+    })
+  );
+  return result.button.accept ? body.getValue() : null;
+}
+
+/**
+ * The last step of a passkey registration, after the browser created the passkey.
+ * Its button is the fresh click the PRF request needs. Resolves to false when the
+ * user backs out.
+ */
+async function confirmNewPasskey(name: string): Promise<boolean> {
   const result = await launchWithEscape(
     new Dialog({
       title: 'Confirm the new passkey',
-      body,
-      // Typing starts in the name field; a space typed on the button would confirm.
-      focusNodeSelector: 'input',
+      body: `The passkey "${name}" was created. Confirm it once more so the vault can derive its key from it.`,
       hasClose: false,
       buttons: [
         Dialog.cancelButton(),
@@ -484,7 +515,7 @@ async function confirmNewPasskey(suggested: string): Promise<string | null> {
       ]
     })
   );
-  return result.button.accept ? body.getValue() : null;
+  return result.button.accept;
 }
 
 /**
@@ -524,10 +555,10 @@ export async function askProof(
 }
 
 /**
- * Register a new passkey with a proof. After a passkey request the
- * browser needs a fresh click before it creates the new passkey, so a dialog asks
- * for one. Resolves to false when the user backs out before the browser created
- * anything.
+ * Register a new passkey with a proof. The user names the passkey first; that
+ * dialog's button is also the fresh click the browser needs, after a passkey
+ * request, before it creates the new passkey. `label` is the name offered. Resolves
+ * to false when the user backs out before the browser created anything.
  */
 export async function registerWithProof(
   api: VaultApi,
@@ -535,22 +566,15 @@ export async function registerWithProof(
   label: string,
   host: string
 ): Promise<boolean> {
-  if ('prf' in proof) {
-    const result = await launchWithEscape(
-      new Dialog({
-        title: 'Register new passkey',
-        body: 'Your passkey was accepted. Next, your browser creates the new passkey.',
-        hasClose: false,
-        buttons: [
-          Dialog.cancelButton(),
-          Dialog.okButton({ label: 'Create passkey', accept: true })
-        ]
-      })
-    );
-    if (!result.button.accept) {
-      return false;
-    }
+  const name = await nameNewPasskey(
+    label,
+    'prf' in proof
+      ? 'Your passkey was accepted. Your browser creates the new passkey next.'
+      : 'Your browser creates the passkey next.'
+  );
+  if (name === null) {
+    return false;
   }
-  await registerPasskey(api, label, confirmNewPasskey, proof, host);
+  await registerPasskey(api, name, confirmNewPasskey, proof, host);
   return true;
 }

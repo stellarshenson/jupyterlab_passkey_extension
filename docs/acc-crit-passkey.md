@@ -861,6 +861,20 @@ The secrets the vault stores and the operations on them
   - test-tags: UNIT
   - log: 2026-09-26T15:31:59Z @kj added
   - log: 2026-09-28T00:23:21Z @kj closed
+- [x] `ACC-ENTRY-188` **Migration from pass-cli in one command** - MEDIUM; `vault import --pass-cli` moves a pass-cli vault into the vault with no user script: names and metadata from `pass-cli list --format json`, each password from `pass-cli get`, the master password from a hidden prompt, stdin or `--in-browser`; entries with a TOTP secret are named and not imported
+  - evidence: pytest test_import_from_pass_cli_moves_every_field_and_names_the_totp_entries, _says_why_it_stopped, _asks_the_vault_before_pass_cli; run on the real pass-cli vault 2026-10-02: added 0, skipped 36; pytest 441/441, build 1.1.12
+  - test: fake `pass-cli` on PATH with 2 entries and 1 TOTP entry: assert 2 imported with every field equal and the TOTP one named; wrong master and missing pass-cli each give one line
+  - test-tags: UNIT
+  - log: 2026-10-01T22:59:04Z @kj added
+  - log: 2026-10-01T23:26:08Z @kj edited text "a shipped command moves a pass-cli vault into the vault with no script written by the user: names and metadata from `pass-cli list --format json`, each password from `pass-cli get --field password --quiet`; entries with a TOTP secret are named and not imported" -> "`vault import --pass-cli` moves a pass-cli vault into the vault with no user script: names and metadata from `pass-cli list --format json`, each password from `pass-cli get`, the master password from a hidden prompt, stdin or `--in-browser`; entries with a TOTP secret are named and not imported"; test "fake `pass-cli` on PATH with 3 entries, run the command, assert 3 entries with every field equal" -> "fake `pass-cli` on PATH with 2 entries and 1 TOTP entry: assert 2 imported with every field equal and the TOTP one named; wrong master and missing pass-cli each give one line"
+  - log: 2026-10-02T02:01:57Z @kj closed
+- [x] `ACC-ENTRY-189` **Import keeps the dates** - LOW; an imported item's `created` and `updated` (pass-cli `CreatedAt`, `UpdatedAt`) are stored as UTC to the second when given; one that is not a date refuses the whole import; an item without them gets the import time
+  - evidence: pytest test_import_keeps_the_dates_an_entry_gives; pytest 441/441, build 1.1.12 2026-10-02
+  - test: import one item with both dates and one without, assert the stored dates; an invalid date imports nothing
+  - test-tags: UNIT
+  - log: 2026-10-01T22:59:08Z @kj added
+  - log: 2026-10-01T23:25:58Z @kj edited text "an imported item's `created` and `updated` (pass-cli `CreatedAt`, `UpdatedAt`) are stored when given and valid; the import time is used only when they are absent" -> "an imported item's `created` and `updated` (pass-cli `CreatedAt`, `UpdatedAt`) are stored as UTC to the second when given; one that is not a date refuses the whole import; an item without them gets the import time"; test "import one item with both dates and one without, assert the stored dates" -> "import one item with both dates and one without, assert the stored dates; an invalid date imports nothing"
+  - log: 2026-10-02T02:01:57Z @kj closed
 
 ## Vault CLI `VAULT`
 
@@ -1097,7 +1111,7 @@ The vault sidebar panel in JupyterLab
   - log: 2026-09-26T20:37:12Z @kj edited test "Galata: click the cog, assert the holder name and 4 capability rows, none for container isolation" -> "Galata: click the cog, assert the Key holder row and 3 capability rows, none for the holder's own expiry or container isolation"
   - log: 2026-09-28T00:23:23Z @kj closed
 - [x] `ACC-PANEL-138` **Passkey management** - HIGH; the cog lists passkeys (name, date added, hostname if not this tab's), registers one under a given name, removes one in two steps (needs an unlock); registering first takes a proof - a passkey for this host, else the recovery passphrase; a failure after create names the unused passkey
-  - evidence: jest vault.spec.ts 'lists passkeys and removes one in two steps', 'stores the name chosen in the confirm step', 'registers a passkey with an existing passkey as the proof', 'registers with the recovery passphrase on a hostname with no passkey, asked before the browser creates one', 'creates nothing when the proof is not given', 'says the created passkey is unused when the registration is cancelled at the confirm step', 'says a refused proof left the created passkey unused', 'asks for an unlock only to remove passkeys on a locked vault'; Galata vault.spec.ts 'a passkey is registered with a passkey as the proof, or the recovery passphrase when this host has none'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+  - evidence: jest vault.spec.ts 'lists passkeys and removes one in two steps', 'stores the name chosen before the browser created the passkey', 'registers a passkey with an existing passkey as the proof', 'registers with the recovery passphrase on a hostname with no passkey, asked before the browser creates one'
   - test: Galata: register a second passkey with the first as the proof (no passphrase field), assert two rows; remove both, register through the passphrase dialog, assert one; jest: each proof, cancel creates nothing, a refused proof names the unused passkey, locked view offers Register
   - test-tags: UNIT, E2E
   - log: 2026-09-26T15:32:11Z @kj added
@@ -1109,6 +1123,7 @@ The vault sidebar panel in JupyterLab
   - log: 2026-09-26T21:54:04Z @kj edited test "Galata: register a second passkey through the passphrase dialog, assert two rows; remove it, assert one; jest: passphrase asked before create, cancel creates nothing, 403 names the unused passkey, locked view offers Register" -> "Galata: register a second passkey with the first as the proof (no passphrase field), assert two rows; remove both, register through the passphrase dialog, assert one; jest: each proof, cancel creates nothing, a refused proof names the unused passkey, locked view offers Register"
   - log: 2026-09-27T23:38:53Z @kj edited test-tags "E2E" -> "UNIT, E2E"
   - log: 2026-09-28T00:23:23Z @kj closed; reason: names each test that proves a many-case criterion
+  - log: 2026-10-02T02:02:09Z @kj edited evidence "jest vault.spec.ts 'lists passkeys and removes one in two steps', 'stores the name chosen in the confirm step', 'registers a passkey with an existing passkey as the proof', 'registers with the recovery passphrase on a hostname with no passkey, asked before the browser creates one', 'creates nothing when the proof is not given', 'says the created passkey is unused when the registration is cancelled at the confirm step', 'says a refused proof left the created passkey unused', 'asks for an unlock only to remove passkeys on a locked vault'; Galata vault.spec.ts 'a passkey is registered with a passkey as the proof, or the recovery passphrase when this host has none'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108" -> "jest vault.spec.ts 'lists passkeys and removes one in two steps', 'stores the name chosen before the browser created the passkey', 'registers a passkey with an existing passkey as the proof', 'registers with the recovery passphrase on a hostname with no passkey, asked before the browser creates one'"
 - [x] `ACC-PANEL-139` **Recovery passphrase change** - MEDIUM; the cog view replaces the recovery passphrase after a proof - a passkey request when a passkey for this host exists, otherwise the current recovery passphrase - and the new one entered twice; a cancelled proof changes nothing
   - evidence: jest vault.spec.ts 'changes the recovery passphrase with a passkey as the proof', 'changes the recovery passphrase with the current one when the passkey does not answer', 'asks for the current passphrase as the proof when no passkey matches this host', 'says nothing changed when the recovery dialog is cancelled'; Galata vault.spec.ts 'the recovery passphrase is changed and then opens the vault'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: Galata: change it, lock, unlock with the new passphrase
@@ -1435,6 +1450,19 @@ The vault sidebar panel in JupyterLab
   - log: 2026-09-27T09:31:12Z @kj added
   - log: 2026-09-27T09:33:27Z @kj edited test "jest: in the cog view the holder changes to memory/memfd_secret, then gains a notice, then the file moves; each read redraws the matching row" -> "jest: in the cog view the holder changes to memory/memfd_secret, then one capability changes, then it gains a notice, then the file moves; each read redraws the matching row"
   - log: 2026-09-28T00:23:25Z @kj closed
+- [x] `ACC-PANEL-190` **Hidden panel leaves the settings view** - MEDIUM; when the panel is hidden while its settings (cog) view is open, the settings view closes; shown again, the panel is in its normal view
+  - evidence: jest 'leaves the settings view when the panel is hidden'; Galata 'a hidden panel leaves the settings view'; jest 216/216, Galata 37/37, build 1.1.12 2026-10-02
+  - test: open the cog view, hide the panel, show it, assert the main view and the cog button not pressed
+  - test-tags: UNIT
+  - log: 2026-10-01T22:59:11Z @kj added
+  - log: 2026-10-01T22:59:14Z @kj requested: "if user was in settings, when panel was minimised, the settings page is closed and back to normal view"
+  - log: 2026-10-02T02:01:57Z @kj closed
+- [x] `ACC-PANEL-191` **Reveal shows it is waiting** - MEDIUM; in the entry popup, from the click on the eye until the passkey request ends, the eye shows a spinner and the line under the password reads `Waiting for your passkey`; both go when the password is shown, the request is cancelled or it fails
+  - evidence: jest 'shows it is waiting from the click on the eye until the passkey request ends'; Galata entry test: spinner, line and aria-busy while the reveal is held, eye stays at the same height; jest 216/216, Galata 37/37, build 1.1.12 2026-10-02
+  - test: jest: while the reveal is pending the eye has aria-busy and the spinner and the line reads the text; all gone after a password, a cancel and a failure
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-10-02T01:01:59Z @kj added
+  - log: 2026-10-02T02:01:57Z @kj closed
 
 ## Vault settings `CONFIG`
 
