@@ -149,6 +149,25 @@ def test_lock_and_unlock_with_passkey_and_recovery(ready, monkeypatch, capsys):
     assert "vault unlocked" in capsys.readouterr().err
 
 
+def test_unlock_with_the_unlock_password(ready, monkeypatch, capsys):
+    run(monkeypatch, "vault", "status")
+    assert "unlock password: none" in capsys.readouterr().out
+    ready.set_password("an everyday password", {"current": PASS})
+    run(monkeypatch, "vault", "lock")
+    with pytest.raises(SystemExit, match="^wrong unlock password$"):
+        run(monkeypatch, "vault", "unlock", "--password", stdin="not the password\n")
+    assert ready.status()["unlocked"] is False
+    run(monkeypatch, "vault", "unlock", "--password", stdin="an everyday password\n")
+    assert ready.status()["unlocked"] is True
+    out, err = capsys.readouterr()
+    assert "vault unlocked" in err and "an everyday password" not in out + err
+    run(monkeypatch, "vault", "status")
+    assert "unlock password: added 20" in capsys.readouterr().out
+    # One typed secret at a time.
+    with pytest.raises(SystemExit):
+        run(monkeypatch, "vault", "unlock", "--password", "--recovery", stdin="x\n")
+
+
 def test_status_prints_state_holder_and_capabilities(ready, monkeypatch, capsys):
     run(monkeypatch, "vault", "status")
     out = capsys.readouterr().out
@@ -160,6 +179,7 @@ def test_status_prints_state_holder_and_capabilities(ready, monkeypatch, capsys)
     rows = [line for line in out.splitlines() if ": yes - " in line or ": no - " in line]
     assert len(rows) == len(holders.CAPABILITY_TEXT)
     assert "passkeys: 1" in out and "@ lab.example" in out
+    assert "authenticator app: none" in out
     assert "unlock duration: 4h" in out
 
 

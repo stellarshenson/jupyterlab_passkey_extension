@@ -1,5 +1,6 @@
 import {
   addIcon,
+  filterIcon,
   lockIcon,
   refreshIcon,
   settingsIcon,
@@ -25,9 +26,13 @@ import {
 
 import {
   askProof,
+  chooseSignInMethod,
   confirmDelete,
   editEntry,
+  registerAuthenticator,
   registerWithProof,
+  sentence,
+  SignInMethod,
   viewEntry
 } from './dialogs';
 
@@ -36,7 +41,7 @@ import {
   ipAddressAdvice,
   isIpAddress,
   matchingSlots,
-  revealWithPasskey,
+  passkeyPrf,
   unlockWithPasskey,
   Unused
 } from './webauthn';
@@ -52,8 +57,11 @@ function shape(s: IStatus | null): string {
   return JSON.stringify([
     s?.initialized,
     s?.unlocked,
-    s?.slots.map(x => x.cred_id),
+    // A passkey by its id; the unlock password, which has none, by its date.
+    s?.slots.map(x => x.cred_id ?? `${x.type} ${x.created}`),
+    s?.authenticator?.created,
     s?.settings.unlock_minutes,
+    s?.settings.password_min_length,
     s?.revision,
     s?.holder.name,
     s?.holder.capabilities,
@@ -62,14 +70,18 @@ function shape(s: IStatus | null): string {
   ]);
 }
 
-/** A lower-case message as a sentence for the panel. */
-function sentence(text: string): string {
-  return `${text[0].toUpperCase()}${text.slice(1)}.`;
-}
-
 /** A slot's creation time to the minute, so two passkeys added the same day differ. */
 function addedAt(created: string | undefined): string {
   return `${(created ?? '').slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+/**
+ * The same time as two parts of a row's detail line, the day and the minute: the
+ * line wraps between its parts, never inside one.
+ */
+function dayAndMinute(created: string | undefined): [string, string] {
+  const [day, ...minute] = addedAt(created).split(' ');
+  return [day, minute.join(' ')];
 }
 
 export function formatRemaining(seconds: number): string {
@@ -188,6 +200,9 @@ export class VaultPanel extends Widget {
     this._addButton = this._iconButton(addIcon, 'Add an entry', () =>
       this._add()
     );
+    this._filterButton = this._iconButton(filterIcon, 'Filter entries', () =>
+      this._toggleFilter()
+    );
     this._refreshButton = this._iconButton(refreshIcon, 'Refresh', () =>
       this.refresh()
     );
@@ -203,6 +218,7 @@ export class VaultPanel extends Widget {
     header.append(
       this._lockButton,
       this._addButton,
+      this._filterButton,
       this._refreshButton,
       this._cogButton
     );
@@ -214,7 +230,7 @@ export class VaultPanel extends Widget {
 
     this._filter = el('input', `${C}-filterInput`);
     this._filter.type = 'search';
-    this._filter.placeholder = 'Filter entries';
+    this._filter.placeholder = 'Filter entries...';
     this._filter.setAttribute('aria-label', 'Filter by name, username or URL');
     this._filter.dataset.focusKey = 'filter';
     this._filter.addEventListener('input', () => this._renderList());
@@ -369,7 +385,7 @@ export class VaultPanel extends Widget {
 
   /**
    * Clear the banner's line: the proof is in, or a step was done in this tab outside
-   * the panel (a CLI's unlock or registration) - an action in this tab, which clears
+   * the panel (a CLI's unlock or new passkey) - an action in this tab, which clears
    * any line as the panel's own next action does.
    */
   clearLine(): void {
@@ -405,7 +421,7 @@ export class VaultPanel extends Widget {
    * report an error over the first one's success. `keep` names an action whose
    * outcome the vault's state does not show (a passkey made, the recovery passphrase
    * changed): its line outlives a change made elsewhere. `onlyUnused` keeps only a
-   * line about a passkey the browser made: Create's and Register's other outcomes show
+   * line about a passkey the browser made: the other outcomes of Create and of a new passkey show
    * in the vault's passkey slots.
    */
   private async _act(
@@ -519,11 +535,11 @@ export class VaultPanel extends Widget {
             this._host
           );
           if (!registered) {
-            throw new VaultError(0, 'passkey registration cancelled');
+            throw new VaultError(0, 'adding the passkey was cancelled');
           }
         } catch (e) {
           throw new PartlyDone(
-            `Vault created, but no passkey was registered (${describeFailure(e)}). Add one under Vault settings and security (the cog).`,
+            `Vault created, but no passkey was added (${describeFailure(e)}). Add one under Vault settings and security (the cog).`,
             e instanceof Unused
           );
         }
@@ -539,6 +555,141 @@ export class VaultPanel extends Widget {
       // Only the locked view offers this, and it renders from a status already read.
       await unlockWithPasskey(this._api, this._status as IStatus, this._host);
     });
+  }
+
+  private _unlockPassword(): Promise<void> {
+    return this._act(async () => {
+      const { accepted, value } = await askSecret(
+        'Enter the unlock password',
+        true,
+        'Unlock vault'
+      );
+      if (accepted && value !== null) {
+        await this._api.unlockPassword(value);
+      }
+    });
+  }
+
+  /**
+   * Add a sign-in method: the user chooses the kind, then that kind's own steps run.
+   * The choice is made before the panel is busy, so backing out leaves no line.
+   */
+  private async _addMethod(s: IStatus): Promise<void> {
+    if (this._busy) {
+      return;
+    }
+    const password = s.slots.find(x => x.type === 'password');
+    const kind = await chooseSignInMethod({
+      passkey: isIpAddress(this._host)
+        ? { unavailable: sentence(ipAddressAdvice(s.slots)) }
+        : {},
+      password: password
+        ? { note: `It replaces the one added ${addedAt(password.created)}.` }
+        : {},
+      authenticator: s.authenticator
+        ? {
+            unavailable: `Added ${addedAt(s.authenticator.created)}. Remove it to add another.`
+          }
+        : {}
+    });
+    if (kind === 'passkey') {
+      await this._addPasskey(s);
+    } else if (kind === 'password') {
+      await this._setPassword(s, !!password);
+    } else if (kind === 'authenticator') {
+      await this._addAuthenticator(s);
+    }
+  }
+
+  private _addPasskey(s: IStatus): Promise<void> {
+    return this._act(
+      async () => {
+        this._sayProofFirst(s);
+        const proof = await askProof(s, this._host, 'Add passkey');
+        this.clearLine();
+        return (
+          proof !== null && registerWithProof(this._api, proof, '', this._host)
+        );
+      },
+      'Passkey added',
+      'Adding the passkey',
+      true
+    );
+  }
+
+  private _addAuthenticator(s: IStatus): Promise<void> {
+    return this._act(
+      async () => {
+        this._sayProofFirst(s);
+        const proof = await askProof(s, this._host, 'Add authenticator app');
+        this.clearLine();
+        return (
+          proof !== null && registerAuthenticator(this._api, proof, this._host)
+        );
+      },
+      'Authenticator app added',
+      'Adding the authenticator app'
+    );
+  }
+
+  private _changeRecovery(s: IStatus): Promise<void> {
+    return this._act(
+      async () => {
+        this._sayProofFirst(s);
+        const proof = await askProof(
+          s,
+          this._host,
+          'Change recovery passphrase'
+        );
+        this.clearLine();
+        if (proof === null) {
+          return false;
+        }
+        const { accepted, value } = await askSecret(
+          'Enter the new recovery passphrase twice, and store it offline',
+          false,
+          'Change recovery passphrase'
+        );
+        if (!accepted || value === null) {
+          return false;
+        }
+        await this._api.replaceRecovery(value, proof);
+      },
+      'Recovery passphrase changed',
+      'Recovery passphrase change'
+    );
+  }
+
+  /**
+   * Add the unlock password, or replace the one there is: the password twice, then a
+   * proof. The proof is asked last because the request checks it, and a code of the
+   * authenticator app stays right for less than a minute.
+   */
+  private _setPassword(s: IStatus, replaces: boolean): Promise<void> {
+    const title = replaces ? 'Change unlock password' : 'Add unlock password';
+    return this._act(
+      async () => {
+        const minLength = s.settings.password_min_length;
+        const { accepted, value } = await askSecret(
+          `Enter the new unlock password twice, at least ${minLength} characters`,
+          false,
+          title,
+          { minLength }
+        );
+        if (!accepted || value === null) {
+          return false;
+        }
+        this._sayProofFirst(s);
+        const proof = await askProof(s, this._host, title);
+        this.clearLine();
+        if (proof === null) {
+          return false;
+        }
+        await this._api.setPassword(value, proof);
+      },
+      replaces ? 'Unlock password changed' : 'Unlock password added',
+      replaces ? 'Changing the unlock password' : 'Adding the unlock password'
+    );
   }
 
   private _unlockRecovery(): Promise<void> {
@@ -604,15 +755,22 @@ export class VaultPanel extends Widget {
 
   /** The entry's popup, then the Edit or Delete chosen there. */
   private async _open(entry: IEntry): Promise<void> {
-    const choice = await viewEntry(entry, () =>
-      // The popup opens only in the unlocked view, which renders from a status read.
-      revealWithPasskey(
-        this._api,
-        this._status as IStatus,
-        entry.name,
-        this._host
-      )
-    );
+    // The popup opens only in the unlocked view, which renders from a status read.
+    const status = this._status as IStatus;
+    const choice = await viewEntry(entry, {
+      passkey: async () => {
+        const { credId, prf } = await passkeyPrf(status, this._host);
+        return { cred_id: credId, prf };
+      },
+      reveal: proof => this._api.revealPassword(entry.name, proof),
+      typed: [
+        ...(status.authenticator ? (['code'] as const) : []),
+        ...(status.slots.some(x => x.type === 'password')
+          ? (['password'] as const)
+          : []),
+        'passphrase'
+      ]
+    });
     // Back to the row (a redraw meanwhile keeps its focus key), the filter when the
     // entry is gone, Refresh when the list is: a form opened next returns focus there.
     this._restoreFocus(`row:${entry.name}`);
@@ -653,6 +811,21 @@ export class VaultPanel extends Widget {
     };
     this._render();
     return true;
+  }
+
+  /**
+   * Show or hide the filter field, as the filter button of the AI assistants panels
+   * does. Hiding clears the filter, so no filter the user cannot see narrows the rows.
+   */
+  private _toggleFilter(): void {
+    this._filterShown = !this._filterShown;
+    if (!this._filterShown) {
+      this._filter.value = '';
+    }
+    this._render();
+    if (this._filterShown) {
+      this._filter.focus();
+    }
   }
 
   /**
@@ -698,6 +871,11 @@ export class VaultPanel extends Widget {
     // Hidden in the cog view but kept in place, so Lock never moves under the pointer.
     this._addButton.style.display = unlocked ? '' : 'none';
     this._addButton.style.visibility = this._view === 'main' ? '' : 'hidden';
+    this._filterButton.style.display = unlocked ? '' : 'none';
+    this._filterButton.style.visibility = this._view === 'main' ? '' : 'hidden';
+    // The pressed state is drawn with a class, which says nothing to a screen reader.
+    this._filterButton.classList.toggle('jp-mod-active', this._filterShown);
+    this._filterButton.setAttribute('aria-pressed', String(this._filterShown));
     this._cogButton.classList.toggle(
       'jp-mod-active',
       this._view === 'settings'
@@ -713,9 +891,12 @@ export class VaultPanel extends Widget {
       } else if (!s.unlocked) {
         this._renderLocked(s);
       } else {
-        const box = el('div', `${C}-filterBox`);
-        box.appendChild(this._filter);
-        this._body.append(box, this._list);
+        if (this._filterShown) {
+          const box = el('div', `${C}-filterBox`);
+          box.appendChild(this._filter);
+          this._body.appendChild(box);
+        }
+        this._body.appendChild(this._list);
         this._renderList();
       }
     }
@@ -842,7 +1023,17 @@ export class VaultPanel extends Widget {
           `${C}-hint`,
           isIpAddress(this._host)
             ? sentence(ipAddressAdvice(s.slots))
-            : `No passkey is registered for ${this._host}. Register one under Vault settings and security (the cog) with the recovery passphrase.`
+            : `No passkey was added for ${this._host}. Add one under Vault settings and security (the cog) with the recovery passphrase.`
+        )
+      );
+    }
+    if (s.slots.some(x => x.type === 'password')) {
+      section.appendChild(
+        this._button(
+          'Unlock with password',
+          () => this._unlockPassword(),
+          // The way in where this hostname has no passkey.
+          !usable
         )
       );
     }
@@ -944,105 +1135,92 @@ export class VaultPanel extends Widget {
       security.appendChild(row);
     }
 
-    const passkeys = this._section('Passkeys');
-    const slots = s.slots.filter(x => x.type === 'passkey');
+    const methods = this._section('Sign-in methods');
     if (!s.initialized) {
-      passkeys.appendChild(el('p', `${C}-hint`, 'Create the vault first.'));
+      methods.appendChild(el('p', `${C}-hint`, 'Create the vault first.'));
     } else {
-      if (slots.length === 0) {
-        passkeys.appendChild(el('p', `${C}-hint`, 'No passkey registered.'));
-      }
-      for (const slot of slots) {
-        const row = el('div', `${C}-passkey`);
-        const text = el('div', `${C}-passkeyText`);
-        text.append(
-          el('div', `${C}-rowName`, slot.label ?? ''),
-          el(
-            'div',
-            `${C}-rowUser`,
+      // Removing needs an unlocked vault; adding and changing need a proof, not an
+      // unlock, so their buttons are offered locked as well.
+      const remove = (
+        key: string,
+        request: () => Promise<void>,
+        done: string
+      ): HTMLButtonElement | undefined =>
+        s.unlocked
+          ? this._twoStep(key, 'Remove', () => this._act(request, done))
+          : undefined;
+      for (const slot of s.slots.filter(x => x.type === 'passkey')) {
+        const detail = ['Passkey, added', ...dayAndMinute(slot.created)];
+        methods.appendChild(
+          this._method(
+            'passkey',
+            slot.label ?? '',
             slot.rp_id === this._host
-              ? `added ${addedAt(slot.created)}`
-              : `added ${addedAt(slot.created)} on ${slot.rp_id}`
+              ? detail
+              : [...detail, `on ${slot.rp_id}`],
+            remove(
+              `passkey:${slot.cred_id}`,
+              () => this._api.removePasskey(slot.cred_id as string),
+              'Passkey removed'
+            )
           )
         );
-        row.appendChild(text);
-        if (s.unlocked) {
-          row.appendChild(
-            this._twoStep(`passkey:${slot.cred_id}`, 'Remove', () =>
-              this._act(
-                () => this._api.removePasskey(slot.cred_id as string),
-                'Passkey removed'
-              )
-            )
-          );
-        }
-        passkeys.appendChild(row);
       }
-      if (!s.unlocked && slots.length > 0) {
-        passkeys.appendChild(
-          el('p', `${C}-hint`, 'Unlock the vault to remove passkeys.')
+      const added = (created: string | undefined): string[] => {
+        const [day, minute] = dayAndMinute(created);
+        return [`Added ${day}`, minute];
+      };
+      const password = s.slots.find(x => x.type === 'password');
+      if (password) {
+        methods.appendChild(
+          this._method(
+            'password',
+            'Unlock password',
+            added(password.created),
+            remove(
+              'password',
+              () => this._api.removePassword(),
+              'Unlock password removed'
+            )
+          )
         );
       }
-      // A proof, not an unlock, is what the server asks for: offered locked as well.
-      passkeys.appendChild(
-        isIpAddress(this._host)
-          ? el('p', `${C}-hint`, sentence(ipAddressAdvice(s.slots)))
-          : this._button('Register new passkey', () =>
-              this._act(
-                async () => {
-                  this._sayProofFirst(s);
-                  const proof = await askProof(
-                    s,
-                    this._host,
-                    'Register new passkey'
-                  );
-                  this.clearLine();
-                  return (
-                    proof !== null &&
-                    registerWithProof(this._api, proof, '', this._host)
-                  );
-                },
-                'Passkey registered',
-                'Passkey registration',
-                true
-              )
+      if (s.authenticator) {
+        methods.appendChild(
+          this._method(
+            'authenticator',
+            'Authenticator app',
+            added(s.authenticator.created),
+            remove(
+              'authenticator',
+              () => this._api.removeAuthenticator(),
+              'Authenticator app removed'
             )
-      );
-    }
-
-    const recovery = this._section('Recovery');
-    if (s.initialized) {
-      recovery.appendChild(
-        this._button('Change recovery passphrase', () =>
-          this._act(
-            async () => {
-              this._sayProofFirst(s);
-              const proof = await askProof(
-                s,
-                this._host,
-                'Change recovery passphrase'
-              );
-              this.clearLine();
-              if (proof === null) {
-                return false;
-              }
-              const { accepted, value } = await askSecret(
-                'Enter the new recovery passphrase twice, and store it offline',
-                false,
-                'Change recovery passphrase'
-              );
-              if (!accepted || value === null) {
-                return false;
-              }
-              await this._api.replaceRecovery(value, proof);
-            },
-            'Recovery passphrase changed',
-            'Recovery passphrase change'
           )
-        )
+        );
+      }
+      // Always there: the vault is created with it, and it is changed, never removed.
+      const change = this._button(
+        'Change',
+        () => this._changeRecovery(s),
+        false,
+        'recovery'
       );
-    } else {
-      recovery.appendChild(el('p', `${C}-hint`, 'Create the vault first.'));
+      change.setAttribute('aria-label', 'Change recovery passphrase');
+      methods.appendChild(
+        this._method('recovery', 'Recovery passphrase', [], change)
+      );
+      if (
+        !s.unlocked &&
+        (s.authenticator || s.slots.some(x => x.type !== 'recovery'))
+      ) {
+        methods.appendChild(
+          el('p', `${C}-hint`, 'Unlock the vault to remove a sign-in method.')
+        );
+      }
+      methods.appendChild(
+        this._button('Add sign-in method', () => this._addMethod(s))
+      );
     }
 
     const settings = this._section('Settings');
@@ -1052,7 +1230,7 @@ export class VaultPanel extends Widget {
       this._button('Open settings', () => this._openSettings())
     );
 
-    this._body.append(security, passkeys, recovery, settings);
+    this._body.append(security, methods, settings);
   }
 
   // -- small builders ---------------------------------------------------------
@@ -1061,6 +1239,35 @@ export class VaultPanel extends Widget {
     const section = el('div', `${C}-section`);
     section.appendChild(el('div', `${C}-sectionHeader`, title));
     return section;
+  }
+
+  /**
+   * A sign-in method's row: its name over a line of detail, and its one action.
+   * Each part of the detail stays whole when the line wraps, so a date never breaks
+   * at its hyphen. `kind` is for a stylesheet or a test to find the row by.
+   */
+  private _method(
+    kind: 'recovery' | SignInMethod,
+    name: string,
+    detail: string[],
+    action?: HTMLButtonElement
+  ): HTMLElement {
+    const row = el('div', `${C}-method`);
+    row.dataset.method = kind;
+    const text = el('div', `${C}-methodText`);
+    text.appendChild(el('div', `${C}-rowName`, name));
+    if (detail.length > 0) {
+      const line = el('div', `${C}-rowUser`);
+      detail.forEach((part, i) =>
+        line.append(i ? ' ' : '', el('span', '', part))
+      );
+      text.appendChild(line);
+    }
+    row.appendChild(text);
+    if (action) {
+      row.appendChild(action);
+    }
+    return row;
   }
 
   /** A label over a path on its own line. */
@@ -1120,6 +1327,7 @@ export class VaultPanel extends Widget {
   private readonly _host: string;
   private readonly _lockButton: HTMLButtonElement;
   private readonly _addButton: HTMLButtonElement;
+  private readonly _filterButton: HTMLButtonElement;
   private readonly _cogButton: HTMLButtonElement;
   private readonly _refreshButton: HTMLButtonElement;
   private readonly _statusLine: HTMLDivElement;
@@ -1131,6 +1339,7 @@ export class VaultPanel extends Widget {
   private _readAt = 0;
   private _entries: IEntry[] = [];
   private _view: 'main' | 'settings' = 'main';
+  private _filterShown = false;
   private _armed: string | null = null;
   private _bannerShown = '';
   private _entriesRead = true;

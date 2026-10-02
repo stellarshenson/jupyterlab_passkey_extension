@@ -25,7 +25,7 @@ export interface IHolder {
 }
 
 export interface ISlot {
-  type: 'recovery' | 'passkey';
+  type: 'recovery' | 'passkey' | 'password';
   cred_id?: string;
   rp_id?: string;
   prf_salt?: string;
@@ -39,7 +39,9 @@ export interface IStatus {
   remaining: number | null;
   holder: IHolder;
   slots: ISlot[];
-  settings: { unlock_minutes: number };
+  /** The registered authenticator app; null with none, absent with no vault. */
+  authenticator?: { created: string } | null;
+  settings: { unlock_minutes: number; password_min_length: number };
   path: string;
   /** Changes whenever the entries do; absent with no vault. */
   revision?: string;
@@ -72,10 +74,17 @@ export interface IPasskeySlot {
 }
 
 /**
- * What the server asks before it adds a passkey or replaces the recovery passphrase:
- * the current recovery passphrase, or a passkey's PRF.
+ * What the server asks before it adds a passkey or an authenticator app, sets the
+ * unlock password, replaces the recovery passphrase or shows a password to the
+ * panel: the current recovery passphrase, a passkey's PRF, or - on an unlocked
+ * vault only - a code of the authenticator app. The unlock password is a proof for
+ * showing a password and for nothing else.
  */
-export type Proof = { current: string } | { cred_id: string; prf: string };
+export type Proof =
+  | { current: string }
+  | { cred_id: string; prf: string }
+  | { code: string }
+  | { password: string };
 
 /**
  * A vault request that did not succeed: the vault's own `error`, the text `_call` gives
@@ -107,8 +116,11 @@ export class VaultApi {
     return this._call<IStatus>('status', 'GET');
   }
 
-  setConfig(unlockMinutes: number): Promise<void> {
-    return this._call('config', 'POST', { unlock_minutes: unlockMinutes });
+  setConfig(unlockMinutes: number, passwordMinLength: number): Promise<void> {
+    return this._call('config', 'POST', {
+      unlock_minutes: unlockMinutes,
+      password_min_length: passwordMinLength
+    });
   }
 
   init(recovery: string): Promise<void> {
@@ -117,6 +129,10 @@ export class VaultApi {
 
   unlockRecovery(recovery: string): Promise<IStatus> {
     return this._call<IStatus>('unlock', 'POST', { recovery });
+  }
+
+  unlockPassword(password: string): Promise<IStatus> {
+    return this._call<IStatus>('unlock', 'POST', { password });
   }
 
   unlockPasskey(credId: string, prf: string): Promise<IStatus> {
@@ -143,18 +159,10 @@ export class VaultApi {
     return this._call('delete', 'POST', { name });
   }
 
-  /** The password of `name`; the server answers 403 unless the PRF opens a passkey slot. */
-  async revealPassword(
-    name: string,
-    credId: string,
-    prf: string
-  ): Promise<string> {
+  /** The password of `name`; the server answers 403 unless the proof holds. */
+  async revealPassword(name: string, proof: Proof): Promise<string> {
     return (
-      await this._call<{ value: string }>('reveal', 'POST', {
-        name,
-        cred_id: credId,
-        prf
-      })
+      await this._call<{ value: string }>('reveal', 'POST', { name, ...proof })
     ).value;
   }
 
@@ -169,6 +177,35 @@ export class VaultApi {
 
   removePasskey(credId: string): Promise<void> {
     return this._call('passkeys-remove', 'POST', { cred_id: credId });
+  }
+
+  /** The server sets the unlock password, replacing the one there was, only with a proof. */
+  setPassword(password: string, proof: Proof): Promise<void> {
+    return this._call('password', 'POST', { password, proof });
+  }
+
+  removePassword(): Promise<void> {
+    return this._call('password-remove', 'POST');
+  }
+
+  /**
+   * Register the authenticator app that was given `setupKey`. The server stores it
+   * only for the code the app shows now and a proof.
+   */
+  addAuthenticator(
+    setupKey: string,
+    code: string,
+    proof: Proof
+  ): Promise<void> {
+    return this._call('authenticator', 'POST', {
+      secret: setupKey,
+      code,
+      proof
+    });
+  }
+
+  removeAuthenticator(): Promise<void> {
+    return this._call('authenticator-remove', 'POST');
   }
 
   /** The server replaces it only with a proof. */

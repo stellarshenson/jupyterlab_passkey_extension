@@ -129,6 +129,8 @@ def cmd_unlock(a, vault):
         raise SystemExit(_say_status(s))
     if a.recovery:
         s = vault.unlock(recovery=_read_secret(a, "Recovery passphrase", twice=False))
+    elif a.password:
+        s = vault.unlock(password=_read_secret(a, "Unlock password", twice=False))
     else:
         s = vault.unlock()
     _cli._say(f"vault {_say_status(s)}")
@@ -154,6 +156,10 @@ def cmd_status(a, vault):
     for d in h["details"]:
         print(f"  {d['label']}: {'yes' if h['capabilities'][d['key']] else 'no'} - {d['text']}")
     print(f"passkeys: {len(passkeys)}" + "".join(f"\n  {p['label']} @ {p['rp_id']}" for p in passkeys))
+    password = [x for x in s["slots"] if x["type"] == "password"]
+    print("unlock password: " + (f"added {password[0]['created']}" if password else "none"))
+    app = s.get("authenticator")
+    print("authenticator app: " + (f"added {app['created']}" if app else "none"))
     print(f"unlock duration: {_minutes(s['settings']['unlock_minutes'])}")
     return 0
 
@@ -332,12 +338,14 @@ def cmd_passkey_add(a, vault):
     s = vault.status()
     if not s["initialized"]:
         raise SystemExit(_say_status(s))
-    # The page gets the proof the server asks for a new slot - an existing passkey, or
-    # the recovery passphrase - so no secret has to reach it through a relay.
-    browser_step(REGISTER_COMMAND, {"label": a.label or ""}, "Register passkey",
-                 "Register a passkey for the vault - click; a passkey you already have, or the "
-                 "recovery passphrase, is asked first.", a.timeout)
-    _cli._say("passkey registered")
+    # The page gets the proof the server asks for a new slot - an existing passkey, a
+    # code of the authenticator app or the recovery passphrase - so no secret has to
+    # reach it through a relay.
+    browser_step(REGISTER_COMMAND, {"label": a.label or ""}, "Add passkey",
+                 "Add a passkey to the vault - click; a proof is asked first: a passkey you "
+                 "already have, a code of the authenticator app, or the recovery passphrase.",
+                 a.timeout)
+    _cli._say("passkey added")
     return 0
 
 
@@ -416,8 +424,9 @@ server side - the Jupyter server reads these, not this CLI; set them where it st
     slow.add_argument(
         "--timeout", type=float, default=REGISTER_TIMEOUT, metavar="SECONDS",
         help=f"how long to wait for each step in the browser before giving up and exiting 1 "
-             f"(default {REGISTER_TIMEOUT:.0f}: a registration takes a proof - a passkey, or a "
-             f"recovery passphrase kept offline - two more passkey prompts and a name)")
+             f"(default {REGISTER_TIMEOUT:.0f}: a new passkey takes a proof - a passkey, a code of "
+             f"the authenticator app, or a recovery passphrase kept offline - two more passkey "
+             f"prompts and a name)")
     registering = [slow, debugp]
 
     def add(name, help_, fn, parents=both, description=None, examples=()):
@@ -438,7 +447,7 @@ server side - the Jupyter server reads these, not this CLI; set them where it st
 
     p = add("init", "create the vault: a recovery passphrase, then a passkey", cmd_init, registering,
             description="""
-create the vault: a recovery passphrase, typed twice, then a passkey registered in the
+create the vault: a recovery passphrase, typed twice, then a passkey added in the
 JupyterLab tab, which asks for the passphrase once more as its proof. Store the recovery
 passphrase offline: it is the only way in without a passkey. Each browser step raises a
 notification and waits for the click (--timeout, default 600 s).
@@ -447,18 +456,23 @@ notification and waits for the click (--timeout, default 600 s).
                       "jupyterlab-passkey vault init --no-passkey        # recovery passphrase only"))
     in_browser(p)
     p.add_argument("--label", help="name for the passkey (default: the hostname)")
-    p.add_argument("--no-passkey", action="store_true", help="skip registering a passkey")
+    p.add_argument("--no-passkey", action="store_true", help="skip adding a passkey")
 
-    p = add("unlock", "unlock with the passkey, or the recovery passphrase", cmd_unlock,
+    p = add("unlock", "unlock with the passkey, the unlock password or the recovery passphrase",
+            cmd_unlock,
             description="""
 unlock the vault for the unlockMinutes setting (default 240 minutes), for every client:
 this CLI, the Python Vault class and the panel. With a passkey: a notification to click,
 then the passkey prompt in the tab. A passkey works only in a tab opened at the hostname it
-was registered on, or a subdomain of it; a tab at an IP address cannot use one.
+was added at, or a subdomain of it; a tab at an IP address cannot use one. The unlock
+password is set in the panel's cog view; status says whether one is set.
 """,
             examples=("jupyterlab-passkey vault unlock",
+                      "jupyterlab-passkey vault unlock --password --in-browser",
                       "jupyterlab-passkey vault unlock --recovery --in-browser"))
-    p.add_argument("--recovery", action="store_true", help="use the recovery passphrase")
+    typed = p.add_mutually_exclusive_group()
+    typed.add_argument("--recovery", action="store_true", help="use the recovery passphrase")
+    typed.add_argument("--password", action="store_true", help="use the unlock password")
     in_browser(p)
 
     add("lock", "lock the vault now", cmd_lock, instant,
@@ -470,7 +484,8 @@ nobody clicked stays until its relay expires; lock does not remove it.
     add("status", "state, time left, key holder and its capabilities", cmd_status, instant,
         description="""
 print the vault path, locked or unlocked with the time left, the key holder and what it
-protects on this host, the registered passkeys and the unlock duration. Never waits.
+protects on this host, the passkeys, whether the vault has an unlock password and an
+authenticator app, and the unlock duration. Never waits.
 """,
         examples=("jupyterlab-passkey vault status",))
 
@@ -599,8 +614,8 @@ with a TOTP secret is named and not imported: the vault has no field for it.
     p.add_argument("--pass-cli", action="store_true", help="import every entry of the pass-cli vault")
     in_browser(p)
 
-    pk = vs.add_parser("passkey", help="register, list or remove passkeys",
-                       description="register, list or remove the vault's passkeys")
+    pk = vs.add_parser("passkey", help="add, list or remove passkeys",
+                       description="add, list or remove the vault's passkeys")
     pks = pk.add_subparsers(dest="passkey_op", required=True, metavar="PASSKEY_COMMAND")
 
     def add_passkey_command(name, help_, fn, parents, description, examples):
@@ -611,13 +626,15 @@ with a TOTP secret is named and not imported: the vault has no field for it.
         return p
 
     p = add_passkey_command(
-        "add", "register a passkey (a notification to click; the browser asks for an existing "
-               "passkey, or the recovery passphrase)", cmd_passkey_add, registering,
+        "add", "add a passkey (a notification to click; the browser asks for a proof: an "
+               "existing passkey, a code of the authenticator app, or the recovery passphrase)",
+        cmd_passkey_add, registering,
         """
-register a passkey in the JupyterLab tab: a notification to click, then the browser asks
-for a proof - a passkey already registered for this hostname, or the recovery passphrase -
-and creates the new passkey. It opens the vault only from the tab's hostname or a
-subdomain of it; a tab at an IP address cannot register one. Waits for each step
+add a passkey in the JupyterLab tab: a notification to click, then the browser asks
+for a proof - a passkey already added for this hostname, else a code of the
+authenticator app when the vault has one and is unlocked, else the recovery
+passphrase - and creates the new passkey. It opens the vault only from the tab's hostname or a
+subdomain of it; a tab at an IP address cannot add one. Waits for each step
 (--timeout, default 600 s).
 """,
         ('jupyterlab-passkey vault passkey add --label "Work laptop"',))

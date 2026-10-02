@@ -87,6 +87,13 @@ The vault server side, CLI and Python API
   - log: 2026-10-01T22:58:57Z @kj added
   - log: 2026-10-01T22:59:00Z @kj reported: found migrating 36 pass-cli entries; `pass-cli list --format json` emits `Service`, `Username`, `URL`, `Category`, `Notes`, so its output cannot be piped in as the help suggests
   - log: 2026-10-02T02:01:57Z @kj closed
+- [x] `DEF-VAULT-28` **No authenticator app as a proof** - MEDIUM; only a passkey or the recovery passphrase proves a change or a reveal; expected: one authenticator app (6-digit codes) can be registered beside the passkeys, and its code is accepted as a proof while the vault is unlocked; a code never unlocks
+  - evidence: pytest test_an_authenticator_app_is_registered_with_a_right_code_and_a_proof, test_a_code_proves_on_an_unlocked_vault_and_never_unlocks; jest 'the authenticator app'; Galata 'an authenticator app is added, and its code or the recovery passphrase shows a password at a hostname with no passkey'; build 1.1.27
+  - repro: cog view: no way to register an authenticator app
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-10-02T14:06:38Z @kj the vault knows two proofs, `current` and `prf` (`_proven_dek`); no code proof and no stored app secret exist
+  - log: 2026-10-02T14:06:38Z @kj added
+  - log: 2026-10-02T21:23:30Z @kj closed
 
 ## Vault panel `PANEL`
 
@@ -233,4 +240,22 @@ The vault sidebar panel, its dialogs and styles
   - log: 2026-10-02T01:16:09Z @kj edited text "the panel's filter box is filled with the dialog input colour and differs from the search field of the AI assistants panel beside it; one design language: filled with the panel background, placeholder in the faint text colour" -> "the panel's filter box is filled with the dialog input colour and differs from the search field of the AI assistants panel beside it; one design language: filled with the panel background"
   - log: 2026-10-02T01:16:13Z @kj root-cause updated "2026-10-02T01:07:28Z @kj filter input background is `--jp-input-background`; the AI assistants search field uses `--jp-layout-color1` and placeholder `--jp-ui-font-color3`" -> "filter input background is `--jp-input-background`; the AI assistants search field uses `--jp-layout-color1`. The placeholder colour is the same in both: JupyterLab's `.jp-ThemedContainer input::placeholder` rule overrides either panel's own"
   - log: 2026-10-02T02:01:57Z @kj closed
+- [x] `DEF-PANEL-27` **Reveal impossible without a passkey for this host** - MAJOR; in a tab at a hostname with no registered passkey, the eye in the entry popup shows no password, only `no passkey is registered for <host>`; expected: the recovery passphrase is asked as the fallback, as when registering a passkey
+  - evidence: jest EntryView 'asks the recovery passphrase in a row of its own when this hostname has no passkey'; pytest test_a_reveal_takes_the_recovery_passphrase_as_its_proof; Galata 'an authenticator app is added, and its code or the recovery passphrase shows a password at a hostname with no passkey'; build 1.1.27
+  - related: ACC-PANEL-199 - the fallback proof is asked in the entry popup
+  - related: ACC-PANEL-200 - the fallback proof is asked in a row of the entry popup
+  - repro: open the vault at a hostname without a passkey, unlock with the recovery passphrase, open an entry, click the eye
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-10-02T14:01:42Z @kj `revealWithPasskey` takes only a passkey PRF and `passkeyPrf` throws when no slot matches the hostname; `POST vault/reveal` passes only `cred_id` and `prf`, though `_proven_dek` also accepts the recovery passphrase
+  - log: 2026-10-02T14:01:42Z @kj added
+  - log: 2026-10-02T14:07:11Z @kj correction: the words on the ACC-PANEL-199 relation describe ACC-PANEL-200; ACC-PANEL-199 is the proof order the reveal follows
+  - log: 2026-10-02T21:23:27Z @kj closed
+- [x] `DEF-PANEL-29` **Panel geometry differs from the AI assistants panels** - MEDIUM; vault panel: content 8 px from the border, text at 8 px, 20 px header buttons, 21 px rows with bold names, section headers without a band; the AI assistants panels: 4 px, text at 18 px, 24 px buttons and rows, band headers
+  - evidence: style/base.css takes the AI panels' geometry (4 px inset, text at 18 px, 24 px buttons and rows, band headers); Galata 'the panel has the geometry of the AI assistants panels' green on build 1.1.21, 40 of 40
+  - related: ACC-PANEL-212 - the geometry the panel now has
+  - repro: open the Claude Code sessions panel, then the vault panel, in one sidebar: titles, section headers and rows start at different offsets
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-10-02T16:17:24Z @kj the panel's styles were copied from jupyterlab_share_files_extension, which has an 8 px inset and 20 px buttons, and its section headers were given no band
+  - log: 2026-10-02T16:17:24Z @kj added
+  - log: 2026-10-02T16:18:40Z @kj closed
 

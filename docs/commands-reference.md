@@ -110,7 +110,7 @@ The two vault passkey steps; `jupyterlab-passkey vault unlock` and `vault passke
 | `nonce` | no       | relay key for the outcome; without it nothing is posted back |
 | `label` | no       | `vault-register` only: the name offered for the passkey      |
 
-`vault-unlock` uses every passkey slot registered for the tab's hostname. `vault-register` first gets the proof the server asks for a new slot - a request with a passkey registered for the tab's hostname, or the recovery passphrase when the hostname has none, that request gets no answer (the passkey is on another device, or lost) or the passkey gives no PRF. On a tab at an IP address it asks for nothing and answers where to open JupyterLab. It then asks for the passkey's name in a dialog whose button is the click that lets the browser create the passkey, creates it, asks for a confirming click, evaluates a fresh PRF salt with `get`, and adds the slot.
+`vault-unlock` uses every passkey slot added for the tab's hostname. `vault-register` first gets the proof the server asks for a new slot - a request with a passkey added for the tab's hostname. When the hostname has none, that request gets no answer (the passkey is on another device, or lost) or the passkey gives no PRF, it asks a code of the authenticator app while the vault has one and is unlocked, or the recovery passphrase. On a tab at an IP address it asks for nothing and answers where to open JupyterLab. It then asks for the passkey's name in a dialog whose button is the click that lets the browser create the passkey, creates it, asks for a confirming click, evaluates a fresh PRF salt with `get`, and adds the slot.
 
 ## Result shapes of `passkey:run`
 

@@ -2,6 +2,30 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.28] - 2026-10-03
+
+Adds an authenticator app and an unlock password to the vault, lists every sign-in method in one section of the cog view, and gives the vault panel the geometry of the AI assistants panels.
+
+### Added
+
+- An authenticator app (6-digit codes, RFC 6238) is added in the cog view with a QR code and a setup key. Its code is accepted where a passkey is asked while the vault is unlocked. A code does not unlock a locked vault, and after five wrong codes in a row codes are refused until the next unlock
+- An unlock password unlocks the vault and is accepted before the panel shows a password. It is refused before a sign-in method is added or the recovery passphrase is changed. The setting `passwordMinLength` gives its minimum length, 12 by default
+- `jupyterlab-passkey vault unlock --password` unlocks with the unlock password, typed at a hidden prompt, piped on stdin or typed in a JupyterLab dialog with `--in-browser`
+- `vault status` reports the unlock password and the authenticator app, each with the date it was added
+- The cog view has one section `Sign-in methods` with a row for each passkey, the unlock password, the authenticator app and the recovery passphrase, and one button `Add sign-in method` whose dialog offers the three kinds that can be added
+- The panel header has a filter button that shows and hides the filter field. Hiding the field clears the filter
+
+### Changed
+
+- User-facing texts say `add` and `sign-in method` where they said `register`. The command label is `Add Vault Passkey`; the command id `passkey:vault-register` is unchanged
+- The vault panel has the geometry of the AI assistants panels: fields and buttons 4 px from the panel border, text 18 px from it, header buttons and rows 24 px high, section headers as bands, entry names in regular weight
+
+### Fixed
+
+- In a tab at a hostname with no passkey, the eye of the entry popup showed no password. The popup now asks a typed proof in a row of the popup: a code of the authenticator app, the unlock password or the recovery passphrase. The same row appears when the passkey does not answer
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.1.13] - 2026-10-02
 
 Asks the name of a new passkey before the browser creates it, shows that a password reveal is waiting for the passkey, and imports from a pass-cli vault.
@@ -22,8 +46,6 @@ Asks the name of a new passkey before the browser creates it, shows that a passw
 ### Fixed
 
 - `vault import` refuses an entry with a field it does not know, names the field, and imports nothing. Before, it dropped the field and counted the entry as added
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.1.6] - 2026-09-30
 

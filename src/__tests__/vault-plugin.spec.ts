@@ -23,6 +23,7 @@ jest.mock('@jupyterlab/ui-components', () => {
   const icon = { element: () => document.createElement('span') };
   return {
     addIcon: icon,
+    filterIcon: icon,
     lockIcon: icon,
     refreshIcon: icon,
     settingsIcon: icon,
@@ -74,7 +75,7 @@ function vaultStatus(): any {
         created: '2026-09-26T10:00:00Z'
       }
     ],
-    settings: { unlock_minutes: 240 },
+    settings: { unlock_minutes: 240, password_min_length: 12 },
     path: '~/.local/share/jupyterlab-passkey/vault.json'
   };
 }
@@ -168,7 +169,7 @@ it('answers the CLI that the registration was cancelled, and creates nothing', a
   expect(answered()).toEqual({
     nonce: 'n2',
     ok: false,
-    error: 'passkey registration cancelled'
+    error: 'adding the passkey was cancelled'
   });
 });
 

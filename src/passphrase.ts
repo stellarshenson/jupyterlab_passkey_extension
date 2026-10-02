@@ -13,7 +13,7 @@ export interface IPassphraseArgs {
 }
 
 /** Whether the two fields agree yet, and what to tell the user about it. */
-type MatchState = 'pending' | 'match' | 'mismatch';
+type MatchState = 'pending' | 'match' | 'mismatch' | 'short';
 
 /**
  * Dialog body: a password field, and a second one to confirm it unless `once`.
@@ -35,8 +35,17 @@ class PassphraseBody extends Widget {
   private readonly _status: HTMLDivElement | null;
   private readonly _announce: HTMLDivElement | null;
   private readonly _gate: HTMLInputElement;
+  private readonly _noun: string;
 
-  constructor(prompt: string, once: boolean) {
+  /**
+   * `password` says the secret being set is a password, not a passphrase, and how
+   * short it may be: the words of the fields and the status line follow it.
+   */
+  constructor(
+    prompt: string,
+    once: boolean,
+    private readonly _password?: { minLength: number }
+  ) {
     super();
     this.addClass('jp-PassphraseDialog-body');
 
@@ -44,8 +53,11 @@ class PassphraseBody extends Widget {
     label.className = 'jp-PassphraseDialog-prompt';
     label.textContent = prompt;
 
-    this.first = PassphraseBody._input(once ? 'Secret' : 'Passphrase');
-    this.second = once ? null : PassphraseBody._input('Confirm passphrase');
+    this._noun = _password ? 'Password' : 'Passphrase';
+    this.first = PassphraseBody._input(once ? 'Secret' : this._noun);
+    this.second = once
+      ? null
+      : PassphraseBody._input(`Confirm ${this._noun.toLowerCase()}`);
 
     // The field Dialog's validity gate hangs off: the confirm field where there
     // is one, since that is where a mismatch is discovered, and the only field
@@ -145,6 +157,7 @@ class PassphraseBody extends Widget {
 
   private _validate(): void {
     const matched = this.value !== null;
+    const short = (this.value ?? '').length < (this._password?.minLength ?? 0);
 
     // This IS the Submit gate, not decoration: Dialog._checkValidation disables
     // every accept button whenever its subtree matches `:invalid`, and a custom
@@ -152,11 +165,13 @@ class PassphraseBody extends Widget {
     // either way - `value` is null until there is something non-empty, and (with
     // a confirm field) until both agree on it.
     this._gate.setCustomValidity(
-      matched
-        ? ''
-        : this.second === null
+      !matched
+        ? this.second === null
           ? 'Enter the secret'
-          : 'Enter the same passphrase in both fields'
+          : `Enter the same ${this._noun.toLowerCase()} in both fields`
+        : short
+          ? `Enter at least ${this._password?.minLength} characters`
+          : ''
     );
 
     if (!this.second || !this._status || !this._announce) {
@@ -165,7 +180,9 @@ class PassphraseBody extends Widget {
 
     // Quiet until the confirm field has content - not mid-keystroke.
     const state: MatchState = matched
-      ? 'match'
+      ? short
+        ? 'short'
+        : 'match'
       : this.second.value === ''
         ? 'pending'
         : 'mismatch';
@@ -181,7 +198,11 @@ class PassphraseBody extends Widget {
     }
     this._status.dataset.state = state;
     this._status.textContent =
-      state === 'match' ? 'Passphrases match' : 'Passphrases do not match';
+      state === 'match'
+        ? `${this._noun}s match`
+        : state === 'short'
+          ? `Too short: at least ${this._password?.minLength} characters`
+          : `${this._noun}s do not match`;
     // Empty while pending, so the live region announces nothing until the user has
     // given it something to be about - see the constructor for why this is not just
     // the same node with its visibility flipped.
@@ -287,14 +308,16 @@ export async function launchWithEscape<T>(
  *
  * `accepted` is false when the user cancelled; `value` is null when the dialog
  * was accepted without a confirmed value, which the Submit gate should prevent.
- * The vault panel asks for its recovery passphrase through this.
+ * The vault panel asks for its recovery passphrase through this, and with `password`
+ * for a new unlock password, which must have its minimum length before Submit works.
  */
 export async function askSecret(
   prompt: string,
   once: boolean,
-  title?: string
+  title?: string,
+  password?: { minLength: number }
 ): Promise<{ accepted: boolean; value: string | null }> {
-  const body = new PassphraseBody(prompt, once);
+  const body = new PassphraseBody(prompt, once, password);
 
   // Built directly rather than via showDialog (which is exactly this) so the
   // instance can be passed to launchWithEscape.

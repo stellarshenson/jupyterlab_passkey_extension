@@ -68,7 +68,7 @@ export function ipAddressAdvice(slots: ISlot[] = []): string {
     n === 'localhost' ? 'localhost (when it runs on this computer)' : n
   );
   return names.length > 0
-    ? `an IP address cannot hold a passkey - open JupyterLab at ${places.join(' or ')}, where your ${names.length > 1 ? 'passkeys are' : 'passkey is'} registered, or by its hostname over HTTPS`
+    ? `an IP address cannot hold a passkey - open JupyterLab at ${places.join(' or ')}, where your ${names.length > 1 ? 'passkeys were' : 'passkey was'} added, or by its hostname over HTTPS`
     : 'an IP address cannot hold a passkey - open JupyterLab by its hostname over HTTPS, or at localhost when it runs on this computer';
 }
 
@@ -103,7 +103,7 @@ export async function passkeyPrf(
       0,
       isIpAddress(host)
         ? ipAddressAdvice(status.slots)
-        : `no passkey is registered for ${host} - register one under Vault settings and security (the cog)`
+        : `no passkey was added for ${host} - add one under Vault settings and security (the cog)`
     );
   }
   // Each slot has its own PRF salt, so the salt is chosen per credential.
@@ -147,17 +147,6 @@ export async function unlockWithPasskey(
 ): Promise<IStatus> {
   const { credId, prf } = await passkeyPrf(status, host);
   return api.unlockPasskey(credId, prf);
-}
-
-/** The password of `name`, read with a fresh passkey request for this hostname. */
-export async function revealWithPasskey(
-  api: VaultApi,
-  status: IStatus,
-  name: string,
-  host: string
-): Promise<string> {
-  const { credId, prf } = await passkeyPrf(status, host);
-  return api.revealPassword(name, credId, prf);
 }
 
 /**
@@ -205,7 +194,7 @@ export async function registerPasskey(
 
   try {
     if (!(await confirm(name))) {
-      throw new VaultError(0, 'passkey registration cancelled');
+      throw new VaultError(0, 'adding the passkey was cancelled');
     }
 
     const salt = random(32);

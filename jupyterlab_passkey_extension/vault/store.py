@@ -6,17 +6,24 @@
         {"type": "recovery", "kdf": "scrypt", "n": 131072, "r": 8, "p": 1,
          "salt": b64, "wrapped": b64},
         {"type": "passkey", "cred_id": b64url, "rp_id": host, "prf_salt": b64url,
-         "hkdf_salt": b64, "label": text, "created": iso, "wrapped": b64}
+         "hkdf_salt": b64, "label": text, "created": iso, "wrapped": b64},
+        {"type": "password", "kdf": "scrypt", "n": 131072, "r": 8, "p": 1,
+         "salt": b64, "created": iso, "wrapped": b64}
       ],
-      "entries": b64(nonce | AES-256-GCM(data key, JSON list of entries))
+      "entries": b64(nonce | AES-256-GCM(data key, JSON list of entries)),
+      "authenticator": {"created": iso, "secret": b64(nonce | AES-256-GCM(data key, secret))}
     }
 
 The data key (32 random bytes) encrypts every entry, names included, as one blob. Each
 slot wraps that same key under its own key-encryption key - `Scrypt(passphrase)` for
-the recovery slot, `HKDF(PRF)` for a passkey slot - so any one slot opens the vault and
+the recovery slot, `HKDF(PRF)` for a passkey slot, `Scrypt(password)` for the one
+unlock password slot a vault can have - so any one slot opens the vault and
 adding or removing a slot never re-encrypts the entries. Every slot parameter except the
 wrapped key itself and its label is bound into the wrap as associated data, so a changed
 salt, KDF cost, credential or hostname fails to open rather than opening wrongly.
+
+`authenticator` is there only while the vault has an authenticator app. Its secret is
+sealed under the data key, so a locked vault tells that an app exists and nothing more.
 
 `id` is random per vault. It names the unlocked key in its holder, so two vaults under
 one user (two labs, or a second `JLAB_PASSKEY_VAULT`) never read each other's key.
@@ -46,6 +53,7 @@ VERSION = 1
 # slot stores its own, so raising these later leaves existing slots readable.
 SCRYPT = {"n": 2**17, "r": 8, "p": 1}
 _ENTRIES_AAD = f"{FORMAT}/v{VERSION}/entries".encode()
+_AUTHENTICATOR_AAD = f"{FORMAT}/v{VERSION}/authenticator".encode()
 _HKDF_INFO = f"{FORMAT}/passkey".encode()
 
 
@@ -107,12 +115,13 @@ def _slot_aad(slot):
     return (f"{FORMAT}/slot/" + json.dumps(bound, sort_keys=True)).encode()
 
 
-def _recovery_kek(slot, passphrase):
+def _scrypt_kek(slot, secret):
+    """The key of a recovery or an unlock password slot, from the secret typed."""
     if slot.get("kdf") != "scrypt":
-        raise VaultError(f"unknown KDF {slot.get('kdf')!r} in the recovery slot")
+        raise VaultError(f"unknown KDF {slot.get('kdf')!r} in the {slot.get('type')} slot")
     return Scrypt(
         salt=_b64d(slot["salt"]), length=32, n=slot["n"], r=slot["r"], p=slot["p"]
-    ).derive(passphrase.encode("utf-8"))
+    ).derive(secret.encode("utf-8"))
 
 
 def _passkey_kek(slot, prf):
@@ -125,7 +134,14 @@ def _recovery_slot(dek, passphrase):
     if not isinstance(passphrase, str) or passphrase == "":
         raise VaultError("a recovery passphrase is required")
     slot = {"type": "recovery", "kdf": "scrypt", **SCRYPT, "salt": _b64e(os.urandom(16))}
-    slot["wrapped"] = _seal(_recovery_kek(slot, passphrase), dek, _slot_aad(slot))
+    slot["wrapped"] = _seal(_scrypt_kek(slot, passphrase), dek, _slot_aad(slot))
+    return slot
+
+
+def _password_slot(dek, password):
+    slot = {"type": "password", "kdf": "scrypt", **SCRYPT, "salt": _b64e(os.urandom(16)),
+            "created": _now()}
+    slot["wrapped"] = _seal(_scrypt_kek(slot, password), dek, _slot_aad(slot))
     return slot
 
 
@@ -217,14 +233,25 @@ def create(path, passphrase):
     return dek
 
 
-def unwrap_recovery(doc, passphrase):
+def _unwrap_typed(doc, kind, secret, wrong, missing):
+    """The data key from the slot of type `kind`, which a typed secret opens."""
     for slot in doc["slots"]:
-        if slot.get("type") == "recovery":
+        if slot.get("type") == kind:
             try:
-                return _open(_recovery_kek(slot, passphrase), slot["wrapped"], _slot_aad(slot))
+                return _open(_scrypt_kek(slot, secret), slot["wrapped"], _slot_aad(slot))
             except (InvalidTag, ValueError, KeyError, TypeError):
-                raise VaultError("wrong recovery passphrase")
-    raise VaultError("the vault has no recovery slot")
+                raise VaultError(wrong)
+    raise VaultError(missing)
+
+
+def unwrap_recovery(doc, passphrase):
+    return _unwrap_typed(doc, "recovery", passphrase, "wrong recovery passphrase",
+                         "the vault has no recovery slot")
+
+
+def unwrap_password(doc, password):
+    return _unwrap_typed(doc, "password", password, "wrong unlock password",
+                         "the vault has no unlock password")
 
 
 def unwrap_passkey(doc, cred_id, prf):
@@ -234,7 +261,7 @@ def unwrap_passkey(doc, cred_id, prf):
                 return _open(_passkey_kek(slot, prf), slot["wrapped"], _slot_aad(slot))
             except (InvalidTag, ValueError, KeyError, TypeError):
                 raise VaultError("the passkey did not open the vault")
-    raise VaultError("that passkey is not registered with this vault")
+    raise VaultError("this vault does not have that passkey")
 
 
 def read_entries(doc, dek):
@@ -269,7 +296,7 @@ def add_passkey(path, dek, cred_id, rp_id, prf_salt, prf, label):
         doc = load(path)
         _check_dek(doc, dek)
         if any(s.get("cred_id") == cred_id for s in doc["slots"]):
-            raise VaultError("that passkey is already registered")
+            raise VaultError("this vault already has that passkey")
         doc["slots"].append(slot)
         _write(path, doc)
 
@@ -279,7 +306,7 @@ def remove_passkey(path, cred_id):
         doc = load(path)
         kept = [s for s in doc["slots"] if not (s.get("type") == "passkey" and s.get("cred_id") == cred_id)]
         if len(kept) == len(doc["slots"]):
-            raise VaultError("that passkey is not registered with this vault")
+            raise VaultError("this vault does not have that passkey")
         doc["slots"] = kept
         _write(path, doc)
 
@@ -291,6 +318,61 @@ def replace_recovery(path, dek, passphrase):
         _check_dek(doc, dek)
         doc["slots"] = [slot] + [s for s in doc["slots"] if s.get("type") != "recovery"]
         _write(path, doc)
+
+
+def set_password(path, dek, password):
+    """Set the unlock password, in place of the one there was."""
+    slot = _password_slot(dek, password)
+    with _locked(path):
+        doc = load(path)
+        _check_dek(doc, dek)
+        doc["slots"] = [s for s in doc["slots"] if s.get("type") != "password"] + [slot]
+        _write(path, doc)
+
+
+def remove_password(path):
+    with _locked(path):
+        doc = load(path)
+        kept = [s for s in doc["slots"] if s.get("type") != "password"]
+        if len(kept) == len(doc["slots"]):
+            raise VaultError("no unlock password is set")
+        doc["slots"] = kept
+        _write(path, doc)
+
+
+def set_authenticator(path, dek, secret):
+    with _locked(path):
+        doc = load(path)
+        _check_dek(doc, dek)
+        if "authenticator" in doc:
+            raise VaultError("the vault already has an authenticator app - remove it first")
+        doc["authenticator"] = {"created": _now(), "secret": _seal(dek, secret, _AUTHENTICATOR_AAD)}
+        _write(path, doc)
+
+
+def remove_authenticator(path):
+    with _locked(path):
+        doc = load(path)
+        if "authenticator" not in doc:
+            raise VaultError("the vault has no authenticator app")
+        del doc["authenticator"]
+        _write(path, doc)
+
+
+def authenticator_secret(doc, dek):
+    """The secret of the authenticator app, or None when there is none."""
+    if "authenticator" not in doc:
+        return None
+    try:
+        return _open(dek, doc["authenticator"]["secret"], _AUTHENTICATOR_AAD)
+    except (InvalidTag, ValueError, KeyError, TypeError):
+        raise VaultError("the authenticator app's secret does not decrypt - a damaged file")
+
+
+def authenticator_metadata(doc):
+    """When the authenticator app was added, or None - what status shows."""
+    app = doc.get("authenticator")
+    return {"created": app.get("created")} if isinstance(app, dict) else None
 
 
 def slot_metadata(doc):

@@ -1,7 +1,7 @@
 """The vault as seen from outside the server: the CLI and the Python API share this.
 
 Everything goes through the server's authenticated REST API. The two passkey steps -
-unlocking with a passkey and registering one - raise a notification
+unlocking with a passkey and adding one - raise a notification
 whose button runs a vault command in the JupyterLab tab; the page sends the PRF
 straight to the server, and only `ok` or the error comes back here through the
 result relay. So the PRF never passes through this process.
@@ -92,19 +92,23 @@ class Vault:
     def status(self):
         return request("GET", "status")
 
-    def unlock(self, recovery=None):
+    def unlock(self, recovery=None, password=None):
         """Unlock with the passkey (a notification to click), or with the recovery
-        passphrase when one is given."""
+        passphrase or the unlock password when one is given."""
         if recovery is not None:
             return request("POST", "unlock", {"recovery": recovery})
+        if password is not None:
+            return request("POST", "unlock", {"password": password})
         s = self.status()
         # Not a notification whose click can only answer that no passkey matches.
         if not s["initialized"]:
             raise VaultClientError(no_vault(s["path"]))
         if not any(slot["type"] == "passkey" for slot in s["slots"]):
             raise VaultClientError(
-                "no passkey is registered with the vault - unlock with the recovery"
+                "the vault has no passkey - unlock with the recovery"
                 " passphrase: jupyterlab-passkey vault unlock --recovery"
+                + (", or with the unlock password: jupyterlab-passkey vault unlock --password"
+                   if any(slot["type"] == "password" for slot in s["slots"]) else "")
             )
         browser_step(
             UNLOCK_COMMAND, {}, "Unlock vault",

@@ -1,7 +1,8 @@
 """REST endpoints of the vault: `<base>/jupyterlab-passkey-extension/vault/<action>`.
 
 One handler dispatches on the action. Bodies are parsed with the bridge's `json_body`,
-which never logs them - a vault body can carry a password, a passphrase or a PRF.
+which never logs them - a vault body can carry an entry's password, a passphrase, the
+unlock password, a PRF, or the secret or a code of an authenticator app.
 Nothing below logs a body, a value or a result.
 """
 
@@ -12,8 +13,8 @@ from jupyter_server.utils import url_path_join
 import tornado
 
 from ..routes import json_body
-from .service import (GENERATE_LENGTH, Conflict, Denied, Locked, NotFound, VaultError, VaultService,
-                      generate)
+from .service import (GENERATE_LENGTH, PROOFS, Conflict, Denied, Locked, NotFound, VaultError,
+                      VaultService, generate)
 
 _service = VaultService()
 
@@ -21,15 +22,18 @@ _service = VaultService()
 def _unlock(s, body):
     if "recovery" in body:
         s.unlock_recovery(body.get("recovery"))
+    elif "password" in body:
+        s.unlock_password(body.get("password"))
     else:
         s.unlock_passkey(body.get("cred_id"), body.get("prf"))
     return s.status()
 
 
 def _reveal(s, body):
-    # With a PRF, the panel's passkey-checked reveal; without, the CLI's `vault get`.
-    if "prf" in body:
-        return {"value": s.reveal_with_passkey(body.get("name"), body.get("cred_id"), body.get("prf"))}
+    # With a proof, the panel's proven reveal; without, the CLI's `vault get`.
+    if any(k in body for k in PROOFS):
+        proof = {k: body[k] for k in ("cred_id", *PROOFS) if k in body}
+        return {"value": s.reveal_proven(body.get("name"), proof)}
     return {"value": s.read(body.get("name"), body.get("field") or "password")}
 
 
@@ -48,7 +52,7 @@ _GET = {
 }
 
 _POST = {
-    "config": lambda s, b: s.set_config(b.get("unlock_minutes")),
+    "config": lambda s, b: s.set_config(b.get("unlock_minutes"), b.get("password_min_length")),
     "init": lambda s, b: s.init(b.get("recovery")),
     "unlock": _unlock,
     "lock": lambda s, b: s.lock(),
@@ -61,6 +65,10 @@ _POST = {
         b.get("cred_id"), b.get("rp_id"), b.get("prf_salt"), b.get("prf"), b.get("label"),
         b.get("proof")),
     "passkeys-remove": lambda s, b: s.remove_passkey(b.get("cred_id")),
+    "password": lambda s, b: s.set_password(b.get("password"), b.get("proof")),
+    "password-remove": lambda s, b: s.remove_password(),
+    "authenticator": lambda s, b: s.add_authenticator(b.get("secret"), b.get("code"), b.get("proof")),
+    "authenticator-remove": lambda s, b: s.remove_authenticator(),
     "recovery": lambda s, b: s.replace_recovery(b.get("recovery"), b.get("proof")),
 }
 

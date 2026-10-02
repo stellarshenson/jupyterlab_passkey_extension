@@ -41,6 +41,7 @@ export function connectSettings(
   let docked: Side | null = null;
   const apply = (): void => {
     const minutes = settings.get('unlockMinutes').composite as number;
+    const shortest = settings.get('passwordMinLength').composite as number;
     const side =
       settings.get('sidebar').composite === 'left' ? 'left' : 'right';
     // Only on a change of side: docking again collapses the open panel.
@@ -48,9 +49,9 @@ export function connectSettings(
       docked = side;
       dock(side);
     }
-    api.setConfig(minutes).catch(e => {
+    api.setConfig(minutes, shortest).catch(e => {
       console.warn(
-        `vault: could not send the unlock duration - ${describeFailure(e)}`
+        `vault: could not send the settings - ${describeFailure(e)}`
       );
     });
   };
@@ -89,7 +90,7 @@ async function answerCli(
 export const vaultPlugin: JupyterFrontEndPlugin<void> = {
   id: VAULT_PLUGIN_ID,
   description:
-    'A password vault the Jupyter server keeps, unlocked with a passkey',
+    'A password vault the Jupyter server keeps, unlocked with a passkey, an unlock password or the recovery passphrase',
   autoStart: true,
   optional: [ISettingRegistry],
   activate: async (
@@ -134,7 +135,7 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
     });
 
     app.commands.addCommand(REGISTER_COMMAND, {
-      label: 'Register Vault Passkey',
+      label: 'Add Vault Passkey',
       execute: args =>
         answerCli(
           app,
@@ -150,13 +151,13 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
               // Said before a passphrase is asked for nothing.
               throw new VaultError(0, ipAddressAdvice(status.slots));
             }
-            const proof = await askProof(status, host, 'Register new passkey');
+            const proof = await askProof(status, host, 'Add passkey');
             const label = (args.label as string) ?? '';
             if (
               proof === null ||
               !(await registerWithProof(api, proof, label, host))
             ) {
-              throw new VaultError(0, 'passkey registration cancelled');
+              throw new VaultError(0, 'adding the passkey was cancelled');
             }
           },
           panel

@@ -42,7 +42,7 @@ jest.mock('@jupyterlab/services', () => ({ ServerConnection: {} }));
 jest.mock('../request');
 
 import { requestAPI } from '../request';
-import { runPassphrase } from '../passphrase';
+import { askSecret, runPassphrase } from '../passphrase';
 
 const mockRequestAPI = requestAPI as jest.MockedFunction<typeof requestAPI>;
 
@@ -359,6 +359,46 @@ function fillOnce(body: any, value: string): void {
   body.first.value = value;
   body.first.dispatchEvent(new Event('input'));
 }
+
+describe('askSecret for a new unlock password', () => {
+  it('names the fields a password, and keeps Submit off until both agree and are long enough', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      const body = opts.body;
+      const announce = body.node.querySelector('.jp-PassphraseDialog-announce');
+      expect(body.first.placeholder).toBe('Password');
+      expect(body.second.placeholder).toBe('Confirm password');
+      fill(body, 'twelve chars', 'twelve char');
+      expect(announce.textContent).toBe('Passwords do not match');
+      expect(body.second.validity.valid).toBe(false);
+      // Agreeing is not enough while it is shorter than the vault takes.
+      fill(body, 'eleven char', 'eleven char');
+      expect(announce.textContent).toBe('Too short: at least 12 characters');
+      expect(body.second.validationMessage).toBe(
+        'Enter at least 12 characters'
+      );
+      fill(body, 'twelve chars', 'twelve chars');
+      expect(announce.textContent).toBe('Passwords match');
+      expect(body.second.validity.valid).toBe(true);
+      return { button: { accept: true } };
+    });
+    expect(
+      await askSecret('prompt', false, 'Set unlock password', { minLength: 12 })
+    ).toEqual({ accepted: true, value: 'twelve chars' });
+  });
+
+  it('keeps the passphrase wording and no length rule without the option', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      expect(opts.body.first.placeholder).toBe('Passphrase');
+      fill(opts.body, 'ab', 'ab');
+      expect(opts.body.second.validity.valid).toBe(true);
+      return { button: { accept: true } };
+    });
+    expect(await askSecret('prompt', false)).toEqual({
+      accepted: true,
+      value: 'ab'
+    });
+  });
+});
 
 describe('runPassphrase with once', () => {
   it('relays a single entry, with no confirm field to match against', async () => {

@@ -83,14 +83,14 @@ def test_a_wrong_passphrase_or_prf_is_refused(path):
         store.unwrap_recovery(doc, PASS + "x")
     with pytest.raises(VaultError, match="did not open"):
         store.unwrap_passkey(doc, "cred-1", bytes(32))
-    with pytest.raises(VaultError, match="not registered"):
+    with pytest.raises(VaultError, match="does not have that passkey"):
         store.unwrap_passkey(doc, "cred-2", PRF)
 
 
 def test_a_passkey_cannot_be_registered_twice(path):
     dek = store.create(path, PASS)
     store.add_passkey(path, dek, "cred-1", "lab.example", "salt", PRF, "laptop")
-    with pytest.raises(VaultError, match="already registered"):
+    with pytest.raises(VaultError, match="already has that passkey"):
         store.add_passkey(path, dek, "cred-1", "lab.example", "salt", PRF, "laptop")
 
 
@@ -104,7 +104,7 @@ def test_the_recovery_slot_is_replaced_never_removed(path):
     with pytest.raises(VaultError):
         store.unwrap_recovery(doc, PASS)
     # remove_passkey only ever removes passkey slots - no call reaches the recovery slot.
-    with pytest.raises(VaultError, match="not registered"):
+    with pytest.raises(VaultError, match="does not have that passkey"):
         store.remove_passkey(path, None)
     store.remove_passkey(path, "cred-1")
     assert [s["type"] for s in store.load(path)["slots"]] == ["recovery"]

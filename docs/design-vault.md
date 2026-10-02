@@ -27,11 +27,11 @@ Status: current for release 1.1.2, 2026-09-29.
 
 ## 1. Overview
 
-This section states what the vault is and which parts take part in it. The vault is one encrypted file of passwords per user. The Jupyter server keeps it, and a passkey or a recovery passphrase opens it.
+This section states what the vault is and which parts take part in it. The vault is one encrypted file of passwords per user. The Jupyter server keeps it, and a passkey, an unlock password or the recovery passphrase opens it.
 
 - **One owner of the file** - only the Jupyter server process reads and writes the vault file; every client calls its REST API
 - **Three clients** - the `jupyterlab-passkey vault` CLI, the Python `Vault` class and the sidebar panel
-- **Two ways in** - a passkey registered for the hostname of the browser tab, or the recovery passphrase
+- **Three ways in** - a passkey added for the hostname of the browser tab, the unlock password, or the recovery passphrase
 - **One unlock for all clients** - an unlock keeps the data key for the unlock duration (default 240 minutes), and the CLI, the Python class and the panel all use that one unlock
 - **Passkey steps run in the tab** - WebAuthn runs only in a browser tab after a click, so the CLI and the Python class raise a notification, and its button starts the passkey step in the tab
 
@@ -83,13 +83,15 @@ This section lists the modules of the vault and the job of each. Paths are relat
 | Component                  | Location                                         | Description                                                                       |
 | -------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------- |
 | File format and encryption | `jupyterlab_passkey_extension/vault/store.py`    | reads, encrypts and writes `vault.json`                                           |
+| Authenticator codes        | `jupyterlab_passkey_extension/vault/totp.py`     | computes and checks the codes of the authenticator app                            |
 | Key holders                | `jupyterlab_passkey_extension/vault/holders.py`  | keep the data key while the vault is unlocked                                     |
 | Vault service              | `jupyterlab_passkey_extension/vault/service.py`  | unlock, lock, entries, slots and proofs; the only code that opens the file        |
 | REST handlers              | `jupyterlab_passkey_extension/vault/handlers.py` | map each `vault/<action>` request to the service                                  |
 | Client                     | `jupyterlab_passkey_extension/vault/client.py`   | REST calls and the notification step, shared by the CLI and the Python class      |
 | CLI                        | `jupyterlab_passkey_extension/vault/cli.py`      | the `jupyterlab-passkey vault` subcommands                                        |
 | Panel                      | `src/vault/panel.ts`, `src/vault/dialogs.ts`     | entry list, entry forms, and the settings and security view (the cog)             |
-| Passkey steps              | `src/vault/webauthn.ts`                          | registration, unlock, reveal and proof requests to the authenticator              |
+| Passkey steps              | `src/vault/webauthn.ts`                          | new passkey, unlock and proof requests to the authenticator                       |
+| Authenticator setup        | `src/vault/totp.ts`                              | the setup key of a new authenticator app and its QR code                          |
 | Commands                   | `src/vault/plugin.ts`                            | `passkey:vault-unlock` and `passkey:vault-register`, run by a notification button |
 
 ## 3. Vault file
@@ -124,15 +126,30 @@ The file is one JSON document with format version 1.
       "created": "<ISO 8601 UTC>",
       "wrapped": "<base64>",
       "label": "<text>"
+    },
+    {
+      "type": "password",
+      "kdf": "scrypt",
+      "n": 131072,
+      "r": 8,
+      "p": 1,
+      "salt": "<base64>",
+      "created": "<ISO 8601 UTC>",
+      "wrapped": "<base64>"
     }
   ],
-  "entries": "<base64: 12-byte nonce + AES-256-GCM ciphertext>"
+  "entries": "<base64: 12-byte nonce + AES-256-GCM ciphertext>",
+  "authenticator": {
+    "created": "<ISO 8601 UTC>",
+    "secret": "<base64: 12-byte nonce + AES-256-GCM ciphertext>"
+  }
 }
 ```
 
 - **`id`** - random per vault; it names the data key in the key holder, so two vaults of one user never read each other's key
-- **`slots`** - one recovery slot and zero or more passkey slots
+- **`slots`** - one recovery slot, zero or more passkey slots, and at most one unlock password slot
 - **`entries`** - all entries, names included, encrypted as one JSON list
+- **`authenticator`** - present only while the vault has an authenticator app; its secret is encrypted, so a locked vault tells that an app exists and since when, nothing more
 - **Entry fields** - `name`, `username`, `password`, `url`, `category`, `notes`, `created`, `updated`
 - **Limits** - a name is at most 200 printable characters; a field is at most 65,536 characters
 
@@ -145,9 +162,12 @@ The data key is 32 random bytes that encrypt the entries. Each slot holds one co
 | Entries       | the data key                  | AES-256-GCM, 12-byte nonce                                                                               |
 | Recovery slot | the recovery passphrase       | scrypt with n = 131,072, r = 8, p = 1 and a 16-byte salt (128 MiB of memory per guess), then AES-256-GCM |
 | Passkey slot  | the PRF output of the passkey | HKDF-SHA256 with a 16-byte salt, then AES-256-GCM                                                        |
+| Password slot | the unlock password           | scrypt with the same parameters as the recovery slot, then AES-256-GCM                                   |
+| App secret    | the data key                  | AES-256-GCM, 12-byte nonce, with associated data of its own                                              |
 
 - **PRF** - the WebAuthn PRF extension: the authenticator returns 32 bytes computed from the passkey and the slot's `prf_salt`; the same passkey and salt always return the same bytes
 - **Any slot opens the vault** - every slot holds the same data key
+- **The authenticator app is no slot** - its secret is data inside the vault, not a key to it, so a code cannot open a locked vault
 - **Slot changes leave the entries as they are** - adding or removing a slot never re-encrypts the entries
 - **Slot fields are authenticated** - every slot field except `wrapped` and `label` is bound to the encryption as associated data, so a changed salt, cost, credential id or hostname fails to open
 - **Cost per slot** - each recovery slot stores its own scrypt parameters, so a higher cost for new slots leaves existing slots readable
@@ -167,10 +187,11 @@ This section describes how the server takes the data key out of a slot, where it
 
 ### 4.1 Unlock paths
 
-The server decrypts the data key from one slot and puts it in the key holder for the unlock duration. Three requests do this.
+The server decrypts the data key from one slot and puts it in the key holder for the unlock duration. Four requests do this.
 
-- **Passkey** - the tab sends one WebAuthn request that offers the passkeys registered for its hostname (section 5), each with its own `prf_salt`; it then sends the `cred_id` and the PRF to `POST vault/unlock`
+- **Passkey** - the tab sends one WebAuthn request that offers the passkeys added for its hostname (section 5), each with its own `prf_salt`; it then sends the `cred_id` and the PRF to `POST vault/unlock`
 - **Recovery passphrase** - `POST vault/unlock` with the passphrase; the CLI reads it from a hidden prompt, from stdin, or from a browser dialog with `--in-browser`
+- **Unlock password** - `POST vault/unlock` with the password, when one is set; the CLI reads it with `vault unlock --password` the same three ways
 - **Create** - `POST vault/init` creates the vault and leaves it unlocked
 
 When the CLI or the Python class starts a passkey unlock, the PRF goes from the tab to the vault endpoint. The result relay (a kernel key, or a `0600` file in `/dev/shm`) carries only `ok` or the error line back to the CLI.
@@ -221,7 +242,7 @@ The server keeps the data key in the first key holder that works on the host, tr
 This subsection covers how long a key stays and what removes it earlier.
 
 - **Duration** - the `unlockMinutes` setting, 1 to 1,440 minutes, default 240
-- **Storage** - the panel sends the setting to `POST vault/config`, and the server stores it in `$XDG_STATE_HOME/jupyterlab-passkey/vault-config.json`
+- **Storage** - the panel sends the setting to `POST vault/config`, together with `passwordMinLength`, and the server stores both in `$XDG_STATE_HOME/jupyterlab-passkey/vault-config.json`
 - **When it applies** - at the next unlock from any client; a key already held keeps its expiry
 - **Lock** - `vault lock`, `Vault.lock()` or the panel's Lock button removes the key from the holder
 - **Server restart** - with keyctl or gpg-agent the key can stay held after a restart until the duration ends; with the memory holder a restart locks the vault
@@ -230,33 +251,55 @@ This subsection covers how long a key stays and what removes it earlier.
 
 This section describes which hostname a passkey belongs to. WebAuthn binds each passkey to one relying-party id (RP ID), and the vault uses the hostname of the browser tab as that id.
 
-- **Source of the hostname** - the tab reads `location.hostname` for registration, unlock, reveal and proof; the server stores the `rp_id` the tab sends
+- **Source of the hostname** - the tab reads `location.hostname` for a new passkey, unlock, reveal and proof; the server stores the `rp_id` the tab sends
 - **Proxies** - the server reads no `Host` or `X-Forwarded-Host` header, so a server on localhost behind a chain of proxies records the hostname in the user's address bar
 - **Scope** - a passkey opens the vault from its hostname or from a subdomain of it
-- **Most specific hostname** - WebAuthn takes one RP ID per request, so the tab offers the passkeys of the longest registered hostname that matches
-- **One passkey per hostname** - JupyterLab opened at two hostnames needs a passkey registered at each
+- **Most specific hostname** - WebAuthn takes one RP ID per request, so the tab offers the passkeys of the longest hostname that has a passkey and matches
+- **One passkey per hostname** - JupyterLab opened at two hostnames needs a passkey added at each
 - **IP address** - a tab at an IP address such as `127.0.0.1` cannot use a passkey; the tab refuses and names the hostnames that have passkeys
-- **Two requests to register** - a WebAuthn `create` makes the passkey, then a `get` with a new random `prf_salt` returns the PRF, because some authenticators, Windows Hello among them, return a PRF only at `get`
-- **Two dialogs to register** - the user names the passkey in a dialog before the `create`, and confirms it in a second dialog before the `get`; each button is the click the browser needs for its request
+- **Two requests to add a passkey** - a WebAuthn `create` makes the passkey, then a `get` with a new random `prf_salt` returns the PRF, because some authenticators, Windows Hello among them, return a PRF only at `get`
+- **Two dialogs to add a passkey** - the user names the passkey in a dialog before the `create`, and confirms it in a second dialog before the `get`; each button is the click the browser needs for its request
 - **Name in the passkey manager** - `JupyterLab vault - <UTC time> - <hostname>`, so two passkeys of one vault can be told apart
-- **No PRF** - an authenticator that returns no PRF cannot hold a vault key; the registration fails and names the passkey the browser created, so the user can delete it
+- **No PRF** - an authenticator that returns no PRF cannot hold a vault key; adding it fails and the panel names the passkey the browser created, so the user can delete it
 
 ## 6. Proof requirements
 
-This section lists which requests need a proof. A proof is a passkey answer (`cred_id` and PRF) or the current recovery passphrase, sent with the request; the server decrypts the data key from it instead of taking the key from the holder. Every request also needs the Jupyter server token.
+This section lists which requests need a proof. A proof is sent with the request and is one of three: a passkey answer (`cred_id` and PRF), the current recovery passphrase, or a code of the authenticator app. From the first two the server decrypts the data key itself instead of taking it from the holder. A code holds no key, so it is a proof only while the vault is unlocked: the server checks it against the app's secret and takes the data key from the holder. The unlock password is a fourth proof for one request only, showing a password in the panel. Every request also needs the Jupyter server token.
 
-| Request                            | Needs                 |
-| ---------------------------------- | --------------------- |
-| Add a passkey                      | a proof               |
-| Replace the recovery passphrase    | a proof               |
-| Show a password in the panel       | a new passkey request |
-| Remove a passkey                   | an unlocked vault     |
-| Read, add, edit or delete an entry | an unlocked vault     |
-| Change the unlock duration         | nothing more          |
+| Request                            | Needs                                              |
+| ---------------------------------- | -------------------------------------------------- |
+| Add a passkey                      | a proof                                            |
+| Replace the recovery passphrase    | a proof                                            |
+| Show a password in the panel       | a proof, or the unlock password                    |
+| Add the authenticator app          | a proof, and the code the app shows for its secret |
+| Add or replace the unlock password | a proof                                            |
+| Remove a passkey                   | an unlocked vault                                  |
+| Remove the authenticator app       | an unlocked vault                                  |
+| Remove the unlock password         | an unlocked vault                                  |
+| Read, add, edit or delete an entry | an unlocked vault                                  |
+| Change the unlock duration         | nothing more                                       |
 
-- **Why a proof** - a new passkey and a new recovery passphrase each open the vault later, and an unlocked vault proves nothing about who asks now
-- **Order in the tab** - a passkey registered for the tab's hostname first; the recovery passphrase when there is none, or when the passkey request is refused or returns no PRF
+The vault's sign-in methods, and what each may do:
+
+| Sign-in method      | How many                      | Unlocks the vault | Shows a password in the panel    | Adds a sign-in method, changes the recovery passphrase |
+| ------------------- | ----------------------------- | ----------------- | -------------------------------- | ------------------------------------------------------ |
+| Recovery passphrase | exactly one, never removed    | yes               | yes                              | yes                                                    |
+| Passkey             | any number, one hostname each | yes               | yes                              | yes                                                    |
+| Unlock password     | at most one                   | yes               | yes                              | no                                                     |
+| Authenticator app   | at most one                   | no                | yes, while the vault is unlocked | yes, while the vault is unlocked                       |
+
+- **One rule on the server** - `PROOFS` in `service.py` names the kinds of proof and the one that proves a reveal only; the REST handler and the two refusals that list the proofs read it
+- **Why a proof** - a new passkey and a new recovery passphrase each open the vault later, an authenticator app proves both, and an unlocked vault proves nothing about who asks now
+- **Order in the tab** - a passkey added for the tab's hostname first. With none, or when the passkey request gets no answer or returns no PRF: a code when the vault has an app and is unlocked, with a button for the recovery passphrase; otherwise the recovery passphrase
+- **Order in the entry dialog** - a passkey added for the tab's hostname first. With none, or no answer: a row under the password asks a code when the vault has an app, with a link to the unlock password when one is set, then to the recovery passphrase, and from the last of them back to the first
+- **A new unlock password is typed first** - the panel asks the new password twice, then the proof, because the server checks the proof with the request and a code stays right for less than a minute
+- **A code can expire where the proof comes first** - a new passkey and a recovery passphrase change ask the proof before their other steps (a name and two passkey prompts; the new passphrase typed twice). A code typed there is refused as `wrong code` when those steps take longer than the code stays right, and that refusal counts as a wrong code. The code dialog's Use recovery passphrase button gives the proof that does not expire; after a refused new passkey the panel names the passkey the browser created, so the user can delete it
 - **No relay** - the tab asks for the proof itself, so no secret reaches the page through a relay
+- **Unlock password** - it opens the vault and shows a password. It is refused as a proof for a new passkey, a new authenticator app, a recovery passphrase change and its own replacement, so the secret typed every day adds no way into the vault and replaces no other secret
+- **One app** - the vault holds at most one authenticator app. The tab creates the secret (160 bits), shows it as a QR code and as a setup key, and the server stores it only for a right code and a proof
+- **Codes** - RFC 6238 with HMAC-SHA-1, 6 digits and a 30 s time step, the parameters every authenticator app supports. The step before and the step after the current one are accepted
+- **A code is accepted once** - the server refuses a code of a time step at or before the last one it accepted
+- **Five wrong codes** - after five wrong codes in a row the server refuses every code until the next unlock; a passkey and the recovery passphrase still prove, and the unlock password still shows a password. Both counts are in the server's memory and start again when the server does
 
 ## 7. Reading values
 
@@ -268,7 +311,7 @@ This section describes the path each value takes out of the vault. A listing nev
 | `vault exec --env VAR=NAME` | REST answer to the CLI process                                  | the environment of the command; the CLI process becomes the command |
 | `vault copy`                | server stages it in the relay; the tab collects it on the click | the browser clipboard                                               |
 | `vault show`                | server stages it in the relay; the tab collects it on the click | a distorted image in the tab                                        |
-| Panel eye button            | new passkey request, then `POST vault/reveal` with the PRF      | the entry dialog                                                    |
+| Panel eye button            | a proof asked in the entry dialog, then `POST vault/reveal`     | the entry dialog                                                    |
 | `vault list`, panel list    | REST answer                                                     | names and fields without passwords                                  |
 
 - **copy and show** - the value never enters the CLI process
@@ -279,36 +322,41 @@ This section describes the path each value takes out of the vault. A listing nev
 
 This section lists the endpoints. Each is `<base_url>/jupyterlab-passkey-extension/vault/<action>`, requires the Jupyter server token, and never logs a body, a value or a result.
 
-| Method | Action            | Body or query                                             | Answer                    |
-| ------ | ----------------- | --------------------------------------------------------- | ------------------------- |
-| GET    | `status`          | -                                                         | state, see below          |
-| GET    | `entries`         | -                                                         | entries without passwords |
-| GET    | `generate`        | `length` (8 to 256, default 24), `symbols` (`0` for none) | a new password            |
-| POST   | `config`          | `unlock_minutes`                                          | 204                       |
-| POST   | `init`            | `recovery`                                                | 204                       |
-| POST   | `unlock`          | `recovery`, or `cred_id` and `prf`                        | state                     |
-| POST   | `lock`            | -                                                         | 204                       |
-| POST   | `entries`         | `name`, `fields`                                          | 204                       |
-| PATCH  | `entries`         | `name`, `fields`; only the fields given change            | 204                       |
-| POST   | `delete`          | `name`                                                    | 204                       |
-| POST   | `reveal`          | `name` and `field`, or `name`, `cred_id` and `prf`        | `value`                   |
-| POST   | `stage`           | `name`, `field`, `kind` (`secret` or `code`)              | `nonce`                   |
-| POST   | `import`          | `entries`, a list of entry objects                        | `added`, `skipped`        |
-| POST   | `passkeys`        | `cred_id`, `rp_id`, `prf_salt`, `prf`, `label`, `proof`   | 204                       |
-| POST   | `passkeys-remove` | `cred_id`                                                 | 204                       |
-| POST   | `recovery`        | `recovery`, `proof`                                       | 204                       |
+| Method | Action                 | Body or query                                             | Answer                    |
+| ------ | ---------------------- | --------------------------------------------------------- | ------------------------- |
+| GET    | `status`               | -                                                         | state, see below          |
+| GET    | `entries`              | -                                                         | entries without passwords |
+| GET    | `generate`             | `length` (8 to 256, default 24), `symbols` (`0` for none) | a new password            |
+| POST   | `config`               | `unlock_minutes`, `password_min_length`                   | 204                       |
+| POST   | `init`                 | `recovery`                                                | 204                       |
+| POST   | `unlock`               | `recovery`, or `password`, or `cred_id` and `prf`         | state                     |
+| POST   | `lock`                 | -                                                         | 204                       |
+| POST   | `entries`              | `name`, `fields`                                          | 204                       |
+| PATCH  | `entries`              | `name`, `fields`; only the fields given change            | 204                       |
+| POST   | `delete`               | `name`                                                    | 204                       |
+| POST   | `reveal`               | `name` and `field`, or `name` and a proof's keys          | `value`                   |
+| POST   | `stage`                | `name`, `field`, `kind` (`secret` or `code`)              | `nonce`                   |
+| POST   | `import`               | `entries`, a list of entry objects                        | `added`, `skipped`        |
+| POST   | `passkeys`             | `cred_id`, `rp_id`, `prf_salt`, `prf`, `label`, `proof`   | 204                       |
+| POST   | `passkeys-remove`      | `cred_id`                                                 | 204                       |
+| POST   | `recovery`             | `recovery`, `proof`                                       | 204                       |
+| POST   | `password`             | `password`, `proof`                                       | 204                       |
+| POST   | `password-remove`      | -                                                         | 204                       |
+| POST   | `authenticator`        | `secret` (the setup key), `code`, `proof`                 | 204                       |
+| POST   | `authenticator-remove` | -                                                         | 204                       |
 
-- **State** - `initialized`, `unlocked`, `remaining` seconds, `holder` with its capabilities, slot fields without the wrapped keys and salts, `settings`, `path`, `revision`
+- **State** - `initialized`, `unlocked`, `remaining` seconds, `holder` with its capabilities, slot fields without the wrapped keys and salts, `authenticator` with the date the app was added or null, `settings`, `path`, `revision`
+- **A proof's keys** - `cred_id` and `prf`, or `current` (the recovery passphrase), or `code`, or for a `reveal` only `password` (the unlock password); `proof` is an object of the same keys. A `reveal` with none of them is the CLI's `vault get`
 - **`revision`** - the first 16 hex characters of a SHA-256 of the encrypted entries; it changes with every entry change, and it tells nothing about the entries
 - **Generated password** - leaves out `l I 1 | O 0`, quotes, backslash, backtick and space, because a user reads it off an image or types it on a phone
 - **Errors** - the body is `{"error": "<one line>"}` with the status below
 
 | Status | Meaning                                                                                 |
 | ------ | --------------------------------------------------------------------------------------- |
-| 400    | refused: wrong passphrase or passkey at unlock, invalid input, no vault file            |
-| 403    | the proof did not open the vault                                                        |
+| 400    | refused: wrong passphrase, password or passkey at unlock, invalid input, no vault file  |
+| 403    | the proof did not open the vault, or the code is wrong, used or refused                 |
 | 404    | no entry with that name, or no such action                                              |
-| 409    | an entry with that name exists                                                          |
+| 409    | an entry with that name exists, or the vault already has an authenticator app           |
 | 423    | the vault is locked                                                                     |
 | 500    | a key holder or file failure; the log line names the action and the exception type only |
 
@@ -330,7 +378,7 @@ The CLI is `jupyterlab-passkey vault <command>`. Its full reference is [cli-refe
 
 The `Vault` class in `jupyterlab_passkey_extension.vault` uses the same REST calls as the CLI.
 
-- **Methods** - `status()`, `list()`, `get(name, field="password")`, `unlock(recovery=None)`, `lock()`
+- **Methods** - `status()`, `list()`, `get(name, field="password")`, `unlock(recovery=None, password=None)`, `lock()`
 - **Locked vault** - `get()` and `list()` raise the unlock notification, then run once more
 - **Refusal** - raises `VaultClientError` with the one-line reason
 
@@ -340,15 +388,21 @@ The panel sits in the right sidebar by default; the `sidebar` setting moves it t
 
 - **Refresh** - while visible, it reads the state and, when unlocked, the entry list every 15 s, and at once when it is shown again
 - **Changes from elsewhere** - a new `revision` or a changed slot list redraws the panel, so changes made from the CLI or another tab appear
-- **Eye button** - a password shows only after a new passkey request, even when the vault is unlocked; while that request runs the eye shows a spinner and the line under the field reads `Waiting for your passkey`
-- **Cog view** - the key holder and its capabilities, the passkeys with hostname and date, register and remove a passkey, change the recovery passphrase, and the unlock duration with a button that opens the settings
+- **Eye button** - a password shows only after a proof, even when the vault is unlocked. The eye asks a passkey; while that request runs it shows a spinner and the line under the field reads `Waiting for your passkey`. With no passkey for the hostname, or no answer, a row under the field asks a code of the authenticator app, the unlock password or the recovery passphrase
+- **Locked view** - Unlock with passkey when the hostname has one, Unlock with password when one is set, and a link for the recovery passphrase
+- **Cog view** - three sections: Security (the key holder and its capabilities), Sign-in methods, and Settings (the unlock duration, the vault file and a button that opens the settings)
+- **Sign-in methods** - one row for each passkey (its name, date and hostname), for the unlock password, for the authenticator app and for the recovery passphrase. The first three have Remove, in two clicks; the recovery passphrase has Change. Add sign-in method opens a dialog that offers a passkey, an unlock password and an authenticator app, each with the line of the table in section 6; a new unlock password replaces the one there is, and a second app cannot be chosen
+- **Layout** - the geometry of the AI assistants panels (`jupyterlab_ai_code_assistants_extension`): fields and buttons 4 px from the panel border, text 18 px from it, header buttons and rows 24 px high, section headers as bands
+- **Measured** - on 2026-10-02 in Chromium at a 250 px sidebar, in the Claude Code panel and the Codex panel of that extension, version 1.2.56 (one widget class, the same values in both): the title, a section label and a row's name start 18 px from the panel's left border; the header, a section header and a row have 4 px of padding on both sides (its variable `--aica-inset`, which its stylesheet also gives the search field as its margin); a row is 24 px high (`--aica-row-height`); a header button is 24 px wide and high; a section header is a band in the header's colour. The vault panel's Galata test reads the same values from the vault panel
+- **Filter** - the header's filter button shows the filter field and puts the typing in it; pressing it again hides the field and clears the filter
 
 ## 10. Security limits
 
 This section states what the vault does not protect against.
 
 - **Jupyter token** - any process that has the token can read every entry while the vault is unlocked; `jupyter server list` shows the token to every process of the same user
-- **Copied file** - a copy of `vault.json` can be attacked offline through the recovery slot; scrypt makes each guess cost 128 MiB of memory, and a weak passphrase can still be guessed
+- **Copied file** - a copy of `vault.json` can be attacked offline through the recovery slot and through the unlock password slot; scrypt makes each guess cost 128 MiB of memory, and a weak passphrase or password can still be guessed. The file is as strong as the weaker of the two secrets, which is why the unlock password has a minimum length
+- **Authenticator code** - a code is a proof for a person at the panel, on an unlocked vault only. It protects nothing at rest, and a process that has the Jupyter token reads entries with `vault get` without any proof
 - **Shared keyring** - with the keyctl holder, other containers that run as the same user id in the same user namespace can read the held key
 - **Staged values** - an uncollected `copy` or `show` value outlives `vault lock`, see [7. Reading values](#7.-Reading-values)
 - **Restart** - with keyctl or gpg-agent a key can outlive a server restart until the unlock duration ends
@@ -364,4 +418,5 @@ This section lists the settings and environment variables of the vault. The serv
 | `JLAB_PASSKEY_VAULT_HOLDER` | `auto`                                         | pins the key holder                                     |
 | `XDG_STATE_HOME`            | `~/.local/state`                               | parent of the gpg-agent home and of `vault-config.json` |
 | `unlockMinutes`             | 240                                            | unlock duration in minutes, 1 to 1,440                  |
+| `passwordMinLength`         | 12                                             | fewest characters of an unlock password, 8 to 128       |
 | `sidebar`                   | `right`                                        | sidebar that holds the panel                            |
