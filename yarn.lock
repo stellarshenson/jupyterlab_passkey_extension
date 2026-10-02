@@ -7681,6 +7681,7 @@ __metadata:
     mkdirp: ^1.0.3
     npm-run-all2: ^7.0.1
     prettier: ^3.0.0
+    qrcode-generator: ^1.4.4
     rimraf: ^5.0.1
     stylelint: ^15.10.1
     stylelint-config-recommended: ^13.0.0
@@ -8814,6 +8815,13 @@ __metadata:
   version: 6.1.0
   resolution: "pure-rand@npm:6.1.0"
   checksum: 8d53bc02bed99eca0b65b505090152ee7e9bd67dd74f8ff32ba1c883b87234067c5bf68d2614759fb217d82594d7a92919e6df80f97885e7b12b42af4bd3316a
+  languageName: node
+  linkType: hard
+
+"qrcode-generator@npm:^1.4.4":
+  version: 1.5.2
+  resolution: "qrcode-generator@npm:1.5.2"
+  checksum: aec3891afddf88054ebdeb3698f24ca30e60a5f3816e3a0812adb50d1efcf571a31909cafdc2c1275f404a0484b1109be917d458ad7f0da058dcdf6f92b95cce
   languageName: node
   linkType: hard
 
