@@ -74,11 +74,11 @@ export interface IPasskeySlot {
 }
 
 /**
- * What the server asks before it adds a passkey or an authenticator app, sets the
- * unlock password, replaces the recovery passphrase or shows a password to the
- * panel: the current recovery passphrase, a passkey's PRF, or - on an unlocked
- * vault only - a code of the authenticator app. The unlock password is a proof for
- * showing a password and for nothing else.
+ * What the server asks before it adds an unlock method, replaces the recovery
+ * passphrase or shows a password to the panel: the current recovery passphrase, a
+ * passkey's PRF, or - on an unlocked vault only - a code of the authenticator app.
+ * The unlock password alone is a proof for showing a password on an unlocked vault
+ * and for nothing else.
  */
 export type Proof =
   | { current: string }
@@ -101,6 +101,9 @@ export class VaultError extends Error {
   }
 }
 
+/** How long after an unlock or an accepted proof in this tab the eye asks no proof. */
+export const PROVEN_MS = 60000;
+
 /** No answer came: the request may or may not have reached the server. */
 export class NoAnswer extends VaultError {
   constructor() {
@@ -111,6 +114,19 @@ export class NoAnswer extends VaultError {
 /** The vault REST API: `<base>/jupyterlab-passkey-extension/vault/<action>`. */
 export class VaultApi {
   constructor(private readonly _settings: ServerConnection.ISettings) {}
+
+  /**
+   * True for `PROVEN_MS` after this tab unlocked the vault or had a proof accepted:
+   * the person at the screen has just proven, so the entry popup's eye asks no second
+   * proof. Kept by the tab, as the eye's proof is asked by the tab: the server reads a
+   * password for any request on an unlocked vault (`vault get`). A lock in this tab
+   * and a reload of the page end it. While the system clock reads earlier than that
+   * unlock or proof, it is false.
+   */
+  get proven(): boolean {
+    const since = Date.now() - this._provenAt;
+    return since >= 0 && since < PROVEN_MS;
+  }
 
   status(): Promise<IStatus> {
     return this._call<IStatus>('status', 'GET');
@@ -124,22 +140,32 @@ export class VaultApi {
   }
 
   init(recovery: string): Promise<void> {
-    return this._call('init', 'POST', { recovery });
+    return this._proving(this._call('init', 'POST', { recovery }));
   }
 
   unlockRecovery(recovery: string): Promise<IStatus> {
-    return this._call<IStatus>('unlock', 'POST', { recovery });
+    return this._proving(this._call<IStatus>('unlock', 'POST', { recovery }));
   }
 
-  unlockPassword(password: string): Promise<IStatus> {
-    return this._call<IStatus>('unlock', 'POST', { password });
+  /**
+   * The unlock password and a code of the authenticator app: the two are one unlock
+   * method. A vault written by 1.1.28 to 1.1.31 can hold a password and no app, and
+   * takes no code.
+   */
+  unlockPassword(password: string, code?: string): Promise<IStatus> {
+    return this._proving(
+      this._call<IStatus>('unlock', 'POST', { password, code })
+    );
   }
 
   unlockPasskey(credId: string, prf: string): Promise<IStatus> {
-    return this._call<IStatus>('unlock', 'POST', { cred_id: credId, prf });
+    return this._proving(
+      this._call<IStatus>('unlock', 'POST', { cred_id: credId, prf })
+    );
   }
 
   lock(): Promise<void> {
+    this._provenAt = 0;
     return this._call('lock', 'POST');
   }
 
@@ -159,11 +185,17 @@ export class VaultApi {
     return this._call('delete', 'POST', { name });
   }
 
-  /** The password of `name`; the server answers 403 unless the proof holds. */
-  async revealPassword(name: string, proof: Proof): Promise<string> {
-    return (
-      await this._call<{ value: string }>('reveal', 'POST', { name, ...proof })
-    ).value;
+  /**
+   * The password of `name`. With a proof the server answers 403 unless it holds. With
+   * none it is the plain read of an unlocked vault, which the panel asks only while
+   * `proven`.
+   */
+  async revealPassword(name: string, proof?: Proof): Promise<string> {
+    const request = this._call<{ value: string }>('reveal', 'POST', {
+      name,
+      ...proof
+    });
+    return (await (proof ? this._proving(request) : request)).value;
   }
 
   async generate(): Promise<string> {
@@ -172,45 +204,47 @@ export class VaultApi {
 
   /** The server adds the slot only with a proof. */
   addPasskey(slot: IPasskeySlot, proof: Proof): Promise<void> {
-    return this._call('passkeys', 'POST', { ...slot, proof });
+    return this._proving(this._call('passkeys', 'POST', { ...slot, proof }));
   }
 
   removePasskey(credId: string): Promise<void> {
     return this._call('passkeys-remove', 'POST', { cred_id: credId });
   }
 
-  /** The server sets the unlock password, replacing the one there was, only with a proof. */
-  setPassword(password: string, proof: Proof): Promise<void> {
-    return this._call('password', 'POST', { password, proof });
-  }
-
-  removePassword(): Promise<void> {
-    return this._call('password-remove', 'POST');
-  }
-
   /**
-   * Register the authenticator app that was given `setupKey`. The server stores it
-   * only for the code the app shows now and a proof.
+   * Add the unlock password and the authenticator app that was given `setupKey`, as
+   * one unlock method. The server stores them only for the code the app shows now
+   * and a proof.
    */
-  addAuthenticator(
+  addMfa(
+    password: string,
     setupKey: string,
     code: string,
     proof: Proof
   ): Promise<void> {
-    return this._call('authenticator', 'POST', {
-      secret: setupKey,
-      code,
-      proof
-    });
+    return this._proving(
+      this._call('mfa', 'POST', { password, secret: setupKey, code, proof })
+    );
   }
 
-  removeAuthenticator(): Promise<void> {
-    return this._call('authenticator-remove', 'POST');
+  /** Remove the unlock password and the authenticator app. */
+  removeMfa(): Promise<void> {
+    return this._call('mfa-remove', 'POST');
   }
 
   /** The server replaces it only with a proof. */
   replaceRecovery(recovery: string, proof: Proof): Promise<void> {
-    return this._call('recovery', 'POST', { recovery, proof });
+    return this._proving(this._call('recovery', 'POST', { recovery, proof }));
+  }
+
+  /** When this tab last unlocked the vault or had a proof accepted. */
+  private _provenAt = 0;
+
+  /** `request`, whose success is an unlock or an accepted proof of this tab. */
+  private async _proving<T>(request: Promise<T>): Promise<T> {
+    const result = await request;
+    this._provenAt = Date.now();
+    return result;
   }
 
   private async _call<T = void>(

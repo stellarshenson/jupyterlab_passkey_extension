@@ -92,13 +92,13 @@ class Vault:
     def status(self):
         return request("GET", "status")
 
-    def unlock(self, recovery=None, password=None):
-        """Unlock with the passkey (a notification to click), or with the recovery
-        passphrase or the unlock password when one is given."""
+    def unlock(self, recovery=None, password=None, code=None):
+        """Unlock with the passkey (a notification to click), with the recovery
+        passphrase, or with the unlock password and a code of the authenticator app."""
         if recovery is not None:
             return request("POST", "unlock", {"recovery": recovery})
         if password is not None:
-            return request("POST", "unlock", {"password": password})
+            return request("POST", "unlock", {"password": password, "code": code})
         s = self.status()
         # Not a notification whose click can only answer that no passkey matches.
         if not s["initialized"]:
@@ -107,7 +107,7 @@ class Vault:
             raise VaultClientError(
                 "the vault has no passkey - unlock with the recovery"
                 " passphrase: jupyterlab-passkey vault unlock --recovery"
-                + (", or with the unlock password: jupyterlab-passkey vault unlock --password"
+                + (", or with the unlock password and a code: jupyterlab-passkey vault unlock --password"
                    if any(slot["type"] == "password" for slot in s["slots"]) else "")
             )
         browser_step(

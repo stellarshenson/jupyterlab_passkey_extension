@@ -2,6 +2,36 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.40] - 2026-10-03
+
+Makes the unlock password and the authenticator app one unlock method, so the vault unlocks by a passkey, by the password together with a code, or by the recovery passphrase, and lets the panel show a password without a second proof for 60 seconds after an unlock or a proof.
+
+### Added
+
+- The unlock method `Password and authenticator app`: one flow in the cog view asks the new unlock password twice, a proof, then shows the app's QR code and asks its code. The two are added together and removed together, and a vault holds at most one pair
+- The locked view has `Unlock with password`, which asks the unlock password and then a code of the app
+- For 60 seconds after a browser tab unlocked the vault or had a proof accepted, the eye of the entry popup shows the password and asks no proof. Locking the vault in the tab and reloading the page end that minute. Adding an unlock method and changing the recovery passphrase still ask a proof
+- When the server refuses a new pair after the app was scanned, the panel's line says that the entry the app added is unused and can be deleted
+- `make install` installs every optional dependency group of `pyproject.toml` after the wheel (Makefile 1.45)
+
+### Changed
+
+- The unlock password unlocks the vault only together with a code of the authenticator app. `jupyterlab-passkey vault unlock --password` asks the password and then the code, at a terminal or with `--in-browser`, and refuses a pipe when the vault has an app. The Python method is `unlock(recovery=None, password=None, code=None)`
+- A code is a check by the server and takes no part in the encryption: a person who has a copy of the vault file and the unlock password decrypts it without a code. The README and the design document state this limit
+- A locked vault shows no password, whatever proof is sent with the request
+- A wrong code at unlock counts toward the five wrong codes, and after five every code is refused until an unlock with a passkey or the recovery passphrase
+- User-facing texts say `unlock method` where they said `sign-in method`: the section `Unlock methods`, the button and dialog `Add unlock method`. The dialog offers two buttons, a passkey and the pair
+- `vault status` reports the pair in one line. The REST actions `mfa` and `mfa-remove` replace `password`, `password-remove`, `authenticator` and `authenticator-remove`
+- A vault written by 1.1.28 to 1.1.31 that holds an unlock password with no app, or an app with no password, keeps working: the password unlocks alone, the row and `vault status` say which half is there, and Remove removes it
+
+### Fixed
+
+- On a hostname with no passkey, the code that unlocked the vault was refused when the entry popup asked a code right after, until the app showed its next code
+- The unlock password alone, sent as a proof, read an entry's password from a locked vault
+- The design document stated the Python `unlock` signature without `code` and said that any slot opens the vault
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.1.31] - 2026-10-03
 
 Shows the kinds of sign-in method as buttons with one short line each.
@@ -12,8 +42,6 @@ Shows the kinds of sign-in method as buttons with one short line each.
 - Each kind has one short line under its name in place of a sentence of 20 to 30 words
 - A kind that cannot be added is a disabled button whose line says why
 - When the vault has an unlock password, its button shows `Replaces the one added <date>.` in place of its line
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.1.28] - 2026-10-03
 

@@ -33,13 +33,15 @@ GENERATE_LENGTH = 24
 FIELDS = ("username", "password", "url", "category", "notes")
 READABLE = ("password", "username", "url", "category", "notes", "name")
 MAX_NAME = 200
-# Wrong codes in a row before codes are refused until the next unlock: a code has six
-# digits, so nothing else stands between a script and a guess.
+# Wrong codes in a row before codes are refused until an unlock with a passkey or the
+# recovery passphrase: a code has six digits, so nothing else stands between a script
+# and a guess.
 MAX_WRONG_CODES = 5
 MAX_FIELD = 65536
 # The kinds of proof, by the key that carries the secret, with the name a refusal gives
-# them. The unlock password proves the panel's reveal and nothing else: the password
-# typed every day must not add a sign-in method or replace the recovery passphrase.
+# them. The unlock password alone proves the panel's reveal and nothing else: it opens
+# the vault only with a code, so alone it must not add an unlock method or replace the
+# recovery passphrase.
 PROOFS = {
     "prf": "a passkey",
     "code": "a code of the authenticator app",
@@ -250,10 +252,20 @@ class VaultService:
             raise VaultError("a recovery unlock needs the passphrase")
         self._hold(store.unwrap_recovery(store.load(store.vault_path()), passphrase))
 
-    def unlock_password(self, password):
+    def unlock_password(self, password, code=None):
+        """Unlock with the unlock password and a code of the authenticator app: the two
+        are one unlock method. The password decrypts the data key, and the key is put
+        in the holder only for a right code. A vault written by 1.1.28 to 1.1.31 can
+        hold a password and no app; that password opens it alone."""
         if not isinstance(password, str) or not password:
             raise VaultError("a password unlock needs the unlock password")
-        self._hold(store.unwrap_password(store.load(store.vault_path()), password))
+        doc = store.load(store.vault_path())
+        dek = store.unwrap_password(doc, password)
+        if store.authenticator_metadata(doc) is not None:
+            if code is None:
+                raise Denied("a password unlock needs a code of the authenticator app")
+            self._check_code(doc, dek, code)
+        self._hold(dek)
 
     def lock(self):
         """Clear the key of the vault last unlocked here and of the one the file is now."""
@@ -331,7 +343,7 @@ class VaultService:
         unwrap the key themselves. {"code": a code of the authenticator app} holds no
         key, so it proves only on an unlocked vault, whose held key it returns.
         {"password": the unlock password} unwraps the key too, but proves only a
-        `reveal`."""
+        `reveal`: alone it opens no vault and changes nothing."""
         if not isinstance(proof, dict) or not any(k in proof for k in PROOFS):
             raise Denied(f"this needs a proof: {FULL_PROOFS}")
         if "code" in proof:
@@ -354,12 +366,18 @@ class VaultService:
     def _code_dek(self, doc, typed):
         """The held data key, for a right code of the authenticator app."""
         dek = self._dek()
+        self._check_code(doc, dek, typed)
+        return dek
+
+    def _check_code(self, doc, dek, typed):
+        """Refuse unless `typed` is a right code of the vault's authenticator app that
+        was not used before. `dek` opens the app's secret."""
         secret = store.authenticator_secret(doc, dek)
         if secret is None:
             raise Denied("the vault has no authenticator app")
         if self._wrong_codes >= MAX_WRONG_CODES:
-            raise Denied("too many wrong codes - lock and unlock the vault, or use a passkey "
-                         "or the recovery passphrase")
+            raise Denied("too many wrong codes - codes are refused until the vault is unlocked "
+                         "with a passkey or the recovery passphrase")
         step = totp.matching_step(secret, typed)
         if step is None:
             self._wrong_codes += 1
@@ -367,11 +385,14 @@ class VaultService:
         if self._last_step is not None and step <= self._last_step:
             raise Denied("that code was already used - wait for the next one")
         self._wrong_codes, self._last_step = 0, step
-        return dek
 
     def reveal_proven(self, name, proof):
         """The panel's reveal: the password, read with the key the proof gives. `read`
-        stays for the CLI and the Python API."""
+        stays for the CLI, the Python API and the panel in the minute after an unlock or
+        a proof in its tab. A locked vault shows nothing, whatever the proof: a secret
+        that opens it must unlock it first, and the unlock password opens it only with
+        a code."""
+        self._dek()
         doc = store.load(store.vault_path())
         dek = self._proven_dek(doc, proof, reveal=True)
         return self._find(store.read_entries(doc, dek), _check_name(name)).get("password", "")
@@ -444,23 +465,15 @@ class VaultService:
         self._dek()  # removing a passkey needs an unlocked vault
         store.remove_passkey(store.vault_path(), cred_id)
 
-    def set_password(self, password, proof):
-        """Set or replace the unlock password, allowed only with a proof: it opens the
-        vault, so an unlocked vault is not enough to set one."""
+    def add_mfa(self, password, setup_key, typed, proof):
+        """Add the unlock password and the authenticator app whose secret is
+        `setup_key`, together: the two open the vault only as a pair. Allowed only with
+        a proof and for a right code of the new app - the pair opens the vault, and a
+        code proves a recovery change and a new passkey, so an unlocked vault is not
+        enough to add it."""
         shortest = self.password_min_length()
         if not isinstance(password, str) or not shortest <= len(password) <= MAX_FIELD:
             raise VaultError(f"an unlock password is at least {shortest} characters")
-        path = store.vault_path()
-        store.set_password(path, self._proven_dek(store.load(path), proof), password)
-
-    def remove_password(self):
-        self._dek()  # removing the unlock password needs an unlocked vault
-        store.remove_password(store.vault_path())
-
-    def add_authenticator(self, setup_key, typed, proof):
-        """Add the authenticator app whose secret is `setup_key`, for a right code
-        and a proof: a code proves a recovery change and a new passkey, so an unlocked
-        vault is not enough to add the app."""
         secret = totp.decode_secret(setup_key)
         if secret is None:
             raise VaultError(f"an authenticator app's secret is base32 of {totp.MIN_SECRET} "
@@ -470,15 +483,16 @@ class VaultService:
             raise Denied("wrong code")
         path = store.vault_path()
         doc = store.load(path)
-        if store.authenticator_metadata(doc) is not None:
-            raise Conflict("the vault already has an authenticator app - remove it first")
-        store.set_authenticator(path, self._proven_dek(doc, proof), secret)
+        if store.authenticator_metadata(doc) is not None or any(
+                slot.get("type") == "password" for slot in doc["slots"]):
+            raise Conflict("the vault already has a password and authenticator app - remove them first")
+        store.set_mfa(path, self._proven_dek(doc, proof), password, secret)
         # The code that added the app is used: it proves nothing after this.
         self._wrong_codes, self._last_step = 0, step
 
-    def remove_authenticator(self):
-        self._dek()  # removing the app needs an unlocked vault
-        store.remove_authenticator(store.vault_path())
+    def remove_mfa(self):
+        self._dek()  # removing an unlock method needs an unlocked vault
+        store.remove_mfa(store.vault_path())
 
     def replace_recovery(self, passphrase, proof):
         """A new recovery passphrase, allowed only with a proof: see `_proven_dek`."""

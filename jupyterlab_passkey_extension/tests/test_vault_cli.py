@@ -15,17 +15,22 @@ import re
 import signal
 import subprocess
 import sys
+import time
 
 import pytest
 
 from jupyterlab_passkey_extension import cli
-from jupyterlab_passkey_extension.vault import client, handlers, holders, service
+from jupyterlab_passkey_extension.vault import client, handlers, holders, service, totp
 from jupyterlab_passkey_extension.vault import cli as vcli
 from jupyterlab_passkey_extension.vault.store import VaultError
 
 PASS = "correct horse battery staple"
 PRF = base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode()
 SECRET = "tok-MUST-NOT-LEAK-91"
+# The unlock password, and the authenticator app added with it: its secret and setup key.
+UNLOCK = "an everyday password"
+APP = bytes(range(40, 60))
+APP_KEY = base64.b32encode(APP).decode()
 
 
 class FakeStdin:
@@ -149,23 +154,51 @@ def test_lock_and_unlock_with_passkey_and_recovery(ready, monkeypatch, capsys):
     assert "vault unlocked" in capsys.readouterr().err
 
 
-def test_unlock_with_the_unlock_password(ready, monkeypatch, capsys):
+def test_unlock_with_the_unlock_password_and_a_code(ready, monkeypatch, capsys):
     run(monkeypatch, "vault", "status")
-    assert "unlock password: none" in capsys.readouterr().out
-    ready.set_password("an everyday password", {"current": PASS})
+    assert "password and authenticator app: none" in capsys.readouterr().out
+    step = int(time.time()) // totp.STEP
+    ready.add_mfa(UNLOCK, APP_KEY, totp.code(APP, step), {"current": PASS})
+    # The code that added the app is used; the next one is accepted one step early.
+    code = totp.code(APP, step + 1)
     run(monkeypatch, "vault", "lock")
-    with pytest.raises(SystemExit, match="^wrong unlock password$"):
-        run(monkeypatch, "vault", "unlock", "--password", stdin="not the password\n")
-    assert ready.status()["unlocked"] is False
-    run(monkeypatch, "vault", "unlock", "--password", stdin="an everyday password\n")
+    # Two typed secrets: a pipe carries one, and is refused before anything is read.
+    with pytest.raises(SystemExit, match="run it at a terminal or with --in-browser"):
+        run(monkeypatch, "vault", "unlock", "--password", stdin=UNLOCK + "\n")
+
+    def typed(*answers):
+        left, prompts = iter(answers), []
+        monkeypatch.setattr(vcli.getpass, "getpass", lambda prompt: prompts.append(prompt) or next(left))
+        monkeypatch.setattr(sys, "stdin", FakeStdin("", tty=True))
+        return prompts
+
+    for answers, refusal in [(("not the password", code), "^wrong unlock password$"),
+                             ((UNLOCK, "000000"), "^wrong code$")]:
+        typed(*answers)
+        with pytest.raises(SystemExit, match=refusal):
+            run(monkeypatch, "vault", "unlock", "--password")
+        assert ready.status()["unlocked"] is False
+    # The password first, the code last.
+    prompts = typed(UNLOCK, code)
+    run(monkeypatch, "vault", "unlock", "--password")
+    assert prompts == ["Unlock password: ", "Code of the authenticator app: "]
     assert ready.status()["unlocked"] is True
     out, err = capsys.readouterr()
-    assert "vault unlocked" in err and "an everyday password" not in out + err
+    assert "vault unlocked" in err and UNLOCK not in out + err and code not in out + err
     run(monkeypatch, "vault", "status")
-    assert "unlock password: added 20" in capsys.readouterr().out
-    # One typed secret at a time.
+    assert "password and authenticator app: added 20" in capsys.readouterr().out
+    # One typed method at a time.
     with pytest.raises(SystemExit):
         run(monkeypatch, "vault", "unlock", "--password", "--recovery", stdin="x\n")
+
+
+def test_status_names_a_password_or_an_app_an_earlier_build_left_alone():
+    # 1.1.28 to 1.1.31 added the two apart from each other.
+    password = {"type": "password", "created": "2026-10-02T11:00:00Z"}
+    app = {"created": "2026-10-02T10:00:00Z"}
+    assert vcli._say_mfa({"slots": [password], "authenticator": None}) == (
+        "password only, added 2026-10-02T11:00:00Z")
+    assert vcli._say_mfa({"slots": [], "authenticator": app}) == "app only, added 2026-10-02T10:00:00Z"
 
 
 def test_status_prints_state_holder_and_capabilities(ready, monkeypatch, capsys):
@@ -179,7 +212,7 @@ def test_status_prints_state_holder_and_capabilities(ready, monkeypatch, capsys)
     rows = [line for line in out.splitlines() if ": yes - " in line or ": no - " in line]
     assert len(rows) == len(holders.CAPABILITY_TEXT)
     assert "passkeys: 1" in out and "@ lab.example" in out
-    assert "authenticator app: none" in out
+    assert "password and authenticator app: none" in out
     assert "unlock duration: 4h" in out
 
 

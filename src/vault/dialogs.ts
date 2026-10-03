@@ -313,10 +313,12 @@ const TYPED: Record<
 
 /** How the entry popup gets the password. */
 export interface IReveal {
+  /** True while the eye asks no proof: this tab has just unlocked or proven. */
+  proven: () => boolean;
   /** The proof of a passkey request for this hostname. */
   passkey: () => Promise<Proof>;
-  /** The password, for a proof. */
-  reveal: (proof: Proof) => Promise<string>;
+  /** The password: for a proof, or with none while `proven`. */
+  reveal: (proof?: Proof) => Promise<string>;
   /**
    * The proofs to type that this vault has, in the order they are asked: the first
    * is asked, and a link under its row moves on to the next; from the last it goes
@@ -328,7 +330,8 @@ export interface IReveal {
 /**
  * An entry, read-only, laid out like the edit form. The password is not in the page
  * until a reveal returns it: the eye asks for it once, then only hides and shows it.
- * The eye asks a passkey first. With none for this hostname, or no answer, a row
+ * For a minute after an unlock or a proof in this tab the eye asks no proof. After
+ * that it asks a passkey first. With none for this hostname, or no answer, a row
  * under the field asks a proof to type: a code of the authenticator app, the unlock
  * password or the recovery passphrase, whichever of them the vault has.
  */
@@ -463,6 +466,11 @@ export class EntryView extends Widget {
       this.proof.focus();
       return;
     }
+    if (this._how.proven()) {
+      this._wait('');
+      await this._reveal();
+      return;
+    }
     // The passkey prompt is the browser's and can open late or behind the window:
     // the eye and the line under the field say the click was taken.
     this._wait('Waiting for your passkey');
@@ -520,7 +528,7 @@ export class EntryView extends Widget {
   }
 
   /** Ask the server for the password; `_wait` was called. */
-  private async _reveal(proof: Proof): Promise<void> {
+  private async _reveal(proof?: Proof): Promise<void> {
     try {
       this.password.value = await this._how.reveal(proof);
       this._revealed = true;
@@ -730,13 +738,15 @@ class CodeForm extends Widget {
 const USE_PASSPHRASE = 'Use recovery passphrase';
 
 /**
- * Ask for a code of the authenticator app. Resolves to the proof, to `passphrase`
- * when the user chose the recovery passphrase, or to null when cancelled.
+ * Open a dialog that asks a code. `submit` labels its accept button; `extra` are
+ * buttons between Cancel and that one. Resolves to the button pressed and the code.
  */
-async function askCode(
+async function launchCodeDialog(
   prompt: string,
-  title: string
-): Promise<Proof | 'passphrase' | null> {
+  title: string,
+  submit: string,
+  extra: Dialog.IButton[] = []
+): Promise<{ button: Dialog.IButton; code: string }> {
   const body = new CodeForm(prompt);
   const { button } = await launchWithEscape(
     new Dialog({
@@ -746,20 +756,47 @@ async function askCode(
       hasClose: false,
       buttons: [
         Dialog.cancelButton(),
-        Dialog.cancelButton({ label: USE_PASSPHRASE }),
-        Dialog.okButton({ label: 'Submit', accept: true })
+        ...extra,
+        Dialog.okButton({ label: submit, accept: true })
       ]
     })
   );
+  return { button, code: body.code.value };
+}
+
+/**
+ * Ask for a code of the authenticator app. Resolves to the proof, to `passphrase`
+ * when the user chose the recovery passphrase, or to null when cancelled.
+ */
+async function askCode(
+  prompt: string,
+  title: string
+): Promise<Proof | 'passphrase' | null> {
+  const { button, code } = await launchCodeDialog(prompt, title, 'Submit', [
+    Dialog.cancelButton({ label: USE_PASSPHRASE })
+  ]);
   if (button.accept) {
-    return { code: body.code.value };
+    return { code };
   }
   return button.label === USE_PASSPHRASE ? 'passphrase' : null;
 }
 
 /**
- * The proof the server asks before a recovery change, a new passkey or a new
- * authenticator app: a passkey request when a passkey for this hostname exists.
+ * Ask for the code that unlocks the vault with the unlock password. Resolves to null
+ * when cancelled.
+ */
+export async function askUnlockCode(): Promise<string | null> {
+  const { button, code } = await launchCodeDialog(
+    'Enter the code the authenticator app shows',
+    'Unlock vault',
+    'Unlock'
+  );
+  return button.accept ? code : null;
+}
+
+/**
+ * The proof the server asks before a recovery change or a new unlock method: a
+ * passkey request when a passkey for this hostname exists.
  * With none - or when that request gets no answer, or the passkey gives no PRF - a
  * code of the authenticator app when the vault has one and is unlocked,
  * else, or when the user chooses it, the current recovery passphrase. Call it
@@ -809,60 +846,52 @@ export async function askProof(
   return accepted && value !== null ? { current: value } : null;
 }
 
-/** The kinds of sign-in method the panel adds. */
-export type SignInMethod = 'passkey' | 'password' | 'authenticator';
-
 /**
- * Each kind as the dialog that offers them names it, with one line on what it is and
- * its limit. The server holds the rule (`PROOFS` in service.py).
+ * The unlock methods the panel adds: a passkey, or the unlock password with an
+ * authenticator app (`mfa`), which open the vault only together.
  */
-const METHODS: Record<SignInMethod, { label: string; about: string }> = {
+export type UnlockMethod = 'passkey' | 'mfa';
+
+/** Each method as the dialog that offers them names it, with one line on what it is. */
+const METHODS: Record<UnlockMethod, { label: string; about: string }> = {
   passkey: {
     label: 'Passkey',
     about: 'Fingerprint, face, PIN or security key.'
   },
-  password: {
-    label: 'Unlock password',
-    about: 'Unlocks the vault and shows passwords. Cannot add a sign-in method.'
-  },
-  authenticator: {
-    label: 'Authenticator app',
-    about: 'A 6-digit code from your phone. Cannot unlock the vault.'
+  mfa: {
+    label: 'Password and authenticator app',
+    about: 'A password, then a 6-digit code from your phone.'
   }
 };
 
-/**
- * A kind's state in this vault: `note` is shown in place of the kind's line,
- * `unavailable` says why the kind cannot be chosen now.
- */
+/** A method's state in this vault: `unavailable` says why it cannot be chosen now. */
 export interface IMethodState {
-  note?: string;
   unavailable?: string;
 }
 
-/** The body of the dialog that offers the kinds: one button for each. */
+/** The body of the dialog that offers the methods: one button for each. */
 class MethodForm extends Widget {
-  /** The kind whose button was pressed. */
-  chosen: SignInMethod | null = null;
+  /** The method whose button was pressed. */
+  chosen: UnlockMethod | null = null;
 
-  /** `close` closes the dialog once a kind is chosen. */
-  constructor(states: Record<SignInMethod, IMethodState>, close: () => void) {
+  /** `close` closes the dialog once a method is chosen. */
+  constructor(states: Record<UnlockMethod, IMethodState>, close: () => void) {
     super();
     this.addClass('jp-PasskeyVaultForm');
-    for (const kind of Object.keys(METHODS) as SignInMethod[]) {
+    for (const kind of Object.keys(METHODS) as UnlockMethod[]) {
       const { label, about } = METHODS[kind];
-      const { note, unavailable } = states[kind];
+      const { unavailable } = states[kind];
       const name = document.createElement('span');
       name.textContent = label;
       const help = document.createElement('span');
       help.className = 'jp-PasskeyVaultForm-help';
-      help.textContent = unavailable ?? note ?? about;
+      help.textContent = unavailable ?? about;
       const choice = document.createElement('button');
       choice.type = 'button';
       choice.className = 'jp-mod-styled jp-PasskeyVaultForm-choice';
       choice.dataset.method = kind;
       choice.disabled = unavailable !== undefined;
-      // The button is named by the kind alone; the line under the name is read after it.
+      // The button is named by the method alone; the line under the name is read after it.
       name.id = `jp-PasskeyVaultForm-method-${kind}`;
       help.id = `${name.id}-help`;
       choice.setAttribute('aria-labelledby', name.id);
@@ -884,7 +913,7 @@ class MethodForm extends Widget {
     document.removeEventListener('keydown', this._keepEnter, true);
   }
 
-  /** Dialog swallows Enter on a body control; see EntryView._keepEnter. Enter on a kind presses it. */
+  /** Dialog swallows Enter on a body control; see EntryView._keepEnter. Enter on a method presses it. */
   private readonly _keepEnter = (event: KeyboardEvent): void => {
     if (event.key === 'Enter' && this.node.contains(event.target as Node)) {
       event.stopPropagation();
@@ -893,15 +922,15 @@ class MethodForm extends Widget {
 }
 
 /**
- * Ask which kind of sign-in method to add: a press on a kind chooses it and closes
- * the dialog. Resolves to null when the user backs out.
+ * Ask which unlock method to add: a press on a method chooses it and closes the
+ * dialog. Resolves to null when the user backs out.
  */
-export async function chooseSignInMethod(
-  states: Record<SignInMethod, IMethodState>
-): Promise<SignInMethod | null> {
+export async function chooseUnlockMethod(
+  states: Record<UnlockMethod, IMethodState>
+): Promise<UnlockMethod | null> {
   const body = new MethodForm(states, () => dialog.reject());
   const dialog = new Dialog({
-    title: 'Add sign-in method',
+    title: 'Add unlock method',
     body,
     focusNodeSelector: '.jp-PasskeyVaultForm-choice:enabled',
     hasClose: false,
@@ -954,15 +983,19 @@ class AuthenticatorForm extends Widget {
 const WRONG_CODE = 'wrong code';
 
 /**
- * Add an authenticator app with a proof: the dialog shows a new setup key, and
- * the server stores it for the code the app then shows. A wrong code opens the dialog
- * again with the same key, so the app is not set up twice. Resolves to false when
- * the user backs out.
+ * Add the unlock password `password` and an authenticator app with a proof: the
+ * dialog shows a new setup key, and the server stores the two for the code the app
+ * then shows. A wrong code opens the dialog again with the same key, so the app is
+ * not set up twice. Any other refusal (a 4xx answer) comes after the app took the key,
+ * so its line names the app's entry as unused. Resolves to false when the user backs
+ * out.
  */
-export async function registerAuthenticator(
+export async function registerMfa(
   api: VaultApi,
+  password: string,
   proof: Proof,
-  host: string
+  host: string,
+  title: string
 ): Promise<boolean> {
   const setupKey = newSetupKey();
   let note = '';
@@ -970,7 +1003,7 @@ export async function registerAuthenticator(
     const body = new AuthenticatorForm(setupKey, host, note);
     const { button } = await launchWithEscape(
       new Dialog({
-        title: 'Add authenticator app',
+        title,
         body,
         // Typing starts in the code field, the one field to fill in.
         focusNodeSelector: '.jp-PasskeyVaultForm-code',
@@ -985,11 +1018,18 @@ export async function registerAuthenticator(
       return false;
     }
     try {
-      await api.addAuthenticator(setupKey, body.code.value, proof);
+      await api.addMfa(password, setupKey, body.code.value, proof);
       return true;
     } catch (e) {
       if (!(e instanceof VaultError && e.message === WRONG_CODE)) {
-        throw e;
+        // Only a 4xx answer is a refusal. After a lost answer or a 5xx the two may
+        // have been added.
+        throw e instanceof VaultError && e.status >= 400 && e.status < 500
+          ? new VaultError(
+              e.status,
+              `${e.message}; the entry your authenticator app added is unused - you can delete it in the app`
+            )
+          : e;
       }
       note = 'Wrong code. Enter the code the app shows now.';
     }

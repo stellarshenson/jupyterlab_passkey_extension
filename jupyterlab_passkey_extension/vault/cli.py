@@ -91,6 +91,18 @@ def _fields(a):
     return fields
 
 
+def _say_mfa(s):
+    """The unlock password and authenticator app, as status prints the pair."""
+    password = next((x for x in s["slots"] if x["type"] == "password"), None)
+    app = s.get("authenticator")
+    if password and app:
+        return f"added {app['created']}"
+    # A vault written by 1.1.28 to 1.1.31 can hold one without the other.
+    if password:
+        return f"password only, added {password['created']}"
+    return f"app only, added {app['created']}" if app else "none"
+
+
 def _say_status(s):
     if not s["initialized"]:
         return no_vault(s["path"])
@@ -130,7 +142,15 @@ def cmd_unlock(a, vault):
     if a.recovery:
         s = vault.unlock(recovery=_read_secret(a, "Recovery passphrase", twice=False))
     elif a.password:
-        s = vault.unlock(password=_read_secret(a, "Unlock password", twice=False))
+        needs_code = bool(s.get("authenticator"))
+        if needs_code and not a.in_browser and not sys.stdin.isatty():
+            # A pipe carries one secret; this needs two.
+            raise SystemExit("vault unlock --password asks for the unlock password and a code of "
+                             "the authenticator app - run it at a terminal or with --in-browser")
+        password = _read_secret(a, "Unlock password", twice=False)
+        # The code last: it stays right for less than a minute.
+        code = _read_secret(a, "Code of the authenticator app", twice=False) if needs_code else None
+        s = vault.unlock(password=password, code=code)
     else:
         s = vault.unlock()
     _cli._say(f"vault {_say_status(s)}")
@@ -156,10 +176,7 @@ def cmd_status(a, vault):
     for d in h["details"]:
         print(f"  {d['label']}: {'yes' if h['capabilities'][d['key']] else 'no'} - {d['text']}")
     print(f"passkeys: {len(passkeys)}" + "".join(f"\n  {p['label']} @ {p['rp_id']}" for p in passkeys))
-    password = [x for x in s["slots"] if x["type"] == "password"]
-    print("unlock password: " + (f"added {password[0]['created']}" if password else "none"))
-    app = s.get("authenticator")
-    print("authenticator app: " + (f"added {app['created']}" if app else "none"))
+    print(f"password and authenticator app: {_say_mfa(s)}")
     print(f"unlock duration: {_minutes(s['settings']['unlock_minutes'])}")
     return 0
 
@@ -458,21 +475,24 @@ notification and waits for the click (--timeout, default 600 s).
     p.add_argument("--label", help="name for the passkey (default: the hostname)")
     p.add_argument("--no-passkey", action="store_true", help="skip adding a passkey")
 
-    p = add("unlock", "unlock with the passkey, the unlock password or the recovery passphrase",
+    p = add("unlock", "unlock with the passkey, the unlock password and a code, or the recovery passphrase",
             cmd_unlock,
             description="""
 unlock the vault for the unlockMinutes setting (default 240 minutes), for every client:
 this CLI, the Python Vault class and the panel. With a passkey: a notification to click,
 then the passkey prompt in the tab. A passkey works only in a tab opened at the hostname it
-was added at, or a subdomain of it; a tab at an IP address cannot use one. The unlock
-password is set in the panel's cog view; status says whether one is set.
+was added at, or a subdomain of it; a tab at an IP address cannot use one. --password
+asks the unlock password, then a code of the authenticator app: the two are one unlock
+method, added together in the panel's cog view; status says whether the vault has it.
+Both are typed, so --password runs at a terminal or with --in-browser, not from a pipe.
 """,
             examples=("jupyterlab-passkey vault unlock",
                       "jupyterlab-passkey vault unlock --password --in-browser",
                       "jupyterlab-passkey vault unlock --recovery --in-browser"))
     typed = p.add_mutually_exclusive_group()
     typed.add_argument("--recovery", action="store_true", help="use the recovery passphrase")
-    typed.add_argument("--password", action="store_true", help="use the unlock password")
+    typed.add_argument("--password", action="store_true",
+                       help="use the unlock password and a code of the authenticator app")
     in_browser(p)
 
     add("lock", "lock the vault now", cmd_lock, instant,
@@ -484,8 +504,8 @@ nobody clicked stays until its relay expires; lock does not remove it.
     add("status", "state, time left, key holder and its capabilities", cmd_status, instant,
         description="""
 print the vault path, locked or unlocked with the time left, the key holder and what it
-protects on this host, the passkeys, whether the vault has an unlock password and an
-authenticator app, and the unlock duration. Never waits.
+protects on this host, the passkeys, whether the vault has a password and authenticator
+app, and the unlock duration. Never waits.
 """,
         examples=("jupyterlab-passkey vault status",))
 

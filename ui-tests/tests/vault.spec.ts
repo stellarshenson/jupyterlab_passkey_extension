@@ -105,26 +105,27 @@ async function openCog(page: any) {
     .click();
 }
 
-type Kind = 'passkey' | 'password' | 'authenticator';
+/** An unlock method the cog view adds: a passkey, or the password and authenticator app. */
+type Kind = 'passkey' | 'mfa';
 
-/** The cog view's rows of one kind of sign-in method. */
+/** The cog view's rows of one unlock method. */
 function method(page: any, kind: Kind | 'recovery') {
   return panel(page).locator(
     `.jp-PasskeyVaultPanel-method[data-method="${kind}"]`
   );
 }
 
-/** Press "Add sign-in method" in the cog view and choose a kind in its dialog. */
+/** Press "Add unlock method" in the cog view and choose a method in its dialog. */
 async function addMethod(page: any, kind: Kind) {
-  await panel(page).getByRole('button', { name: 'Add sign-in method' }).click();
+  await panel(page).getByRole('button', { name: 'Add unlock method' }).click();
   const dialog = page.locator('.jp-Dialog');
   await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
-    'Add sign-in method'
+    'Add unlock method'
   );
   await dialog.locator(`button[data-method="${kind}"]`).click();
 }
 
-/** Remove a sign-in method: two clicks, the second at least half a second later. */
+/** Remove an unlock method: two clicks, the second at least half a second later. */
 async function removeMethod(page: any, row: any) {
   await row.getByRole('button', { name: 'Remove' }).click();
   // A confirming click within half a second of arming is ignored (no double-click
@@ -135,6 +136,20 @@ async function removeMethod(page: any, row: any) {
   await expect(confirm).toHaveCSS('white-space', 'nowrap');
   await confirm.click();
 }
+
+/**
+ * The minute after an unlock or a proof ends for the page: the eye asks a proof again.
+ * The panel reads the time with Date.now, which answers 61 s later from here on.
+ */
+async function endProvenMinute(page: any): Promise<void> {
+  await page.evaluate(() => {
+    const now = Date.now;
+    Date.now = () => now() + 61000;
+  });
+}
+
+/** The request that reads a password. JupyterLab ends every request URL with a cache-busting query. */
+const REVEAL = /\/vault\/reveal(\?|$)/;
 
 /** The code an authenticator app shows for `setupKey` in time step `step` (RFC 6238). */
 function appCode(setupKey: string, step: number): string {
@@ -237,7 +252,7 @@ test('the panel has the geometry of the AI assistants panels', async ({
     await style(`${C}-headerTitle`, 'font-size')
   );
 
-  // The cog view: a label and a sign-in method's name in the text column, a
+  // The cog view: a label and an unlock method's name in the text column, a
   // section's button from 4 px to 4 px.
   await openCog(page);
   const [label, methodName, add] = await measure([
@@ -278,7 +293,7 @@ test('a hidden panel leaves the settings view', async ({ page }) => {
   await openVault(page);
   await createVault(page);
   await openCog(page);
-  const add = panel(page).getByRole('button', { name: 'Add sign-in method' });
+  const add = panel(page).getByRole('button', { name: 'Add unlock method' });
   await expect(add).toBeVisible();
   await page.sidebar.close('right');
   await page.sidebar.openTab(PANEL_ID);
@@ -366,6 +381,9 @@ test('an entry opens read-only in a popup, and its password shows only after a p
             .backgroundColor
       )
   ).toBe(true);
+  // Create vault unlocked it: for a minute the eye would show the password at once.
+  // Here that minute is over, so the eye asks a proof.
+  await endProvenMinute(page);
   await row.click();
   await expect(dialog.locator('.jp-Dialog-header')).toHaveText('github/api');
   for (const label of ['Name', 'Username', 'Password', 'URL', 'Notes']) {
@@ -401,8 +419,6 @@ test('an entry opens read-only in a popup, and its password shows only after a p
   );
   // The reveal is held on its way to the server: until it ends the eye turns a
   // spinner and the line under the field says what is waited for.
-  // JupyterLab ends every request URL with a cache-busting query.
-  const REVEAL = /\/vault\/reveal(\?|$)/;
   let release = (): void => undefined;
   const held = new Promise<void>(resolve => (release = resolve));
   await page.route(REVEAL, async (route: any) => {
@@ -551,7 +567,7 @@ test('a passkey is added with a passkey as the proof, or the recovery passphrase
   await openVault(page);
   await createVault(page);
   await openCog(page);
-  const add = panel(page).getByRole('button', { name: 'Add sign-in method' });
+  const add = panel(page).getByRole('button', { name: 'Add unlock method' });
   // Two button sizes only: a section's action spans the section (4 px each side),
   // a row's action is the small 20 px button. Both widths come from one read, so a
   // re-render between two reads cannot detach the element measured second.
@@ -564,27 +580,28 @@ test('a passkey is added with a passkey as the proof, or the recovery passphrase
   const rows = method(page, 'passkey');
   const remove = (n: number) => removeMethod(page, rows.nth(n));
 
-  // The dialog offers the three kinds as buttons, the first one focused; each button
-  // is named by its kind and described by the line under the name.
+  // The dialog offers the two methods as buttons, the first one focused; each button
+  // is named by its method and described by the line under the name.
   await add.click();
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
+    'Add unlock method'
+  );
   const kinds = dialog.locator('.jp-Dialog-body').getByRole('button');
-  await expect(kinds).toHaveCount(3);
+  await expect(kinds).toHaveCount(2);
   const first = dialog.getByRole('button', { name: 'Passkey', exact: true });
   await expect(first).toBeFocused();
   await expect(first).toHaveAccessibleDescription(
     'Fingerprint, face, PIN or security key.'
   );
   await expect(
-    dialog.getByRole('button', { name: 'Unlock password', exact: true })
+    dialog.getByRole('button', {
+      name: 'Password and authenticator app',
+      exact: true
+    })
   ).toHaveAccessibleDescription(
-    'Unlocks the vault and shows passwords. Cannot add a sign-in method.'
+    'A password, then a 6-digit code from your phone.'
   );
-  await expect(
-    dialog.getByRole('button', { name: 'Authenticator app', exact: true })
-  ).toHaveAccessibleDescription(
-    'A 6-digit code from your phone. Cannot unlock the vault.'
-  );
-  // The three buttons have one width, and the name sits over its line.
+  // The two buttons have one width, and the name sits over its line.
   const boxes = await kinds.evaluateAll(buttons =>
     buttons.map(b => {
       const [name, help] = Array.from(b.children).map(c =>
@@ -605,7 +622,7 @@ test('a passkey is added with a passkey as the proof, or the recovery passphrase
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
 
-  // Enter on the focused kind chooses it.
+  // Enter on the focused method chooses it.
   await add.click();
   await expect(first).toBeFocused();
   await page.keyboard.press('Enter');
@@ -644,33 +661,86 @@ test('a passkey is added with a passkey as the proof, or the recovery passphrase
   await expect(rows).toHaveCount(1);
 });
 
-test('an authenticator app is added, and its code or the recovery passphrase shows a password at a hostname with no passkey', async ({
+const MFA_TITLE = 'Add password and authenticator app';
+const UNLOCK_PASSWORD = 'an everyday password';
+
+/** The code field and the Add button of the dialog that shows the app's QR code. */
+function appDialog(page: any) {
+  const dialog = page.locator('.jp-Dialog');
+  return {
+    code: dialog.getByLabel('Code from the app'),
+    add: dialog.getByRole('button', { name: 'Add', exact: true })
+  };
+}
+
+/**
+ * From the cog view, add the unlock password and the authenticator app up to the
+ * dialog that shows the app's setup key: the password twice, then this host's passkey
+ * as the proof. Returns the setup key.
+ */
+async function startMfa(page: any): Promise<string> {
+  const dialog = page.locator('.jp-Dialog');
+  await addMethod(page, 'mfa');
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(MFA_TITLE);
+  const fields = dialog.locator('input[type="password"]');
+  await fields.nth(0).fill(UNLOCK_PASSWORD);
+  await fields.nth(1).fill(UNLOCK_PASSWORD);
+  await dialog.getByRole('button', { name: 'Submit' }).click();
+  await appDialog(page).code.waitFor({ timeout: 20000 });
+  const shown = await dialog
+    .locator('.jp-PasskeyVaultForm-setupKey')
+    .innerText();
+  return shown.replace(/ /g, '');
+}
+
+async function addEntry(page: any, secret: string) {
+  const dialog = page.locator('.jp-Dialog');
+  await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+  await dialog.getByLabel('Name', { exact: true }).fill('github/api');
+  await dialog.getByLabel('Password', { exact: true }).fill(secret);
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(dialog).toHaveCount(0);
+}
+
+test('a password and an authenticator app are added in one flow, and the two unlock the vault', async ({
   page
 }) => {
   await openVault(page);
   await createVault(page);
-  const SECRET = 'vault-e2e-secret-9Wk';
   const dialog = page.locator('.jp-Dialog');
-  await panel(page).getByRole('button', { name: 'Add an entry' }).click();
-  await dialog.getByLabel('Name', { exact: true }).fill('github/api');
-  await dialog.getByLabel('Password', { exact: true }).fill(SECRET);
-  await dialog.getByRole('button', { name: 'Save' }).click();
-  await expect(dialog).toHaveCount(0);
-
-  // Add the app: this host's passkey is the proof, then the dialog shows the
-  // QR code and the setup key, and typing starts in the code field.
   await openCog(page);
-  const app = method(page, 'authenticator');
-  await expect(app).toHaveCount(0);
-  await addMethod(page, 'authenticator');
-  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
-    'Add authenticator app'
+  const row = method(page, 'mfa');
+  await expect(row).toHaveCount(0);
+
+  // The flow's first step: the password twice. Submit stays off until both fields
+  // agree and hold the 12 characters the setting asks.
+  await addMethod(page, 'mfa');
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(MFA_TITLE);
+  const fields = dialog.locator('input[type="password"]');
+  const submit = dialog.getByRole('button', { name: 'Submit' });
+  const status = dialog.locator('.jp-PassphraseDialog-status');
+  await expect(fields.nth(0)).toHaveAttribute('placeholder', 'Password');
+  await expect(fields.nth(1)).toHaveAttribute(
+    'placeholder',
+    'Confirm password'
   );
-  const code = dialog.getByLabel('Code from the app');
-  const register = dialog.getByRole('button', { name: 'Add', exact: true });
+  await fields.nth(0).fill('eleven char');
+  await fields.nth(1).fill('eleven char');
+  await expect(status).toHaveText('Too short: at least 12 characters');
+  await expect(submit).toBeDisabled();
+  await fields.nth(0).fill(UNLOCK_PASSWORD);
+  await fields.nth(1).fill(UNLOCK_PASSWORD);
+  await expect(status).toHaveText('Passwords match');
+  await submit.click();
+
+  // This host's passkey is the proof. The last step shows the QR code and the setup
+  // key, under the same title, and typing starts in the code field.
+  const { code, add } = appDialog(page);
+  await code.waitFor({ timeout: 20000 });
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(MFA_TITLE);
   await expect(code).toBeFocused();
   // Nothing to send until six digits are typed.
-  await expect(register).toBeDisabled();
+  await expect(add).toBeDisabled();
   const qr = await dialog.locator('.jp-PasskeyVaultForm-qr svg').boundingBox();
   expect([Math.round(qr!.width), Math.round(qr!.height)]).toEqual([180, 180]);
   const shownKey = await dialog
@@ -681,7 +751,7 @@ test('an authenticator app is added, and its code or the recovery passphrase sho
   // A code of another time: the dialog opens again with the same key and says so.
   const step = Math.floor(Date.now() / 30000);
   await code.fill(appCode(setupKey, step + 50));
-  await register.click();
+  await add.click();
   await expect(
     dialog.getByText('Wrong code. Enter the code the app shows now.')
   ).toBeVisible();
@@ -689,24 +759,104 @@ test('an authenticator app is added, and its code or the recovery passphrase sho
     shownKey
   );
   await code.fill(appCode(setupKey, step));
-  await register.click();
+  await add.click();
   await expect(dialog).toHaveCount(0);
-  await expect(app).toContainText('Added 20');
-  // A vault has one app: the dialog says so and the kind cannot be chosen.
-  await panel(page).getByRole('button', { name: 'Add sign-in method' }).click();
-  await expect(
-    dialog.locator('button[data-method="authenticator"]')
-  ).toBeDisabled();
+  await expect(panel(page)).toContainText(
+    'Password and authenticator app added'
+  );
+  // One row for the two. Its name is shown whole at the width of a sidebar: it
+  // wraps beside Remove and is not cut.
+  await expect(row).toContainText('Password and authenticator app');
+  await expect(row).toContainText('Added 20');
+  const name = row.locator('.jp-PasskeyVaultPanel-rowName');
+  expect(await name.evaluate(n => n.scrollWidth <= n.clientWidth)).toBe(true);
+  const [rowBox, removeBox] = await Promise.all([
+    row.boundingBox(),
+    row.getByRole('button', { name: 'Remove' }).boundingBox()
+  ]);
+  expect(removeBox!.x + removeBox!.width).toBeLessThanOrEqual(
+    rowBox!.x + rowBox!.width
+  );
+  // A vault has one: the dialog says so and the method cannot be chosen.
+  await panel(page).getByRole('button', { name: 'Add unlock method' }).click();
+  await expect(dialog.locator('button[data-method="mfa"]')).toBeDisabled();
   await expect(dialog).toContainText('Remove it to add another.');
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
 
-  // With no passkey for this hostname the eye asks the other proof in a row of the
-  // popup: the app's code first.
+  // The locked view offers the two beside the passkey: the password, then the code.
+  await openCog(page);
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+  const unlock = panel(page).getByRole('button', {
+    name: 'Unlock with password'
+  });
+  const unlockCode = dialog.getByLabel(
+    'Enter the code the authenticator app shows'
+  );
+  const send = dialog.getByRole('button', { name: 'Unlock', exact: true });
+  // The password with a wrong code opens nothing.
+  await unlock.click();
+  await submitSecret(page, UNLOCK_PASSWORD, false);
+  await expect(unlockCode).toBeFocused();
+  await expect(send).toBeDisabled();
+  await unlockCode.fill(appCode(setupKey, step + 50));
+  await send.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(panel(page)).toContainText('wrong code');
+  await expect(state(page)).toHaveText('Locked');
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+  // The step after the one that added the app: a code is accepted once.
+  await unlock.click();
+  await submitSecret(page, UNLOCK_PASSWORD, false);
+  await unlockCode.fill(appCode(setupKey, step + 1));
+  await send.click();
+  await expect(state(page)).toContainText('Unlocked');
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+
+  // One Remove, in two steps, removes both; the locked view then offers neither.
+  await openCog(page);
+  await removeMethod(page, row);
+  await expect(row).toHaveCount(0);
+  await expect(panel(page)).toContainText(
+    'Password and authenticator app removed'
+  );
+  await openCog(page);
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+  await expect(
+    panel(page).getByRole('button', { name: 'Use recovery passphrase' })
+  ).toBeVisible();
+  await expect(unlock).toHaveCount(0);
+});
+
+test('a code, the unlock password or the recovery passphrase shows a password at a hostname with no passkey', async ({
+  page
+}) => {
+  const SECRET = 'vault-e2e-secret-9Wk';
+  await openVault(page);
+  await createVault(page);
+  await addEntry(page, SECRET);
+  const dialog = page.locator('.jp-Dialog');
+  await openCog(page);
+  const setupKey = await startMfa(page);
+  // A code is accepted once, so each code here is of a later time step than the one
+  // before. The server takes the step before the current one, the current and the next.
+  let step = Math.floor(Date.now() / 30000) - 2;
+  const nextCode = () => {
+    step = Math.max(step + 1, Math.floor(Date.now() / 30000) - 1);
+    return appCode(setupKey, step);
+  };
+  const { code, add } = appDialog(page);
+  await code.fill(nextCode());
+  await add.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(method(page, 'mfa')).toContainText('Added 20');
+
+  // With no passkey for this hostname a proof in a dialog is a code. The button for
+  // the recovery passphrase works with nothing typed: only Submit waits for six digits.
   await removeMethod(page, method(page, 'passkey'));
   await expect(method(page, 'passkey')).toHaveCount(0);
-  // A proof in a dialog is now a code. The button for the recovery passphrase works
-  // with nothing typed: only Submit waits for six digits.
   await panel(page)
     .getByRole('button', { name: 'Change recovery passphrase' })
     .click();
@@ -721,42 +871,92 @@ test('an authenticator app is added, and its code or the recovery passphrase sho
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
   await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+
+  // Unlock with the password and a code. For a minute the eye then shows the password
+  // at once: it asks no second proof, so the code that unlocked is not asked again.
   await openCog(page);
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+  await panel(page)
+    .getByRole('button', { name: 'Unlock with password' })
+    .click();
+  await submitSecret(page, UNLOCK_PASSWORD, false);
+  await dialog
+    .getByLabel('Enter the code the authenticator app shows')
+    .fill(nextCode());
+  await dialog.getByRole('button', { name: 'Unlock', exact: true }).click();
+  await expect(state(page)).toContainText('Unlocked');
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
   const row = panel(page).locator('.jp-PasskeyVaultPanel-rowLine', {
     hasText: 'github/api'
   });
   const password = dialog.getByLabel('Password', { exact: true });
   const proof = dialog.locator('.jp-PasskeyVaultForm-proof input');
   const show = dialog.getByRole('button', { name: 'Show', exact: true });
+  const eye = dialog.getByRole('button', { name: 'Show password' });
+  /** Press the eye in the minute: the request carries no proof and the popup asks none. */
+  const showsAtOnce = async () => {
+    await row.click();
+    const [request] = await Promise.all([
+      page.waitForRequest(REVEAL),
+      eye.click()
+    ]);
+    expect(request.postDataJSON()).toEqual({ name: 'github/api' });
+    await expect(password).toHaveValue(SECRET);
+    await expect(proof).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Close' }).click();
+    await expect(dialog).toHaveCount(0);
+  };
+  await showsAtOnce();
+
+  // After the minute the eye asks the proof in a row of the popup: the app's code first.
+  await endProvenMinute(page);
   await row.click();
   // Until the eye is pressed the popup has nothing to type in.
   await expect(proof).toHaveCount(0);
-  await dialog.getByRole('button', { name: 'Show password' }).click();
+  await eye.click();
   await expect(
     dialog.getByText(
       'Enter a code of the authenticator app to show the password.'
     )
   ).toBeVisible();
   await expect(proof).toBeFocused();
-  // The step after the one the registration used: a code is accepted once. Enter on
-  // Show presses it and the popup stays.
-  await proof.fill(appCode(setupKey, step + 1));
+  // Enter on Show presses it and the popup stays.
+  await proof.fill(nextCode());
   await show.press('Enter');
   await expect(password).toHaveValue(SECRET);
   await expect(proof).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Close' }).click();
   await expect(dialog).toHaveCount(0);
+  // That proof starts a minute of its own.
+  await showsAtOnce();
 
-  // The recovery passphrase on request; Enter in the row sends it and the popup stays.
+  // The unlock password alone on request, while the vault is unlocked.
+  await endProvenMinute(page);
   await row.click();
-  await dialog.getByRole('button', { name: 'Show password' }).click();
+  await eye.click();
+  await dialog.getByRole('button', { name: 'Use the unlock password' }).click();
+  await expect(
+    dialog.getByText('Enter the unlock password to show the password.')
+  ).toBeVisible();
+  await expect(proof).toHaveAttribute('type', 'password');
+  await proof.fill(UNLOCK_PASSWORD);
+  await show.click();
+  await expect(password).toHaveValue(SECRET);
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // The recovery passphrase after it; Enter in the row sends it and the popup stays.
+  await endProvenMinute(page);
+  await row.click();
+  await eye.click();
+  await dialog.getByRole('button', { name: 'Use the unlock password' }).click();
   await dialog
     .getByRole('button', { name: 'Use the recovery passphrase' })
     .click();
   await expect(
     dialog.getByText('Enter the recovery passphrase to show the password.')
   ).toBeVisible();
-  await expect(proof).toHaveAttribute('type', 'password');
   await proof.fill('not the passphrase');
   await proof.press('Enter');
   await expect(
@@ -769,13 +969,14 @@ test('an authenticator app is added, and its code or the recovery passphrase sho
   await dialog.getByRole('button', { name: 'Close' }).click();
   await expect(dialog).toHaveCount(0);
 
-  // Removed in two steps; then the eye asks the recovery passphrase at once.
+  // With the two removed, the eye asks the recovery passphrase at once.
   await openCog(page);
-  await removeMethod(page, app);
-  await expect(app).toHaveCount(0);
+  await removeMethod(page, method(page, 'mfa'));
+  await expect(method(page, 'mfa')).toHaveCount(0);
   await openCog(page);
+  await endProvenMinute(page);
   await row.click();
-  await dialog.getByRole('button', { name: 'Show password' }).click();
+  await eye.click();
   await expect(
     dialog.getByText('Enter the recovery passphrase to show the password.')
   ).toBeVisible();
@@ -785,105 +986,6 @@ test('an authenticator app is added, and its code or the recovery passphrase sho
   await proof.fill(RECOVERY);
   await show.click();
   await expect(password).toHaveValue(SECRET);
-});
-
-test('an unlock password is added, opens the vault, and shows a password at a hostname with no passkey', async ({
-  page
-}) => {
-  const PASSWORD = 'an everyday password';
-  const SECRET = 'vault-e2e-secret-3Zt';
-  await openVault(page);
-  await createVault(page);
-  const dialog = page.locator('.jp-Dialog');
-  await panel(page).getByRole('button', { name: 'Add an entry' }).click();
-  await dialog.getByLabel('Name', { exact: true }).fill('github/api');
-  await dialog.getByLabel('Password', { exact: true }).fill(SECRET);
-  await dialog.getByRole('button', { name: 'Save' }).click();
-  await expect(dialog).toHaveCount(0);
-
-  // Add it: the password twice, then this host's passkey as the proof. Submit stays
-  // off until both fields agree and hold the 12 characters the setting asks.
-  await openCog(page);
-  const row = method(page, 'password');
-  await expect(row).toHaveCount(0);
-  await addMethod(page, 'password');
-  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
-    'Add unlock password'
-  );
-  const fields = dialog.locator('input[type="password"]');
-  const submit = dialog.getByRole('button', { name: 'Submit' });
-  const status = dialog.locator('.jp-PassphraseDialog-status');
-  await expect(fields.nth(0)).toHaveAttribute('placeholder', 'Password');
-  await expect(fields.nth(1)).toHaveAttribute(
-    'placeholder',
-    'Confirm password'
-  );
-  await fields.nth(0).fill('eleven char');
-  await fields.nth(1).fill('eleven char');
-  await expect(status).toHaveText('Too short: at least 12 characters');
-  await expect(submit).toBeDisabled();
-  await fields.nth(0).fill(PASSWORD);
-  await fields.nth(1).fill(PASSWORD);
-  await expect(status).toHaveText('Passwords match');
-  await submit.click();
-  await expect(dialog).toHaveCount(0);
-  await expect(panel(page)).toContainText('Unlock password added');
-  await expect(row).toContainText('Added 20');
-  // A second one replaces it: the dialog says so beside the kind.
-  await panel(page).getByRole('button', { name: 'Add sign-in method' }).click();
-  await expect(dialog).toContainText('Replaces the one added 20');
-  await dialog.getByRole('button', { name: 'Cancel' }).click();
-  await expect(dialog).toHaveCount(0);
-
-  // The locked view offers it, beside the passkey, and it opens the vault.
-  await openCog(page);
-  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
-  await expect(state(page)).toHaveText('Locked');
-  await panel(page)
-    .getByRole('button', { name: 'Unlock with password' })
-    .click();
-  await submitSecret(page, PASSWORD, false);
-  await expect(state(page)).toContainText('Unlocked');
-  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
-
-  // With no passkey for this hostname the eye asks the unlock password, and offers
-  // the recovery passphrase after it.
-  await openCog(page);
-  await removeMethod(page, method(page, 'passkey'));
-  await expect(method(page, 'passkey')).toHaveCount(0);
-  await openCog(page);
-  await panel(page)
-    .locator('.jp-PasskeyVaultPanel-rowLine', { hasText: 'github/api' })
-    .click();
-  await dialog.getByRole('button', { name: 'Show password' }).click();
-  await expect(
-    dialog.getByText('Enter the unlock password to show the password.')
-  ).toBeVisible();
-  await expect(
-    dialog.getByRole('button', { name: 'Use the recovery passphrase' })
-  ).toBeVisible();
-  const proof = dialog.locator('.jp-PasskeyVaultForm-proof input');
-  await proof.fill(PASSWORD);
-  await dialog.getByRole('button', { name: 'Show', exact: true }).click();
-  await expect(dialog.getByLabel('Password', { exact: true })).toHaveValue(
-    SECRET
-  );
-  await dialog.getByRole('button', { name: 'Close' }).click();
-  await expect(dialog).toHaveCount(0);
-
-  // Removed in two steps; the locked view then offers no password unlock.
-  await openCog(page);
-  await removeMethod(page, row);
-  await expect(row).toHaveCount(0);
-  await openCog(page);
-  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
-  await expect(state(page)).toHaveText('Locked');
-  await expect(
-    panel(page).getByRole('button', { name: 'Use recovery passphrase' })
-  ).toBeVisible();
-  await expect(
-    panel(page).getByRole('button', { name: 'Unlock with password' })
-  ).toHaveCount(0);
 });
 
 test('the recovery passphrase is changed and then opens the vault', async ({

@@ -19,6 +19,8 @@ NEEDS_PROOF = "this needs a proof: a passkey, a code of the authenticator app or
 # An authenticator app: its secret, and the setup key the app is given.
 APP = bytes(range(40, 60))
 APP_KEY = base64.b32encode(APP).decode()
+# The unlock password that is added with the app.
+UNLOCK = "an everyday password"
 
 
 async def call(jp_fetch, action, body=None, method="POST", **params):
@@ -67,10 +69,18 @@ def clock(monkeypatch):
     return stopped
 
 
-async def register_app(jp_fetch, clock):
-    await call(jp_fetch, "authenticator", {"secret": APP_KEY, "code": clock.code(),
-                                           "proof": {"current": PASS}})
+async def add_mfa(jp_fetch, clock):
+    """Add the unlock password and the authenticator app, then move to the next code."""
+    await call(jp_fetch, "mfa", {"password": UNLOCK, "secret": APP_KEY, "code": clock.code(),
+                                 "proof": {"current": PASS}})
     clock.advance(1)
+
+
+def edit_vault_file(vault_env, change):
+    path = vault_env / "vault" / "vault.json"
+    doc = json.loads(path.read_text())
+    change(doc)
+    path.write_text(json.dumps(doc))
 
 
 def vault_file(vault_env):
@@ -176,9 +186,9 @@ async def test_a_passkey_reveal_answers_the_password_only_for_a_prf_that_opens_a
     for bad in ({"prf": wrong}, {"cred_id": "c2"}, {"prf": "!"}, {"prf": None}):
         code, error = await fails(jp_fetch, "reveal", {**body, **bad})
         assert code == 403 and error == "the passkey did not open the vault"
-    # Locked, it still answers: the PRF unwraps its own key, not the held one.
+    # A locked vault shows nothing, whatever the proof: the passkey unlocks it first.
     await call(jp_fetch, "lock")
-    assert (await call(jp_fetch, "reveal", body))["value"] == SECRET
+    assert await fails(jp_fetch, "reveal", body) == (423, "the vault is locked")
     for secret in (SECRET, PRF, wrong):
         assert secret not in caplog.text
 
@@ -193,9 +203,9 @@ async def test_a_reveal_takes_the_recovery_passphrase_as_its_proof(jp_fetch, vau
     assert (await call(jp_fetch, "reveal", body))["value"] == SECRET
     for bad in (PASS + "x", "", None):
         assert await fails(jp_fetch, "reveal", {**body, "current": bad}) == (403, "wrong recovery passphrase")
-    # Locked, it still answers: the passphrase unwraps its own key, not the held one.
+    # A locked vault shows nothing, whatever the proof: the passphrase unlocks it first.
     await call(jp_fetch, "lock")
-    assert (await call(jp_fetch, "reveal", body))["value"] == SECRET
+    assert await fails(jp_fetch, "reveal", body) == (423, "the vault is locked")
     assert (await call(jp_fetch, "status", method="GET"))["unlocked"] is False
     for secret in (SECRET, PASS):
         assert secret not in caplog.text
@@ -226,114 +236,13 @@ async def test_a_passkey_is_registered_only_with_a_proof(jp_fetch, vault_env):
 
 
 # --------------------------------------------------------------------------- #
-# unlock password
+# password and authenticator app
 # --------------------------------------------------------------------------- #
 
-UNLOCK = "an everyday password"
-
-
-async def test_an_unlock_password_is_set_with_a_proof_and_opens_the_vault(jp_fetch, vault_env, caplog):
-    caplog.set_level(logging.DEBUG)
-    await init(jp_fetch)
-    before = vault_file(vault_env)
-    for body, refusal in [({"password": UNLOCK}, (403, NEEDS_PROOF)),
-                          ({"password": UNLOCK, "proof": {"current": PASS + "x"}},
-                           (403, "wrong recovery passphrase")),
-                          ({"password": "eleven char", "proof": {"current": PASS}},
-                           (400, "an unlock password is at least 12 characters")),
-                          ({"password": None, "proof": {"current": PASS}},
-                           (400, "an unlock password is at least 12 characters"))]:
-        assert await fails(jp_fetch, "password", body) == refusal
-        assert vault_file(vault_env) == before
-    assert await fails(jp_fetch, "unlock", {"password": UNLOCK}) == (400, "the vault has no unlock password")
-    await call(jp_fetch, "password", {"password": UNLOCK, "proof": {"current": PASS}})
-    # One slot, built as the recovery slot is, and status shows it without its key.
-    slots = json.loads(vault_file(vault_env))["slots"]
-    [slot] = [x for x in slots if x["type"] == "password"]
-    recovery = slots[0]
-    assert (slot["kdf"], slot["n"], slot["r"], slot["p"]) == tuple(recovery[k] for k in ("kdf", "n", "r", "p"))
-    assert UNLOCK not in vault_file(vault_env)
-    shown = [x for x in (await call(jp_fetch, "status", method="GET"))["slots"] if x["type"] == "password"]
-    assert shown == [{k: slot[k] for k in ("type", "kdf", "n", "r", "p", "created")}]
-    # It opens a locked vault; a wrong one does not.
-    await call(jp_fetch, "lock")
-    for wrong in (UNLOCK + "x", PASS, "", None):
-        code, _ = await fails(jp_fetch, "unlock", {"password": wrong})
-        assert code == 400
-    assert (await call(jp_fetch, "status", method="GET"))["unlocked"] is False
-    assert (await call(jp_fetch, "unlock", {"password": UNLOCK}))["unlocked"] is True
-    # A second call replaces it: one slot still, and the old password opens nothing.
-    await call(jp_fetch, "password", {"password": "another everyday one", "proof": {"current": PASS}})
-    assert [x["type"] for x in json.loads(vault_file(vault_env))["slots"]] == ["recovery", "password"]
-    await call(jp_fetch, "lock")
-    assert await fails(jp_fetch, "unlock", {"password": UNLOCK}) == (400, "wrong unlock password")
-    assert (await call(jp_fetch, "unlock", {"password": "another everyday one"}))["unlocked"] is True
-    for secret in (UNLOCK, "another everyday one", "eleven char"):
-        assert secret not in caplog.text
-
-
-async def test_the_unlock_password_proves_a_reveal_and_nothing_else(jp_fetch, vault_env, clock):
-    await init(jp_fetch)
-    await add(jp_fetch)
-    await call(jp_fetch, "password", {"password": UNLOCK, "proof": {"current": PASS}})
-    reveal = {"name": "github/api", "password": UNLOCK}
-    assert (await call(jp_fetch, "reveal", reveal))["value"] == SECRET
-    for wrong in (UNLOCK + "x", "", None):
-        assert await fails(jp_fetch, "reveal", {**reveal, "password": wrong}) == (403, "wrong unlock password")
-    # The password typed every day adds no way in and replaces no secret.
-    no_proof = (403, "the unlock password is no proof for this - use a passkey, a code of the "
-                     "authenticator app or the recovery passphrase")
-    before = vault_file(vault_env)
-    proof = {"password": UNLOCK}
-    for action, body in [("passkeys", {"cred_id": "c1", "rp_id": "h", "prf_salt": "s", "prf": PRF}),
-                         ("recovery", {"recovery": "a new passphrase"}),
-                         ("password", {"password": "a new everyday one"}),
-                         ("authenticator", {"secret": APP_KEY, "code": clock.code()})]:
-        assert await fails(jp_fetch, action, {**body, "proof": proof}) == no_proof
-        assert vault_file(vault_env) == before
-    # Locked, the reveal still answers: the password unwraps its own key.
-    await call(jp_fetch, "lock")
-    assert (await call(jp_fetch, "reveal", reveal))["value"] == SECRET
-    # An app code and a passkey set it too.
-    await call(jp_fetch, "unlock", {"password": UNLOCK})
-    await register_app(jp_fetch, clock)
-    await call(jp_fetch, "password", {"password": "set with a code", "proof": {"code": clock.code()}})
-    assert await fails(jp_fetch, "reveal", reveal) == (403, "wrong unlock password")
-
-
-async def test_the_unlock_password_is_removed_on_an_unlocked_vault(jp_fetch, vault_env):
-    await init(jp_fetch)
-    assert await fails(jp_fetch, "password-remove") == (400, "no unlock password is set")
-    await call(jp_fetch, "password", {"password": UNLOCK, "proof": {"current": PASS}})
-    await call(jp_fetch, "lock")
-    assert await fails(jp_fetch, "password-remove") == (423, "the vault is locked")
-    await call(jp_fetch, "unlock", {"password": UNLOCK})
-    await call(jp_fetch, "password-remove")
-    assert [x["type"] for x in json.loads(vault_file(vault_env))["slots"]] == ["recovery"]
-    await call(jp_fetch, "lock")
-    assert await fails(jp_fetch, "unlock", {"password": UNLOCK}) == (400, "the vault has no unlock password")
-
-
-async def test_the_shortest_unlock_password_is_a_setting(jp_fetch, vault_env):
-    await init(jp_fetch)
-    # The frontend sends both settings; one that sends the duration alone keeps the length.
-    await call(jp_fetch, "config", {"unlock_minutes": 30, "password_min_length": 16})
-    await call(jp_fetch, "config", {"unlock_minutes": 60})
-    s = await call(jp_fetch, "status", method="GET")
-    assert s["settings"] == {"unlock_minutes": 60, "password_min_length": 16}
-    proof = {"current": PASS}
-    assert await fails(jp_fetch, "password", {"password": "x" * 15, "proof": proof}) == (
-        400, "an unlock password is at least 16 characters")
-    await call(jp_fetch, "password", {"password": "x" * 16, "proof": proof})
-    for bad in (7, 129, "12", True, 12.5):
-        code, error = await fails(jp_fetch, "config", {"unlock_minutes": 60, "password_min_length": bad})
-        assert code == 400 and error == "password_min_length must be a whole number from 8 to 128"
-    assert (await call(jp_fetch, "status", method="GET"))["settings"]["password_min_length"] == 16
-
-
-# --------------------------------------------------------------------------- #
-# authenticator app
-# --------------------------------------------------------------------------- #
+NO_PROOF = (403, "the unlock password is no proof for this - use a passkey, a code of the "
+                 "authenticator app or the recovery passphrase")
+TOO_MANY = (403, "too many wrong codes - codes are refused until the vault is unlocked with a "
+                 "passkey or the recovery passphrase")
 
 
 def test_codes_match_the_rfc_6238_test_vectors():
@@ -353,37 +262,6 @@ def test_codes_match_the_rfc_6238_test_vectors():
         assert totp.matching_step(secret, bad, now=59) is None
 
 
-async def test_an_authenticator_app_is_registered_with_a_right_code_and_a_proof(jp_fetch, vault_env, clock):
-    await init(jp_fetch)
-    before = vault_file(vault_env)
-    right = {"secret": APP_KEY, "code": clock.code(), "proof": {"current": PASS}}
-    for bad, refusal in [({"code": clock.code(5)}, (403, "wrong code")),
-                         ({"code": None}, (403, "wrong code")),
-                         ({"proof": None}, (403, NEEDS_PROOF)),
-                         ({"proof": {"current": PASS + "x"}}, (403, "wrong recovery passphrase")),
-                         ({"proof": {"code": clock.code()}}, (403, "the vault has no authenticator app")),
-                         ({"secret": APP_KEY[:16]},
-                          (400, "an authenticator app's secret is base32 of 16 to 64 bytes")),
-                         ({"secret": None}, (400, "an authenticator app's secret is base32 of 16 to 64 bytes"))]:
-        assert await fails(jp_fetch, "authenticator", {**right, **bad}) == refusal
-        assert vault_file(vault_env) == before
-    assert (await call(jp_fetch, "status", method="GET"))["authenticator"] is None
-    await call(jp_fetch, "authenticator", right)
-    # The file tells that an app is registered and since when; its secret is sealed.
-    app = json.loads(vault_file(vault_env))["authenticator"]
-    assert set(app) == {"created", "secret"}
-    for clear in (APP_KEY, base64.b64encode(APP).decode(), APP.hex()):
-        assert clear not in vault_file(vault_env)
-    assert store_secret(vault_env) == APP
-    # One app at a time.
-    clock.advance(1)
-    code, message = await fails(jp_fetch, "authenticator", {**right, "code": clock.code()})
-    assert (code, message) == (409, "the vault already has an authenticator app - remove it first")
-    # Locked, status still says only that it is there.
-    await call(jp_fetch, "lock")
-    assert (await call(jp_fetch, "status", method="GET"))["authenticator"] == {"created": app["created"]}
-
-
 def store_secret(vault_env):
     from jupyterlab_passkey_extension.vault import store
 
@@ -391,35 +269,148 @@ def store_secret(vault_env):
     return store.authenticator_secret(store.load(store.vault_path()), svc.holder().get(svc._vault_id()))
 
 
-async def test_a_code_proves_on_an_unlocked_vault_and_never_unlocks(jp_fetch, vault_env, clock):
+async def test_the_password_and_the_app_are_added_together_with_a_right_code_and_a_proof(
+        jp_fetch, vault_env, clock, caplog):
+    caplog.set_level(logging.DEBUG)
+    await init(jp_fetch)
+    before = vault_file(vault_env)
+    right = {"password": UNLOCK, "secret": APP_KEY, "code": clock.code(), "proof": {"current": PASS}}
+    short = (400, "an unlock password is at least 12 characters")
+    no_secret = (400, "an authenticator app's secret is base32 of 16 to 64 bytes")
+    for bad, refusal in [({"code": clock.code(5)}, (403, "wrong code")),
+                         ({"code": None}, (403, "wrong code")),
+                         ({"proof": None}, (403, NEEDS_PROOF)),
+                         ({"proof": {"current": PASS + "x"}}, (403, "wrong recovery passphrase")),
+                         ({"proof": {"code": clock.code()}}, (403, "the vault has no authenticator app")),
+                         ({"proof": {"password": UNLOCK}}, NO_PROOF),
+                         ({"password": "eleven char"}, short),
+                         ({"password": None}, short),
+                         ({"secret": APP_KEY[:16]}, no_secret),
+                         ({"secret": None}, no_secret)]:
+        assert await fails(jp_fetch, "mfa", {**right, **bad}) == refusal
+        assert vault_file(vault_env) == before
+    assert (await call(jp_fetch, "status", method="GET"))["authenticator"] is None
+    assert await fails(jp_fetch, "unlock", {"password": UNLOCK, "code": clock.code()}) == (
+        400, "the vault has no unlock password")
+    await call(jp_fetch, "mfa", right)
+    # One write adds both. The password slot is built as the recovery slot is.
+    doc = json.loads(vault_file(vault_env))
+    assert [x["type"] for x in doc["slots"]] == ["recovery", "password"]
+    recovery, slot = doc["slots"]
+    assert (slot["kdf"], slot["n"], slot["r"], slot["p"]) == tuple(recovery[k] for k in ("kdf", "n", "r", "p"))
+    # The file tells that an app was added and since when; its secret is sealed.
+    app = doc["authenticator"]
+    assert set(app) == {"created", "secret"}
+    for clear in (UNLOCK, APP_KEY, base64.b64encode(APP).decode(), APP.hex()):
+        assert clear not in vault_file(vault_env)
+    assert store_secret(vault_env) == APP
+    # Status shows both without a key.
+    s = await call(jp_fetch, "status", method="GET")
+    assert [x for x in s["slots"] if x["type"] == "password"] == [
+        {k: slot[k] for k in ("type", "kdf", "n", "r", "p", "created")}]
+    assert s["authenticator"] == {"created": app["created"]}
+    # One pair at a time.
+    clock.advance(1)
+    assert await fails(jp_fetch, "mfa", {**right, "code": clock.code()}) == (
+        409, "the vault already has a password and authenticator app - remove them first")
+    # Locked, status still says only that the app is there.
+    await call(jp_fetch, "lock")
+    assert (await call(jp_fetch, "status", method="GET"))["authenticator"] == {"created": app["created"]}
+    for secret in (UNLOCK, "eleven char", APP_KEY):
+        assert secret not in caplog.text
+
+
+async def test_the_unlock_password_opens_the_vault_only_with_a_code(jp_fetch, vault_env, clock):
+    await init(jp_fetch)
+    await add_mfa(jp_fetch, clock)
+    await call(jp_fetch, "lock")
+
+    async def locked():
+        return (await call(jp_fetch, "status", method="GET"))["unlocked"] is False
+
+    # The password alone, a code alone, and a wrong half of the pair open nothing.
+    assert await fails(jp_fetch, "unlock", {"password": UNLOCK}) == (
+        403, "a password unlock needs a code of the authenticator app")
+    code, _ = await fails(jp_fetch, "unlock", {"code": clock.code()})
+    assert code == 400
+    for wrong in (UNLOCK + "x", PASS, "", None):
+        code, _ = await fails(jp_fetch, "unlock", {"password": wrong, "code": clock.code()})
+        assert code == 400
+    assert await fails(jp_fetch, "unlock", {"password": UNLOCK, "code": "000000"}) == (403, "wrong code")
+    assert await locked()
+    # Both open it. A wrong password did not use up the code.
+    assert (await call(jp_fetch, "unlock", {"password": UNLOCK, "code": clock.code()}))["unlocked"] is True
+    # A code opens it once.
+    await call(jp_fetch, "lock")
+    assert await fails(jp_fetch, "unlock", {"password": UNLOCK, "code": clock.code()}) == (
+        403, "that code was already used - wait for the next one")
+    clock.advance(1)
+    # Five wrong codes in a row stop the pair, the right code included.
+    for _ in range(5):
+        assert await fails(jp_fetch, "unlock", {"password": UNLOCK, "code": "000000"}) == (403, "wrong code")
+    assert await fails(jp_fetch, "unlock", {"password": UNLOCK, "code": clock.code()}) == TOO_MANY
+    assert await locked()
+    # The recovery passphrase still opens it, and the pair works again after that.
+    await call(jp_fetch, "unlock", {"recovery": PASS})
+    await call(jp_fetch, "lock")
+    assert (await call(jp_fetch, "unlock", {"password": UNLOCK, "code": clock.code()}))["unlocked"] is True
+
+
+async def test_a_code_proves_on_an_unlocked_vault_and_the_password_alone_only_a_reveal(
+        jp_fetch, vault_env, clock):
     await init(jp_fetch)
     await add(jp_fetch)
-    await register_app(jp_fetch, clock)
+    await add_mfa(jp_fetch, clock)
     slot = {"cred_id": "c1", "rp_id": "h", "prf_salt": "s", "prf": PRF}
     reveal = {"name": "github/api"}
+    # The password alone shows a password. It adds no way in and replaces no secret.
+    assert (await call(jp_fetch, "reveal", {**reveal, "password": UNLOCK}))["value"] == SECRET
+    for wrong in (UNLOCK + "x", "", None):
+        assert await fails(jp_fetch, "reveal", {**reveal, "password": wrong}) == (403, "wrong unlock password")
+    before = vault_file(vault_env)
+    for action, body in [("passkeys", slot), ("recovery", {"recovery": "a new passphrase"})]:
+        assert await fails(jp_fetch, action, {**body, "proof": {"password": UNLOCK}}) == NO_PROOF
+        assert vault_file(vault_env) == before
+    # A code proves all three.
     assert (await call(jp_fetch, "reveal", {**reveal, "code": clock.code()}))["value"] == SECRET
     clock.advance(1)
     await call(jp_fetch, "passkeys", {**slot, "proof": {"code": clock.code()}})
     clock.advance(1)
     await call(jp_fetch, "recovery", {"recovery": "second passphrase", "proof": {"code": clock.code()}})
     clock.advance(1)
-    # A code holds no key: locked, it proves nothing and it does not unlock.
+    # Locked, neither half proves anything alone: only the pair opens the vault.
     await call(jp_fetch, "lock")
     locked = (423, "the vault is locked")
+    assert await fails(jp_fetch, "reveal", {**reveal, "password": UNLOCK}) == locked
     assert await fails(jp_fetch, "reveal", {**reveal, "code": clock.code()}) == locked
     assert await fails(jp_fetch, "passkeys", {**slot, "cred_id": "c2", "proof": {"code": clock.code()}}) == locked
     assert await fails(jp_fetch, "recovery", {"recovery": "third", "proof": {"code": clock.code()}}) == locked
-    code, _ = await fails(jp_fetch, "unlock", {"code": clock.code()})
-    assert code == 400
     assert (await call(jp_fetch, "status", method="GET"))["unlocked"] is False
     assert (await call(jp_fetch, "unlock", {"recovery": "second passphrase"}))["unlocked"]
+
+
+async def test_the_shortest_unlock_password_is_a_setting(jp_fetch, vault_env, clock):
+    await init(jp_fetch)
+    # The frontend sends both settings; one that sends the duration alone keeps the length.
+    await call(jp_fetch, "config", {"unlock_minutes": 30, "password_min_length": 16})
+    await call(jp_fetch, "config", {"unlock_minutes": 60})
+    s = await call(jp_fetch, "status", method="GET")
+    assert s["settings"] == {"unlock_minutes": 60, "password_min_length": 16}
+    pair = {"secret": APP_KEY, "code": clock.code(), "proof": {"current": PASS}}
+    assert await fails(jp_fetch, "mfa", {**pair, "password": "x" * 15}) == (
+        400, "an unlock password is at least 16 characters")
+    await call(jp_fetch, "mfa", {**pair, "password": "x" * 16})
+    for bad in (7, 129, "12", True, 12.5):
+        code, error = await fails(jp_fetch, "config", {"unlock_minutes": 60, "password_min_length": bad})
+        assert code == 400 and error == "password_min_length must be a whole number from 8 to 128"
+    assert (await call(jp_fetch, "status", method="GET"))["settings"]["password_min_length"] == 16
 
 
 async def test_a_code_is_accepted_one_step_either_side_once_and_five_wrong_ones_stop_codes(
         jp_fetch, vault_env, clock):
     await init(jp_fetch)
     await add(jp_fetch)
-    await register_app(jp_fetch, clock)
+    await add_mfa(jp_fetch, clock)
 
     async def reveal(code):
         return await call(jp_fetch, "reveal", {"name": "github/api", "code": code})
@@ -444,30 +435,54 @@ async def test_a_code_is_accepted_one_step_either_side_once_and_five_wrong_ones_
     clock.advance(1)
     for _ in range(5):
         assert await refused("000000") == (403, "wrong code")
-    stopped = (403, "too many wrong codes - lock and unlock the vault, or use a passkey or the "
-                    "recovery passphrase")
-    assert await refused(clock.code()) == stopped
-    # The other proofs still work, and an unlock starts the count again.
+    assert await refused(clock.code()) == TOO_MANY
+    # The other proofs still work, and an unlock with one of them starts the count again.
     assert (await call(jp_fetch, "reveal", {"name": "github/api", "current": PASS}))["value"] == SECRET
     await call(jp_fetch, "lock")
     await call(jp_fetch, "unlock", {"recovery": PASS})
     assert (await reveal(clock.code()))["value"] == SECRET
 
 
-async def test_authenticator_app_removal(jp_fetch, vault_env, clock):
+async def test_the_password_and_the_app_are_removed_together(jp_fetch, vault_env, clock):
     await init(jp_fetch)
     await add(jp_fetch)
-    assert await fails(jp_fetch, "authenticator-remove") == (400, "the vault has no authenticator app")
-    await register_app(jp_fetch, clock)
+    assert await fails(jp_fetch, "mfa-remove") == (400, "the vault has no password and authenticator app")
+    await add_mfa(jp_fetch, clock)
     await call(jp_fetch, "lock")
-    assert await fails(jp_fetch, "authenticator-remove") == (423, "the vault is locked")
+    assert await fails(jp_fetch, "mfa-remove") == (423, "the vault is locked")
     await call(jp_fetch, "unlock", {"recovery": PASS})
-    await call(jp_fetch, "authenticator-remove")
-    assert "authenticator" not in json.loads(vault_file(vault_env))
+    await call(jp_fetch, "mfa-remove")
+    doc = json.loads(vault_file(vault_env))
+    assert "authenticator" not in doc and [x["type"] for x in doc["slots"]] == ["recovery"]
     assert await fails(jp_fetch, "reveal", {"name": "github/api", "code": clock.code()}) == (
         403, "the vault has no authenticator app")
-    await register_app(jp_fetch, clock)
+    await call(jp_fetch, "lock")
+    assert await fails(jp_fetch, "unlock", {"password": UNLOCK, "code": clock.code()}) == (
+        400, "the vault has no unlock password")
+    await call(jp_fetch, "unlock", {"recovery": PASS})
+    await add_mfa(jp_fetch, clock)
     assert (await call(jp_fetch, "status", method="GET"))["authenticator"] is not None
+
+
+async def test_a_vault_of_an_earlier_build_holds_one_without_the_other(jp_fetch, vault_env, clock):
+    # 1.1.28 to 1.1.31 added the password and the app apart from each other.
+    await init(jp_fetch)
+    await add_mfa(jp_fetch, clock)
+    conflict = (409, "the vault already has a password and authenticator app - remove them first")
+    pair = {"password": UNLOCK, "secret": APP_KEY, "proof": {"current": PASS}}
+    # A password and no app: the password opens the vault alone, and no pair is added over it.
+    edit_vault_file(vault_env, lambda doc: doc.pop("authenticator"))
+    await call(jp_fetch, "lock")
+    assert (await call(jp_fetch, "unlock", {"password": UNLOCK}))["unlocked"] is True
+    assert await fails(jp_fetch, "mfa", {**pair, "code": clock.code()}) == conflict
+    await call(jp_fetch, "mfa-remove")
+    assert [x["type"] for x in json.loads(vault_file(vault_env))["slots"]] == ["recovery"]
+    # An app and no password: the same, and Remove removes the app.
+    await add_mfa(jp_fetch, clock)
+    edit_vault_file(vault_env, lambda doc: doc["slots"].pop())
+    assert await fails(jp_fetch, "mfa", {**pair, "code": clock.code()}) == conflict
+    await call(jp_fetch, "mfa-remove")
+    assert "authenticator" not in json.loads(vault_file(vault_env))
 
 
 async def test_passkey_removal(jp_fetch, vault_env):
@@ -653,8 +668,7 @@ async def test_stage_refuses_a_code_too_long_to_show(jp_fetch, vault_env):
 @pytest.mark.parametrize("action,method", [
     ("status", "GET"), ("entries", "GET"), ("generate", "GET"), ("init", "POST"),
     ("unlock", "POST"), ("lock", "POST"), ("reveal", "POST"), ("config", "POST"),
-    ("passkeys", "POST"), ("entries", "PATCH"), ("authenticator", "POST"),
-    ("authenticator-remove", "POST"), ("password", "POST"), ("password-remove", "POST"),
+    ("passkeys", "POST"), ("entries", "PATCH"), ("mfa", "POST"), ("mfa-remove", "POST"),
 ])
 async def test_every_action_needs_the_token(http_server_client, jp_base_url, vault_env, action, method):
     path = url_path_join(jp_base_url, "jupyterlab-passkey-extension", "vault", action)
@@ -674,15 +688,17 @@ async def test_no_secret_is_logged(jp_fetch, vault_env, caplog, clock):
     caplog.set_level(logging.DEBUG)
     await init(jp_fetch)
     await add(jp_fetch)
-    # The authenticator app: its setup key, a right code and a wrong one.
+    # The unlock password and the authenticator app: the password, the setup key, a
+    # right code and a wrong one.
     codes = [clock.code(), clock.code(1), "135790"]
-    await register_app(jp_fetch, clock)
+    await add_mfa(jp_fetch, clock)
     await call(jp_fetch, "reveal", {"name": "github/api", "code": codes[1]})
     errors = [await fails(jp_fetch, "reveal", {"name": "github/api", "code": codes[2]}),
-              await fails(jp_fetch, "authenticator", {"secret": APP_KEY, "code": codes[2],
-                                                      "proof": {"current": PASS}})]
-    await call(jp_fetch, "authenticator-remove")
-    for told in [APP_KEY, *(f'"{c}"' for c in codes)]:
+              await fails(jp_fetch, "mfa", {"password": UNLOCK, "secret": APP_KEY, "code": codes[2],
+                                            "proof": {"current": PASS}}),
+              await fails(jp_fetch, "unlock", {"password": UNLOCK, "code": codes[2]})]
+    await call(jp_fetch, "mfa-remove")
+    for told in [UNLOCK, APP_KEY, *(f'"{c}"' for c in codes)]:
         assert told not in caplog.text
     assert not any(c in str(errors) or APP_KEY in str(errors) for c in codes)
     await call(jp_fetch, "passkeys", {"cred_id": "c1", "rp_id": "h", "prf_salt": "s", "prf": PRF,

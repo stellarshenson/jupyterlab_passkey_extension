@@ -90,7 +90,7 @@ async function answerCli(
 export const vaultPlugin: JupyterFrontEndPlugin<void> = {
   id: VAULT_PLUGIN_ID,
   description:
-    'A password vault the Jupyter server keeps, unlocked with a passkey, an unlock password or the recovery passphrase',
+    'A password vault the Jupyter server keeps, unlocked with a passkey, with an unlock password and an authenticator code, or with the recovery passphrase',
   autoStart: true,
   optional: [ISettingRegistry],
   activate: async (

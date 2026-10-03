@@ -42,7 +42,7 @@ stores secrets. It ships as a Python server extension plus an NPM frontend, both
 - **Server** - `jupyter_server` Tornado handlers: one authenticated `POST <base>/jupyterlab-passkey-extension/result` that writes a one-shot `0600` `/dev/shm/jlab-passkey-<uid>/<nonce>.json` relay (never logged), plus `GET <base>/jupyterlab-passkey-extension/health`
 - **Trigger** - consumers invoke `passkey:run` via jupyterlab-notify (the notification button click supplies the required WebAuthn user gesture); this extension builds no request-submission surface of its own
 - **Vault** - the server holds the vault: `vault/store.py` (file, keyslots), `vault/holders.py` (keyctl → gpg-agent → process memory, each with measured capabilities), `vault/service.py` + `vault/handlers.py` (REST under `.../vault/<action>`); CLI `jupyterlab-passkey vault ...`, Python `Vault`, sidebar panel with a cog view; criteria in `docs/acc-crit-passkey.md`
-- **Build/release** - versioned Makefile (currently v1.43), jupyter-releaser CI/CD workflows
+- **Build/release** - versioned Makefile (currently v1.45), jupyter-releaser CI/CD workflows
 - **Tests** - Jest (frontend), pytest (server), Playwright (`ui-tests/`)
 
 ## Mandatory Project Rules

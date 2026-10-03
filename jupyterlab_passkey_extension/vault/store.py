@@ -17,13 +17,15 @@
 The data key (32 random bytes) encrypts every entry, names included, as one blob. Each
 slot wraps that same key under its own key-encryption key - `Scrypt(passphrase)` for
 the recovery slot, `HKDF(PRF)` for a passkey slot, `Scrypt(password)` for the one
-unlock password slot a vault can have - so any one slot opens the vault and
+unlock password slot a vault can have - so any one slot decrypts the data key and
 adding or removing a slot never re-encrypts the entries. Every slot parameter except the
 wrapped key itself and its label is bound into the wrap as associated data, so a changed
 salt, KDF cost, credential or hostname fails to open rather than opening wrongly.
 
 `authenticator` is there only while the vault has an authenticator app. Its secret is
 sealed under the data key, so a locked vault tells that an app exists and nothing more.
+The unlock password slot and the app are added and removed together (`set_mfa`,
+`remove_mfa`): the service opens the vault with the password only for a right code.
 
 `id` is random per vault. It names the unlocked key in its holder, so two vaults under
 one user (two labs, or a second `JLAB_PASSKEY_VAULT`) never read each other's key.
@@ -320,42 +322,30 @@ def replace_recovery(path, dek, passphrase):
         _write(path, doc)
 
 
-def set_password(path, dek, password):
-    """Set the unlock password, in place of the one there was."""
+def set_mfa(path, dek, password, secret):
+    """Add the unlock password and the authenticator app in one write: the two unlock the
+    vault only together, so the file is never left with one of them."""
     slot = _password_slot(dek, password)
     with _locked(path):
         doc = load(path)
         _check_dek(doc, dek)
-        doc["slots"] = [s for s in doc["slots"] if s.get("type") != "password"] + [slot]
-        _write(path, doc)
-
-
-def remove_password(path):
-    with _locked(path):
-        doc = load(path)
-        kept = [s for s in doc["slots"] if s.get("type") != "password"]
-        if len(kept) == len(doc["slots"]):
-            raise VaultError("no unlock password is set")
-        doc["slots"] = kept
-        _write(path, doc)
-
-
-def set_authenticator(path, dek, secret):
-    with _locked(path):
-        doc = load(path)
-        _check_dek(doc, dek)
-        if "authenticator" in doc:
-            raise VaultError("the vault already has an authenticator app - remove it first")
+        if "authenticator" in doc or any(s.get("type") == "password" for s in doc["slots"]):
+            raise VaultError("the vault already has a password and authenticator app - remove them first")
+        doc["slots"] = doc["slots"] + [slot]
         doc["authenticator"] = {"created": _now(), "secret": _seal(dek, secret, _AUTHENTICATOR_AAD)}
         _write(path, doc)
 
 
-def remove_authenticator(path):
+def remove_mfa(path):
+    """Remove the unlock password and the authenticator app. A vault written by 1.1.28
+    to 1.1.31 can hold one without the other: what is there is removed."""
     with _locked(path):
         doc = load(path)
-        if "authenticator" not in doc:
-            raise VaultError("the vault has no authenticator app")
-        del doc["authenticator"]
+        kept = [s for s in doc["slots"] if s.get("type") != "password"]
+        if len(kept) == len(doc["slots"]) and "authenticator" not in doc:
+            raise VaultError("the vault has no password and authenticator app")
+        doc["slots"] = kept
+        doc.pop("authenticator", None)
         _write(path, doc)
 
 

@@ -24,7 +24,7 @@ jest.mock('../vault/dialogs', () => {
     editEntry: (...a: any[]) => mockEditEntry(...a),
     viewEntry: (...a: any[]) => mockViewEntry(...a),
     confirmDelete: (...a: any[]) => mockConfirmDelete(...a),
-    chooseSignInMethod: (...a: any[]) => mockChoose(...a)
+    chooseUnlockMethod: (...a: any[]) => mockChoose(...a)
   };
 });
 jest.mock('@jupyterlab/apputils', () => ({
@@ -89,12 +89,7 @@ jest.mock('@jupyterlab/ui-components', () => {
 });
 
 import { IStatus, NoAnswer, Proof, VaultError } from '../vault/api';
-import {
-  askProof,
-  EntryForm,
-  EntryView,
-  registerAuthenticator
-} from '../vault/dialogs';
+import { askProof, EntryForm, EntryView, registerMfa } from '../vault/dialogs';
 import {
   ARM_DELAY_MS,
   formatMinutes,
@@ -216,8 +211,6 @@ function fakeApi(over: Record<string, any> = {}): any {
     unlockRecovery: jest.fn().mockResolvedValue(status()),
     unlockPasskey: jest.fn().mockResolvedValue(status()),
     unlockPassword: jest.fn().mockResolvedValue(status()),
-    setPassword: jest.fn().mockResolvedValue(undefined),
-    removePassword: jest.fn().mockResolvedValue(undefined),
     add: jest.fn().mockResolvedValue(undefined),
     edit: jest.fn().mockResolvedValue(undefined),
     remove: jest.fn().mockResolvedValue(undefined),
@@ -226,9 +219,10 @@ function fakeApi(over: Record<string, any> = {}): any {
     addPasskey: jest.fn().mockResolvedValue(undefined),
     removePasskey: jest.fn().mockResolvedValue(undefined),
     replaceRecovery: jest.fn().mockResolvedValue(undefined),
-    addAuthenticator: jest.fn().mockResolvedValue(undefined),
-    removeAuthenticator: jest.fn().mockResolvedValue(undefined),
+    addMfa: jest.fn().mockResolvedValue(undefined),
+    removeMfa: jest.fn().mockResolvedValue(undefined),
     setConfig: jest.fn().mockResolvedValue(undefined),
+    proven: false,
     ...over
   };
 }
@@ -262,13 +256,10 @@ function button(panel: VaultPanel, label: string): HTMLButtonElement {
   return found;
 }
 
-/** Press "Add sign-in method" in the cog view and choose a kind in its dialog. */
-function addMethod(
-  panel: VaultPanel,
-  kind: 'passkey' | 'password' | 'authenticator'
-): void {
+/** Press "Add unlock method" in the cog view and choose a method in its dialog. */
+function addMethod(panel: VaultPanel, kind: 'passkey' | 'mfa'): void {
   mockChoose.mockResolvedValueOnce(kind);
-  button(panel, 'Add sign-in method').click();
+  button(panel, 'Add unlock method').click();
 }
 
 /** Press the header's filter button, which shows the filter field, and return the field. */
@@ -706,7 +697,7 @@ describe('VaultPanel', () => {
       ) as HTMLElement
     ).click();
     // The dialog that offers the kinds says why a passkey cannot be chosen here.
-    button(panel, 'Add sign-in method').click();
+    button(panel, 'Add unlock method').click();
     expect(mockChoose.mock.calls[0][0].passkey).toEqual({
       unavailable: `An IP address cannot hold a passkey - open JupyterLab at ${HOST}, where your passkey was added, or by its hostname over HTTPS.`
     });
@@ -1724,6 +1715,7 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(mockViewEntry).toHaveBeenCalledWith(ENTRIES[2], {
+      proven: expect.any(Function),
       passkey: expect.any(Function),
       reveal: expect.any(Function),
       typed: ['passphrase']
@@ -1922,6 +1914,23 @@ describe('VaultPanel', () => {
     // No authenticator app and no unlock password in this vault.
     expect(how.typed).toEqual(['passphrase']);
     expect(text(panel)).not.toContain('s3cret-value');
+  });
+
+  it('tells the popup whether this tab has just unlocked or proven, and reads plainly then', async () => {
+    mockViewEntry.mockResolvedValue(null);
+    const api = fakeApi();
+    const panel = await panelWith(api);
+    (
+      panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine') as HTMLElement
+    ).click();
+    await flush();
+    const how = mockViewEntry.mock.calls[0][1];
+    // Read at each press of the eye: the minute can end while the popup is open.
+    expect(how.proven()).toBe(false);
+    api.proven = true;
+    expect(how.proven()).toBe(true);
+    expect(await how.reveal()).toBe('s3cret-value');
+    expect(api.revealPassword).toHaveBeenCalledWith('nas/ugos', undefined);
   });
 
   it('asks before deleting from the popup, and keeps the entry when that is declined', async () => {
@@ -2549,10 +2558,10 @@ describe('VaultPanel', () => {
       now.mockRestore();
       await flush();
       expect(api.removePasskey).toHaveBeenCalledWith('AAEC');
-      expect(button(panel, 'Add sign-in method')).toBeTruthy();
+      expect(button(panel, 'Add unlock method')).toBeTruthy();
     });
 
-    it('lists every sign-in method in one section, each with its one action', async () => {
+    it('lists every unlock method in one section, each with its one action', async () => {
       const api = fakeApi({
         status: jest.fn().mockResolvedValue(
           status({
@@ -2566,7 +2575,7 @@ describe('VaultPanel', () => {
                 label: 'laptop',
                 created: '2026-09-26T10:00:00Z'
               },
-              { type: 'password', created: '2026-10-02T11:00:00Z' }
+              { type: 'password', created: '2026-10-02T10:00:00Z' }
             ],
             authenticator: { created: '2026-10-02T10:00:00Z' }
           })
@@ -2581,8 +2590,10 @@ describe('VaultPanel', () => {
           'passkey',
           'laptopPasskey, added 2026-09-26 10:00 UTC on other.example.comRemove'
         ],
-        ['password', 'Unlock passwordAdded 2026-10-02 11:00 UTCRemove'],
-        ['authenticator', 'Authenticator appAdded 2026-10-02 10:00 UTCRemove'],
+        [
+          'mfa',
+          'Password and authenticator appAdded 2026-10-02 10:00 UTCRemove'
+        ],
         ['recovery', 'Recovery passphraseChange']
       ]);
       // The recovery passphrase is changed, never removed; its button says which.
@@ -2593,7 +2604,7 @@ describe('VaultPanel', () => {
         Array.from(
           panel.node.querySelectorAll('.jp-PasskeyVaultPanel-sectionHeader')
         ).map(header => header.textContent)
-      ).toEqual(['Security', 'Sign-in methods', 'Settings']);
+      ).toEqual(['Security', 'Unlock methods', 'Settings']);
     });
 
     it('keeps a refused recovery change when the vault is changed elsewhere', async () => {
@@ -2678,13 +2689,13 @@ describe('VaultPanel', () => {
         'button[title="Vault settings and security"]'
       ) as HTMLElement;
       expect(cog.classList.contains('jp-mod-active')).toBe(true);
-      expect(text(panel)).toContain('Add sign-in method');
+      expect(text(panel)).toContain('Add unlock method');
       MessageLoop.sendMessage(panel, Widget.Msg.BeforeHide);
       MessageLoop.sendMessage(panel, Widget.Msg.AfterShow);
       await flush();
       // Shown again, the panel is in its main view: the entries, the cog not pressed.
       expect(cog.classList.contains('jp-mod-active')).toBe(false);
-      expect(text(panel)).not.toContain('Add sign-in method');
+      expect(text(panel)).not.toContain('Add unlock method');
       expect(text(panel)).toContain('github/api');
       MessageLoop.sendMessage(panel, Widget.Msg.BeforeHide);
     });
@@ -2869,7 +2880,7 @@ describe('VaultPanel', () => {
       expect(openSettings).toHaveBeenCalled();
     });
 
-    it('asks for an unlock only to remove a sign-in method on a locked vault', async () => {
+    it('asks for an unlock only to remove an unlock method on a locked vault', async () => {
       const panel = await openCog(
         fakeApi({
           status: jest
@@ -2878,15 +2889,15 @@ describe('VaultPanel', () => {
         })
       );
       expect(text(panel)).toContain(
-        'Unlock the vault to remove a sign-in method.'
+        'Unlock the vault to remove an unlock method.'
       );
       expect(
         Array.from(panel.node.querySelectorAll('button')).some(
           b => b.textContent === 'Remove'
         )
       ).toBe(false);
-      // A proof, not an unlock, is what a new sign-in method needs.
-      expect(button(panel, 'Add sign-in method')).toBeTruthy();
+      // A proof, not an unlock, is what a new unlock method needs.
+      expect(button(panel, 'Add unlock method')).toBeTruthy();
       expect(text(panel)).toContain('Key holder');
     });
   });
@@ -3549,200 +3560,21 @@ describe('confirmDelete', () => {
   });
 });
 
-describe('the unlock password', () => {
-  const SET = {
+describe('the password and authenticator app', () => {
+  const PASSWORD = {
     type: 'password' as const,
-    created: '2026-10-02T11:00:00Z'
+    created: '2026-10-02T10:00:00Z'
   };
-  const withPassword = (over: Partial<IStatus> = {}) =>
-    status({ slots: [...status().slots, SET], ...over });
-
-  async function openCog(api: any): Promise<VaultPanel> {
-    const panel = await panelWith(api);
-    (
-      panel.node.querySelector(
-        'button[title="Vault settings and security"]'
-      ) as HTMLElement
-    ).click();
-    return panel;
-  }
-
-  it('unlocks with the password from the locked view, the main button where this hostname has no passkey', async () => {
-    mockAskSecret.mockResolvedValue({ accepted: true, value: 'everyday' });
-    const locked = withPassword({ unlocked: false, remaining: null });
-    const api = fakeApi({ status: jest.fn().mockResolvedValue(locked) });
-    const panel = await panelWith(api);
-    // Beside a passkey it is the second way in.
-    expect(button(panel, 'Unlock with passkey').classList).toContain(
-      'jp-mod-accept'
-    );
-    expect(button(panel, 'Unlock with password').classList).not.toContain(
-      'jp-mod-accept'
-    );
-    button(panel, 'Unlock with password').click();
-    await flush();
-    await flush();
-    expect(mockAskSecret).toHaveBeenCalledWith(
-      'Enter the unlock password',
-      true,
-      'Unlock vault'
-    );
-    expect(api.unlockPassword).toHaveBeenCalledWith('everyday');
-    panel.dispose();
-
-    api.status.mockResolvedValue({
-      ...locked,
-      slots: [{ type: 'recovery' }, SET]
-    });
-    const other = await panelWith(api);
-    expect(button(other, 'Unlock with password').classList).toContain(
-      'jp-mod-accept'
-    );
-    // No button without a password slot.
-    api.status.mockResolvedValue(status({ unlocked: false, remaining: null }));
-    await other.refresh();
-    expect(() => button(other, 'Unlock with password')).toThrow();
-  });
-
-  it('sets the password from the cog view: typed twice with the minimum length, then a proof', async () => {
-    const get = fakePasskey();
-    mockAskSecret.mockResolvedValue({
-      accepted: true,
-      value: 'an everyday one'
-    });
-    const api = fakeApi({
-      status: jest.fn().mockResolvedValue(
-        status({
-          settings: { unlock_minutes: 240, password_min_length: 16 }
-        })
-      )
-    });
-    const panel = await openCog(api);
-    api.status.mockResolvedValue(withPassword());
-    addMethod(panel, 'password');
-    // Nothing is set yet, so every kind can be chosen and none has a note.
-    expect(mockChoose).toHaveBeenCalledWith({
-      passkey: {},
-      password: {},
-      authenticator: {}
-    });
-    await flush();
-    await flush();
-    await flush();
-    expect(mockAskSecret).toHaveBeenCalledWith(
-      'Enter the new unlock password twice, at least 16 characters',
-      false,
-      'Add unlock password',
-      { minLength: 16 }
-    );
-    expect(api.setPassword).toHaveBeenCalledWith('an everyday one', {
-      cred_id: 'AAEC',
-      prf: 'CQkJ'
-    });
-    // The proof is asked last: a code would expire while the password is typed.
-    expect(mockAskSecret.mock.invocationCallOrder[0]).toBeLessThan(
-      get.mock.invocationCallOrder[0]
-    );
-    expect(text(panel)).toContain('Unlock password added');
-    expect(text(panel)).toContain('Unlock passwordAdded 2026-10-02 11:00 UTC');
-  });
-
-  it('changes and removes a set password; removal takes two steps and an unlocked vault', async () => {
-    fakePasskey();
-    mockAskSecret.mockResolvedValue({ accepted: true, value: 'another one' });
-    const api = fakeApi({
-      status: jest.fn().mockResolvedValue(withPassword())
-    });
-    const panel = await openCog(api);
-    addMethod(panel, 'password');
-    // The dialog that offers the kinds says a new password replaces the one there is.
-    expect(mockChoose.mock.calls[0][0].password).toEqual({
-      note: 'Replaces the one added 2026-10-02 11:00 UTC.'
-    });
-    await flush();
-    await flush();
-    await flush();
-    expect(mockAskSecret).toHaveBeenLastCalledWith(
-      'Enter the new unlock password twice, at least 12 characters',
-      false,
-      'Change unlock password',
-      { minLength: 12 }
-    );
-    expect(api.setPassword).toHaveBeenCalledTimes(1);
-    expect(text(panel)).toContain('Unlock password changed');
-    const remove = () =>
-      panel.node.querySelector(
-        '[data-focus-key="password"]'
-      ) as HTMLButtonElement;
-    const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
-    remove().click();
-    now.mockReturnValue(1000 + ARM_DELAY_MS);
-    remove().click();
-    now.mockRestore();
-    await flush();
-    expect(api.removePassword).toHaveBeenCalledTimes(1);
-
-    api.status.mockResolvedValue(
-      withPassword({ unlocked: false, remaining: null })
-    );
-    await panel.refresh();
-    expect(remove()).toBeNull();
-    expect(text(panel)).toContain(
-      'Unlock the vault to remove a sign-in method.'
-    );
-    // A proof, not an unlock, sets it: offered locked as well.
-    expect(button(panel, 'Add sign-in method')).toBeTruthy();
-  });
-
-  it('sets nothing when the password dialog or the proof is cancelled', async () => {
-    const api = fakeApi({
-      status: jest
-        .fn()
-        .mockResolvedValue(status({ slots: [{ type: 'recovery' }] }))
-    });
-    const panel = await openCog(api);
-    mockAskSecret.mockResolvedValue({ accepted: false, value: null });
-    addMethod(panel, 'password');
-    await flush();
-    await flush();
-    expect(mockAskSecret).toHaveBeenCalledTimes(1);
-    mockAskSecret
-      .mockResolvedValueOnce({ accepted: true, value: 'an everyday one' })
-      .mockResolvedValueOnce({ accepted: false, value: null });
-    addMethod(panel, 'password');
-    await flush();
-    await flush();
-    await flush();
-    expect(mockAskSecret).toHaveBeenCalledTimes(3);
-    expect(api.setPassword).not.toHaveBeenCalled();
-  });
-
-  it('puts the unlock password before the recovery passphrase in the popup, after a code', async () => {
-    mockViewEntry.mockResolvedValue(null);
-    const api = fakeApi({
-      status: jest
-        .fn()
-        .mockResolvedValue(
-          withPassword({ authenticator: { created: '2026-10-02T10:00:00Z' } })
-        )
-    });
-    const panel = await panelWith(api);
-    (
-      panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine') as HTMLElement
-    ).click();
-    await flush();
-    expect(mockViewEntry.mock.calls[0][1].typed).toEqual([
-      'code',
-      'password',
-      'passphrase'
-    ]);
-  });
-});
-
-describe('the authenticator app', () => {
   const APP = { created: '2026-10-02T10:00:00Z' };
   const NO_PASSKEY = [{ type: 'recovery' as const }];
-  const REGISTER = 'Add authenticator app';
+  const ADD = 'Add password and authenticator app';
+  const UNLOCK = 'Unlock with password';
+  const withMfa = (over: Partial<IStatus> = {}) =>
+    status({
+      slots: [...status().slots, PASSWORD],
+      authenticator: APP,
+      ...over
+    });
   const setupKey = (body: any): string =>
     body.node.querySelector('.jp-PasskeyVaultForm-setupKey').textContent;
 
@@ -3756,6 +3588,12 @@ describe('the authenticator app', () => {
     return panel;
   }
 
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 4; i++) {
+      await flush();
+    }
+  }
+
   it('makes a setup key of 160 bits in base32, and the address a QR code carries', () => {
     const key = newSetupKey();
     expect(key).toMatch(/^[A-Z2-7]{32}$/);
@@ -3765,7 +3603,158 @@ describe('the authenticator app', () => {
     );
   });
 
-  it('asks a passkey first, then a code when an app is registered and the vault is unlocked, else the passphrase', async () => {
+  it('unlocks from the locked view with the password, then a code; the main button where this hostname has no passkey', async () => {
+    mockAskSecret.mockResolvedValue({ accepted: true, value: 'everyday' });
+    answerDialogs({ 'Unlock vault': true }, '123456');
+    const locked = withMfa({ unlocked: false, remaining: null });
+    const api = fakeApi({ status: jest.fn().mockResolvedValue(locked) });
+    const panel = await panelWith(api);
+    // Beside a passkey it is the second way in.
+    expect(button(panel, 'Unlock with passkey').classList).toContain(
+      'jp-mod-accept'
+    );
+    expect(button(panel, UNLOCK).classList).not.toContain('jp-mod-accept');
+    button(panel, UNLOCK).click();
+    await settle();
+    expect(mockAskSecret).toHaveBeenCalledWith(
+      'Enter the unlock password',
+      true,
+      'Unlock vault'
+    );
+    // The code's dialog: one field, Cancel and Unlock.
+    const { options } = mockLaunch.mock.calls[0][0];
+    expect(options.body.node.textContent).toBe(
+      'Enter the code the authenticator app shows'
+    );
+    expect(options.buttons.map((b: any) => b.label)).toEqual([
+      undefined,
+      'Unlock'
+    ]);
+    expect(api.unlockPassword).toHaveBeenCalledWith('everyday', '123456');
+    // The code is asked last: it stays right for less than a minute.
+    expect(mockAskSecret.mock.invocationCallOrder[0]).toBeLessThan(
+      mockLaunch.mock.invocationCallOrder[0]
+    );
+    panel.dispose();
+
+    api.status.mockResolvedValue({
+      ...locked,
+      slots: [{ type: 'recovery' }, PASSWORD]
+    });
+    const other = await panelWith(api);
+    expect(button(other, UNLOCK).classList).toContain('jp-mod-accept');
+    // A cancelled password asks no code; a cancelled code sends nothing.
+    api.unlockPassword.mockClear();
+    mockLaunch.mockClear();
+    mockAskSecret.mockResolvedValue({ accepted: false, value: null });
+    button(other, UNLOCK).click();
+    await settle();
+    expect(mockLaunch).not.toHaveBeenCalled();
+    mockAskSecret.mockResolvedValue({ accepted: true, value: 'everyday' });
+    answerDialogs({});
+    button(other, UNLOCK).click();
+    await settle();
+    expect(mockLaunch).toHaveBeenCalledTimes(1);
+    expect(api.unlockPassword).not.toHaveBeenCalled();
+    // No button without a password slot.
+    api.status.mockResolvedValue(status({ unlocked: false, remaining: null }));
+    await other.refresh();
+    expect(() => button(other, UNLOCK)).toThrow();
+  });
+
+  it('adds the two from the cog view: the password twice, then a proof, then the app', async () => {
+    const get = fakePasskey();
+    mockAskSecret.mockResolvedValue({
+      accepted: true,
+      value: 'an everyday one'
+    });
+    const api = fakeApi({
+      status: jest.fn().mockResolvedValue(
+        status({
+          authenticator: null,
+          settings: { unlock_minutes: 240, password_min_length: 16 }
+        })
+      )
+    });
+    const panel = await openCog(api);
+    answerDialogs({ [ADD]: true }, '222222');
+    api.status.mockResolvedValue(withMfa());
+    addMethod(panel, 'mfa');
+    // Nothing is added yet, so both methods can be chosen.
+    expect(mockChoose).toHaveBeenCalledWith({ passkey: {}, mfa: {} });
+    await settle();
+    expect(mockAskSecret).toHaveBeenCalledWith(
+      'Enter the new unlock password twice, at least 16 characters',
+      false,
+      ADD,
+      { minLength: 16 }
+    );
+    expect(api.addMfa).toHaveBeenCalledWith(
+      'an everyday one',
+      expect.stringMatching(/^[A-Z2-7]{32}$/),
+      '222222',
+      { cred_id: 'AAEC', prf: 'CQkJ' }
+    );
+    // The password, then the proof, then the app: its code is typed last.
+    const [typed, proven, scanned] = [mockAskSecret, get, mockLaunch].map(
+      mock => mock.mock.invocationCallOrder[0]
+    );
+    expect(typed).toBeLessThan(proven);
+    expect(proven).toBeLessThan(scanned);
+    expect(mockLaunch.mock.calls[0][0].options.title).toBe(ADD);
+    expect(text(panel)).toContain('Password and authenticator app added');
+    // The re-read shows the method, to the minute, and a second one cannot be chosen.
+    expect(text(panel)).toContain(
+      'Password and authenticator appAdded 2026-10-02 10:00 UTC'
+    );
+    button(panel, 'Add unlock method').click();
+    expect(mockChoose.mock.lastCall[0].mfa).toEqual({
+      unavailable: 'Added 2026-10-02 10:00 UTC. Remove it to add another.'
+    });
+    // One Remove, in two steps, removes both.
+    const remove = () =>
+      panel.node.querySelector('[data-focus-key="mfa"]') as HTMLButtonElement;
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
+    remove().click();
+    expect(remove().textContent).toBe('Confirm remove');
+    now.mockReturnValue(1000 + ARM_DELAY_MS);
+    remove().click();
+    now.mockRestore();
+    await flush();
+    expect(api.removeMfa).toHaveBeenCalledTimes(1);
+    expect(text(panel)).toContain('Password and authenticator app removed');
+  });
+
+  it('adds nothing when the password dialog, the proof or the app dialog is cancelled', async () => {
+    const api = fakeApi({
+      status: jest
+        .fn()
+        .mockResolvedValue(status({ slots: NO_PASSKEY, authenticator: null }))
+    });
+    const panel = await openCog(api);
+    const no = { accepted: false, value: null };
+    const yes = { accepted: true, value: 'an everyday one' };
+    // The password dialog.
+    mockAskSecret.mockResolvedValue(no);
+    addMethod(panel, 'mfa');
+    await settle();
+    expect(mockAskSecret).toHaveBeenCalledTimes(1);
+    // The proof: with no passkey for this hostname, the recovery passphrase.
+    mockAskSecret.mockResolvedValueOnce(yes).mockResolvedValueOnce(no);
+    addMethod(panel, 'mfa');
+    await settle();
+    expect(mockAskSecret).toHaveBeenCalledTimes(3);
+    expect(mockLaunch).not.toHaveBeenCalled();
+    // The app's dialog.
+    mockAskSecret.mockResolvedValue(yes);
+    answerDialogs({});
+    addMethod(panel, 'mfa');
+    await settle();
+    expect(mockLaunch).toHaveBeenCalledTimes(1);
+    expect(api.addMfa).not.toHaveBeenCalled();
+  });
+
+  it('asks a passkey first, then a code when an app is added and the vault is unlocked, else the passphrase', async () => {
     mockAskSecret.mockResolvedValue({ accepted: true, value: 'words' });
     const get = fakePasskey();
     expect(await askProof(status({ authenticator: APP }), HOST, 'T')).toEqual({
@@ -3829,16 +3818,16 @@ describe('the authenticator app', () => {
     );
   });
 
-  it('registers the app whose setup key the dialog shows; a wrong code opens it again with the same key', async () => {
+  it('adds the app whose setup key the dialog shows, with the password; a wrong code opens it again with the same key', async () => {
     const api = fakeApi({
-      addAuthenticator: jest
+      addMfa: jest
         .fn()
         .mockRejectedValueOnce(new VaultError(403, 'wrong code'))
         .mockResolvedValue(undefined)
     });
     const proof = { current: 'words' };
-    answerDialogs({ [REGISTER]: true }, '111111');
-    expect(await registerAuthenticator(api, proof, HOST)).toBe(true);
+    answerDialogs({ [ADD]: true }, '111111');
+    expect(await registerMfa(api, 'everyday', proof, HOST, ADD)).toBe(true);
     const [first, second] = mockLaunch.mock.calls.map(c => c[0].options.body);
     // In groups of four, as an app shows a key.
     expect(setupKey(first)).toMatch(/^([A-Z2-7]{4} ){7}[A-Z2-7]{4}$/);
@@ -3849,102 +3838,135 @@ describe('the authenticator app', () => {
       'Wrong code. Enter the code the app shows now.'
     );
     const key = setupKey(first).replace(/ /g, '');
-    expect(api.addAuthenticator.mock.calls).toEqual([
-      [key, '111111', proof],
-      [key, '111111', proof]
+    expect(api.addMfa.mock.calls).toEqual([
+      ['everyday', key, '111111', proof],
+      ['everyday', key, '111111', proof]
     ]);
 
     // Cancelled: nothing is sent. Any other refusal is the caller's to report.
-    api.addAuthenticator.mockClear();
+    api.addMfa.mockClear();
     answerDialogs({});
-    expect(await registerAuthenticator(api, proof, HOST)).toBe(false);
-    expect(api.addAuthenticator).not.toHaveBeenCalled();
-    api.addAuthenticator.mockRejectedValue(
+    expect(await registerMfa(api, 'everyday', proof, HOST, ADD)).toBe(false);
+    expect(api.addMfa).not.toHaveBeenCalled();
+    // The server refused after the app took the setup key: the line names the app's
+    // entry, which gives codes of a key the vault does not hold.
+    api.addMfa.mockRejectedValue(
       new VaultError(403, 'wrong recovery passphrase')
     );
-    answerDialogs({ [REGISTER]: true }, '111111');
-    await expect(registerAuthenticator(api, proof, HOST)).rejects.toThrow(
-      'wrong recovery passphrase'
+    answerDialogs({ [ADD]: true }, '111111');
+    const refused = await registerMfa(api, 'everyday', proof, HOST, ADD).catch(
+      e => e
     );
-    expect(api.addAuthenticator).toHaveBeenCalledTimes(1);
+    expect(refused).toBeInstanceOf(VaultError);
+    expect(refused.status).toBe(403);
+    expect(refused.message).toBe(
+      'wrong recovery passphrase; the entry your authenticator app added is unused - you can delete it in the app'
+    );
+    expect(api.addMfa).toHaveBeenCalledTimes(1);
+    // A lost answer and a 5xx answer are not refusals: the two may have been added,
+    // so nothing is said about the app's entry.
+    for (const unknown of [
+      new NoAnswer(),
+      new VaultError(504, 'the vault did not answer (HTTP 504)')
+    ]) {
+      api.addMfa.mockRejectedValue(unknown);
+      answerDialogs({ [ADD]: true }, '111111');
+      await expect(registerMfa(api, 'everyday', proof, HOST, ADD)).rejects.toBe(
+        unknown
+      );
+    }
   });
 
-  it('registers from the cog view after a proof, then shows the app with a two-step Remove', async () => {
-    fakePasskey();
-    const api = fakeApi({
-      status: jest.fn().mockResolvedValue(status({ authenticator: null }))
-    });
-    const panel = await openCog(api);
-    answerDialogs({ [REGISTER]: true }, '222222');
-    api.status.mockResolvedValue(status({ authenticator: APP }));
-    addMethod(panel, 'authenticator');
-    await flush();
-    await flush();
-    await flush();
-    expect(api.addAuthenticator).toHaveBeenCalledWith(
-      expect.stringMatching(/^[A-Z2-7]{32}$/),
-      '222222',
-      { cred_id: 'AAEC', prf: 'CQkJ' }
-    );
-    expect(text(panel)).toContain('Authenticator app added');
-    // The re-read shows the app, to the minute, and a second one cannot be chosen.
-    expect(text(panel)).toContain(
-      'Authenticator appAdded 2026-10-02 10:00 UTC'
-    );
-    button(panel, 'Add sign-in method').click();
-    expect(mockChoose.mock.lastCall[0].authenticator).toEqual({
-      unavailable: 'Added 2026-10-02 10:00 UTC. Remove it to add another.'
-    });
-    const remove = () =>
-      panel.node.querySelector(
-        '[data-focus-key="authenticator"]'
-      ) as HTMLButtonElement;
-    const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
-    remove().click();
-    expect(remove().textContent).toBe('Confirm remove');
-    now.mockReturnValue(1000 + ARM_DELAY_MS);
-    remove().click();
-    now.mockRestore();
-    await flush();
-    expect(api.removeAuthenticator).toHaveBeenCalledTimes(1);
-  });
-
-  it('offers no Remove on a locked vault', async () => {
+  it('offers no Remove on a locked vault, and still offers to add a method', async () => {
     const api = fakeApi({
       status: jest
         .fn()
-        .mockResolvedValue(status({ authenticator: APP, unlocked: false }))
+        .mockResolvedValue(withMfa({ unlocked: false, remaining: null }))
     });
     const panel = await openCog(api);
-    expect(
-      panel.node.querySelector('[data-focus-key="authenticator"]')
-    ).toBeNull();
+    expect(panel.node.querySelector('[data-focus-key="mfa"]')).toBeNull();
     expect(text(panel)).toContain(
-      'Unlock the vault to remove a sign-in method.'
+      'Unlock the vault to remove an unlock method.'
     );
+    // A proof, not an unlock, adds a method: offered locked as well.
+    expect(button(panel, 'Add unlock method')).toBeTruthy();
   });
 
-  it('redraws when an app is registered or removed elsewhere', async () => {
+  it('redraws when the two are added or removed elsewhere', async () => {
     const api = fakeApi({
       status: jest.fn().mockResolvedValue(status({ authenticator: null }))
     });
     const panel = await openCog(api);
-    api.status.mockResolvedValue(status({ authenticator: APP }));
+    api.status.mockResolvedValue(withMfa());
     await (panel as any)._tick();
     expect(text(panel)).toContain(
-      'Authenticator appAdded 2026-10-02 10:00 UTC'
+      'Password and authenticator appAdded 2026-10-02 10:00 UTC'
     );
+  });
+
+  it('takes no code for a password an earlier build added without an app, and says which half is there', async () => {
+    // 1.1.28 to 1.1.31 added the password and the app apart from each other.
+    mockAskSecret.mockResolvedValue({ accepted: true, value: 'everyday' });
+    const lone = status({
+      slots: [...status().slots, PASSWORD],
+      authenticator: null
+    });
+    const api = fakeApi({
+      status: jest
+        .fn()
+        .mockResolvedValue({ ...lone, unlocked: false, remaining: null })
+    });
+    const panel = await panelWith(api);
+    button(panel, UNLOCK).click();
+    await settle();
+    expect(mockLaunch).not.toHaveBeenCalled();
+    expect(api.unlockPassword).toHaveBeenCalledWith('everyday', undefined);
+    panel.dispose();
+
+    api.status.mockResolvedValue(lone);
+    const cog = await openCog(api);
+    const row = () =>
+      (cog.node.querySelector('[data-method="mfa"]') as HTMLElement)
+        .textContent;
+    expect(row()).toBe(
+      'Password and authenticator appPassword only, added 2026-10-02 10:00 UTCRemove'
+    );
+    api.status.mockResolvedValue(status({ authenticator: APP }));
+    await cog.refresh();
+    expect(row()).toBe(
+      'Password and authenticator appApp only, added 2026-10-02 10:00 UTCRemove'
+    );
+    // Neither half can be completed: the method is removed and added again.
+    button(cog, 'Add unlock method').click();
+    expect(mockChoose.mock.lastCall[0].mfa).toEqual({
+      unavailable: 'Added 2026-10-02 10:00 UTC. Remove it to add another.'
+    });
+  });
+
+  it('puts the unlock password before the recovery passphrase in the popup, after a code', async () => {
+    mockViewEntry.mockResolvedValue(null);
+    const api = fakeApi({ status: jest.fn().mockResolvedValue(withMfa()) });
+    const panel = await panelWith(api);
+    (
+      panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine') as HTMLElement
+    ).click();
+    await flush();
+    expect(mockViewEntry.mock.calls[0][1].typed).toEqual([
+      'code',
+      'password',
+      'passphrase'
+    ]);
   });
 });
 
-describe('the dialog that offers the kinds of sign-in method', () => {
-  const { chooseSignInMethod } = jest.requireActual('../vault/dialogs');
-  const kinds = (dialog: any): HTMLButtonElement[] =>
+describe('the dialog that offers the unlock methods', () => {
+  const { chooseUnlockMethod } = jest.requireActual('../vault/dialogs');
+  const methods = (dialog: any): HTMLButtonElement[] =>
     Array.from(dialog.options.body.node.querySelectorAll('button'));
   const options = (dialog: any): [string, string, boolean][] =>
-    kinds(dialog).map(button => {
+    methods(dialog).map(button => {
       const [name, help] = Array.from(button.children);
-      // The button is named by the kind and described by the line under it.
+      // The button is named by the method and described by the line under it.
       expect(button.getAttribute('aria-labelledby')).toBe(name.id);
       expect(button.getAttribute('aria-describedby')).toBe(help.id);
       return [
@@ -3960,14 +3982,13 @@ describe('the dialog that offers the kinds of sign-in method', () => {
       ) as HTMLButtonElement
     ).click();
 
-  it('offers a passkey, an unlock password and an authenticator app as buttons, each with one line', async () => {
+  it('offers a passkey, and a password with an authenticator app, as buttons with one line each', async () => {
     answerDialogs({});
-    // Cancelled: no kind.
-    expect(
-      await chooseSignInMethod({ passkey: {}, password: {}, authenticator: {} })
-    ).toBeNull();
+    // Cancelled: no method.
+    expect(await chooseUnlockMethod({ passkey: {}, mfa: {} })).toBeNull();
     const dialog = mockLaunch.mock.calls[0][0];
-    // Cancel is the dialog's only button of its own: a press on a kind chooses it.
+    expect(dialog.options.title).toBe('Add unlock method');
+    // Cancel is the dialog's only button of its own: a press on a method chooses it.
     expect(dialog.options.buttons).toEqual([{ accept: false }]);
     expect(dialog.options.focusNodeSelector).toBe(
       '.jp-PasskeyVaultForm-choice:enabled'
@@ -3975,65 +3996,54 @@ describe('the dialog that offers the kinds of sign-in method', () => {
     expect(options(dialog)).toEqual([
       ['Passkey', 'Fingerprint, face, PIN or security key.', false],
       [
-        'Unlock password',
-        'Unlocks the vault and shows passwords. Cannot add a sign-in method.',
-        false
-      ],
-      [
-        'Authenticator app',
-        'A 6-digit code from your phone. Cannot unlock the vault.',
+        'Password and authenticator app',
+        'A password, then a 6-digit code from your phone.',
         false
       ]
     ]);
   });
 
-  it('says why a kind cannot be chosen, shows a note in place of the line, and returns the kind pressed', async () => {
+  it('says why a method cannot be chosen, and returns the method pressed', async () => {
     mockLaunch.mockImplementation(async (dialog: any) => {
-      // A kind that cannot be added is a disabled button: a press does nothing.
-      press(dialog, 'authenticator');
+      // A method that cannot be added is a disabled button: a press does nothing.
+      press(dialog, 'mfa');
       expect(dialog.rejected).toBe(false);
-      // A press on a kind chooses it and closes the dialog.
-      press(dialog, 'password');
+      // A press on a method chooses it and closes the dialog.
+      press(dialog, 'passkey');
       expect(dialog.rejected).toBe(true);
       return { button: { accept: false } };
     });
     const states = {
-      passkey: { unavailable: 'An IP address cannot hold a passkey.' },
-      password: { note: 'Replaces the one added 2026-10-02 11:00 UTC.' },
-      authenticator: {
+      passkey: {},
+      mfa: {
         unavailable: 'Added 2026-10-02 10:00 UTC. Remove it to add another.'
       }
     };
-    expect(await chooseSignInMethod(states)).toBe('password');
+    expect(await chooseUnlockMethod(states)).toBe('passkey');
     expect(options(mockLaunch.mock.calls[0][0])).toEqual([
-      ['Passkey', 'An IP address cannot hold a passkey.', true],
+      ['Passkey', 'Fingerprint, face, PIN or security key.', false],
       [
-        'Unlock password',
-        'Replaces the one added 2026-10-02 11:00 UTC.',
-        false
-      ],
-      [
-        'Authenticator app',
+        'Password and authenticator app',
         'Added 2026-10-02 10:00 UTC. Remove it to add another.',
         true
       ]
     ]);
   });
 
-  it('lets Enter on a kind press it instead of the default dialog button', async () => {
+  it('lets Enter on a method press it instead of the default dialog button', async () => {
     mockLaunch.mockImplementation(async (dialog: any) => {
       const body = dialog.options.body;
       Widget.attach(body, document.body);
       const reachedDialog = jest.fn();
       body.node.addEventListener('keydown', reachedDialog, true);
-      kinds(dialog)[0].dispatchEvent(
+      methods(dialog)[0].dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
       );
       expect(reachedDialog).not.toHaveBeenCalled();
       body.dispose();
       return { button: { accept: false } };
     });
-    await chooseSignInMethod({ passkey: {}, password: {}, authenticator: {} });
+    await chooseUnlockMethod({ passkey: {}, mfa: {} });
     expect(mockLaunch).toHaveBeenCalledTimes(1);
   });
 });
@@ -4043,12 +4053,13 @@ describe('EntryView', () => {
 
   const PASSKEY: Proof = { cred_id: 'AAEC', prf: 'CQkJ' };
 
-  /** A popup whose passkey answers, unless `over` says otherwise. */
+  /** A popup that asks a proof and whose passkey answers, unless `over` says otherwise. */
   function view(
-    reveal: (proof: Proof) => Promise<string>,
+    reveal: (proof?: Proof) => Promise<string>,
     over: Record<string, any> = {}
   ): EntryView {
     const v = new EntryView(ENTRIES[2], {
+      proven: () => false,
       passkey: async () => PASSKEY,
       reveal,
       typed: ['passphrase'],
@@ -4117,6 +4128,39 @@ describe('EntryView', () => {
     v.password.click();
     expect(v.password.selectionStart).toBe(0);
     expect(v.password.selectionEnd).toBe(SECRET.length);
+    v.dispose();
+  });
+
+  it('asks no proof while this tab has just unlocked or proven', async () => {
+    const reveal = jest.fn().mockResolvedValue(SECRET);
+    const passkey = jest.fn();
+    const v = view(reveal, { proven: () => true, passkey });
+    v.eye.click();
+    await flush();
+    expect(passkey).not.toHaveBeenCalled();
+    expect(reveal).toHaveBeenCalledWith(undefined);
+    expect(v.password.value).toBe(SECRET);
+    expect(v.node.querySelector('.jp-PasskeyVaultForm-proof')).toBeNull();
+    expect(line(v)).toBe('');
+    v.dispose();
+  });
+
+  it('says why when the read with no proof is refused, and asks a proof once the minute is over', async () => {
+    let proven = true;
+    const reveal = jest
+      .fn()
+      .mockRejectedValueOnce(new VaultError(423, 'the vault is locked'))
+      .mockResolvedValue(SECRET);
+    const v = view(reveal, { proven: () => proven });
+    v.eye.click();
+    await flush();
+    expect(line(v)).toBe('The password was not shown: the vault is locked');
+    expect(v.password.value).not.toContain(SECRET);
+    proven = false;
+    v.eye.click();
+    await flush();
+    expect(reveal).toHaveBeenLastCalledWith(PASSKEY);
+    expect(v.password.value).toBe(SECRET);
     v.dispose();
   });
 

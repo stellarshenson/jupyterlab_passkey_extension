@@ -26,13 +26,14 @@ import {
 
 import {
   askProof,
-  chooseSignInMethod,
+  askUnlockCode,
+  chooseUnlockMethod,
   confirmDelete,
   editEntry,
-  registerAuthenticator,
+  registerMfa,
   registerWithProof,
   sentence,
-  SignInMethod,
+  UnlockMethod,
   viewEntry
 } from './dialogs';
 
@@ -82,6 +83,18 @@ function addedAt(created: string | undefined): string {
 function dayAndMinute(created: string | undefined): [string, string] {
   const [day, ...minute] = addedAt(created).split(' ');
   return [day, minute.join(' ')];
+}
+
+/**
+ * When the unlock password and the authenticator app were added, or undefined with
+ * neither. The two are added together; a vault written by 1.1.28 to 1.1.31 can hold
+ * one without the other.
+ */
+function mfaAdded(s: IStatus): string | undefined {
+  return (
+    s.authenticator?.created ??
+    s.slots.find(x => x.type === 'password')?.created
+  );
 }
 
 export function formatRemaining(seconds: number): string {
@@ -557,47 +570,50 @@ export class VaultPanel extends Widget {
     });
   }
 
-  private _unlockPassword(): Promise<void> {
+  /**
+   * Unlock with the unlock password and a code of the authenticator app: the two are
+   * one unlock method. The code is asked last, because it stays right for less than
+   * a minute.
+   */
+  private _unlockPassword(s: IStatus): Promise<void> {
     return this._act(async () => {
       const { accepted, value } = await askSecret(
         'Enter the unlock password',
         true,
         'Unlock vault'
       );
-      if (accepted && value !== null) {
-        await this._api.unlockPassword(value);
+      if (!accepted || value === null) {
+        return;
+      }
+      // A vault written by 1.1.28 to 1.1.31 can hold a password and no app.
+      const code = s.authenticator ? await askUnlockCode() : undefined;
+      if (code !== null) {
+        await this._api.unlockPassword(value, code);
       }
     });
   }
 
   /**
-   * Add a sign-in method: the user chooses the kind, then that kind's own steps run.
+   * Add an unlock method: the user chooses it, then that method's own steps run.
    * The choice is made before the panel is busy, so backing out leaves no line.
    */
   private async _addMethod(s: IStatus): Promise<void> {
     if (this._busy) {
       return;
     }
-    const password = s.slots.find(x => x.type === 'password');
-    const kind = await chooseSignInMethod({
+    const mfa = mfaAdded(s);
+    const kind = await chooseUnlockMethod({
       passkey: isIpAddress(this._host)
         ? { unavailable: sentence(ipAddressAdvice(s.slots)) }
         : {},
-      password: password
-        ? { note: `Replaces the one added ${addedAt(password.created)}.` }
-        : {},
-      authenticator: s.authenticator
-        ? {
-            unavailable: `Added ${addedAt(s.authenticator.created)}. Remove it to add another.`
-          }
+      mfa: mfa
+        ? { unavailable: `Added ${addedAt(mfa)}. Remove it to add another.` }
         : {}
     });
     if (kind === 'passkey') {
       await this._addPasskey(s);
-    } else if (kind === 'password') {
-      await this._setPassword(s, !!password);
-    } else if (kind === 'authenticator') {
-      await this._addAuthenticator(s);
+    } else if (kind === 'mfa') {
+      await this._addMfa(s);
     }
   }
 
@@ -617,18 +633,35 @@ export class VaultPanel extends Widget {
     );
   }
 
-  private _addAuthenticator(s: IStatus): Promise<void> {
+  /**
+   * Add the unlock password and the authenticator app, which are one unlock method:
+   * the password twice, then a proof, then the app. The app's code is typed last,
+   * because the request checks it and a code stays right for less than a minute.
+   */
+  private _addMfa(s: IStatus): Promise<void> {
+    const title = 'Add password and authenticator app';
     return this._act(
       async () => {
+        const minLength = s.settings.password_min_length;
+        const { accepted, value } = await askSecret(
+          `Enter the new unlock password twice, at least ${minLength} characters`,
+          false,
+          title,
+          { minLength }
+        );
+        if (!accepted || value === null) {
+          return false;
+        }
         this._sayProofFirst(s);
-        const proof = await askProof(s, this._host, 'Add authenticator app');
+        const proof = await askProof(s, this._host, title);
         this.clearLine();
         return (
-          proof !== null && registerAuthenticator(this._api, proof, this._host)
+          proof !== null &&
+          registerMfa(this._api, value, proof, this._host, title)
         );
       },
-      'Authenticator app added',
-      'Adding the authenticator app'
+      'Password and authenticator app added',
+      'Adding the password and authenticator app'
     );
   }
 
@@ -657,38 +690,6 @@ export class VaultPanel extends Widget {
       },
       'Recovery passphrase changed',
       'Recovery passphrase change'
-    );
-  }
-
-  /**
-   * Add the unlock password, or replace the one there is: the password twice, then a
-   * proof. The proof is asked last because the request checks it, and a code of the
-   * authenticator app stays right for less than a minute.
-   */
-  private _setPassword(s: IStatus, replaces: boolean): Promise<void> {
-    const title = replaces ? 'Change unlock password' : 'Add unlock password';
-    return this._act(
-      async () => {
-        const minLength = s.settings.password_min_length;
-        const { accepted, value } = await askSecret(
-          `Enter the new unlock password twice, at least ${minLength} characters`,
-          false,
-          title,
-          { minLength }
-        );
-        if (!accepted || value === null) {
-          return false;
-        }
-        this._sayProofFirst(s);
-        const proof = await askProof(s, this._host, title);
-        this.clearLine();
-        if (proof === null) {
-          return false;
-        }
-        await this._api.setPassword(value, proof);
-      },
-      replaces ? 'Unlock password changed' : 'Unlock password added',
-      replaces ? 'Changing the unlock password' : 'Adding the unlock password'
     );
   }
 
@@ -758,6 +759,7 @@ export class VaultPanel extends Widget {
     // The popup opens only in the unlocked view, which renders from a status read.
     const status = this._status as IStatus;
     const choice = await viewEntry(entry, {
+      proven: () => this._api.proven,
       passkey: async () => {
         const { credId, prf } = await passkeyPrf(status, this._host);
         return { cred_id: credId, prf };
@@ -1031,7 +1033,7 @@ export class VaultPanel extends Widget {
       section.appendChild(
         this._button(
           'Unlock with password',
-          () => this._unlockPassword(),
+          () => this._unlockPassword(s),
           // The way in where this hostname has no passkey.
           !usable
         )
@@ -1135,7 +1137,7 @@ export class VaultPanel extends Widget {
       security.appendChild(row);
     }
 
-    const methods = this._section('Sign-in methods');
+    const methods = this._section('Unlock methods');
     if (!s.initialized) {
       methods.appendChild(el('p', `${C}-hint`, 'Create the vault first.'));
     } else {
@@ -1166,35 +1168,24 @@ export class VaultPanel extends Widget {
           )
         );
       }
-      const added = (created: string | undefined): string[] => {
-        const [day, minute] = dayAndMinute(created);
-        return [`Added ${day}`, minute];
-      };
-      const password = s.slots.find(x => x.type === 'password');
-      if (password) {
+      const mfa = mfaAdded(s);
+      if (mfa) {
+        const [day, minute] = dayAndMinute(mfa);
+        // A vault written by 1.1.28 to 1.1.31 can hold one without the other.
+        const whole =
+          s.authenticator && s.slots.some(x => x.type === 'password');
+        const half = s.authenticator
+          ? 'App only, added'
+          : 'Password only, added';
         methods.appendChild(
           this._method(
-            'password',
-            'Unlock password',
-            added(password.created),
+            'mfa',
+            'Password and authenticator app',
+            whole ? [`Added ${day}`, minute] : [half, day, minute],
             remove(
-              'password',
-              () => this._api.removePassword(),
-              'Unlock password removed'
-            )
-          )
-        );
-      }
-      if (s.authenticator) {
-        methods.appendChild(
-          this._method(
-            'authenticator',
-            'Authenticator app',
-            added(s.authenticator.created),
-            remove(
-              'authenticator',
-              () => this._api.removeAuthenticator(),
-              'Authenticator app removed'
+              'mfa',
+              () => this._api.removeMfa(),
+              'Password and authenticator app removed'
             )
           )
         );
@@ -1215,11 +1206,11 @@ export class VaultPanel extends Widget {
         (s.authenticator || s.slots.some(x => x.type !== 'recovery'))
       ) {
         methods.appendChild(
-          el('p', `${C}-hint`, 'Unlock the vault to remove a sign-in method.')
+          el('p', `${C}-hint`, 'Unlock the vault to remove an unlock method.')
         );
       }
       methods.appendChild(
-        this._button('Add sign-in method', () => this._addMethod(s))
+        this._button('Add unlock method', () => this._addMethod(s))
       );
     }
 
@@ -1242,12 +1233,12 @@ export class VaultPanel extends Widget {
   }
 
   /**
-   * A sign-in method's row: its name over a line of detail, and its one action.
+   * An unlock method's row: its name over a line of detail, and its one action.
    * Each part of the detail stays whole when the line wraps, so a date never breaks
    * at its hyphen. `kind` is for a stylesheet or a test to find the row by.
    */
   private _method(
-    kind: 'recovery' | SignInMethod,
+    kind: 'recovery' | UnlockMethod,
     name: string,
     detail: string[],
     action?: HTMLButtonElement

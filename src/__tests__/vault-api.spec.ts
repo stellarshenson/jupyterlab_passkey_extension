@@ -1,7 +1,8 @@
 /**
  * The vault's REST wrapper (src/vault/api) against answers that are not the vault's:
  * JupyterHub's for a stopped server, the Jupyter server's Forbidden after a hub
- * logout or its 404 without the vault, and an answer that breaks off.
+ * logout or its 404 without the vault, and an answer that breaks off; and the minute
+ * after an unlock or a proof in which the eye asks no proof.
  * ServerConnection is stubbed.
  */
 
@@ -14,7 +15,7 @@ jest.mock('@jupyterlab/services', () => ({
   ServerConnection: { makeRequest: mockMakeRequest }
 }));
 
-import { NoAnswer, VaultApi, VaultError } from '../vault/api';
+import { NoAnswer, PROVEN_MS, VaultApi, VaultError } from '../vault/api';
 
 beforeEach(() => mockMakeRequest.mockReset());
 
@@ -109,4 +110,93 @@ it('says to restart the server when it runs without the vault', async () => {
   expect(err.message).toBe(
     'the vault is not loaded on this Jupyter server - restart the server'
   );
+});
+
+describe('the minute after an unlock or a proof', () => {
+  const PROOF = { current: 'the passphrase' };
+  const SLOT = {
+    cred_id: 'AAEC',
+    rp_id: 'host',
+    prf_salt: 'AAAA',
+    prf: 'CQkJ',
+    label: 'Work laptop'
+  };
+  const answer = (status: number, body: unknown) => ({
+    ok: status < 400,
+    status,
+    text: async () => JSON.stringify(body)
+  });
+  const vault = () => new VaultApi({ baseUrl: 'http://host/' } as any);
+  const sent = () => JSON.parse(mockMakeRequest.mock.calls[0][1].body);
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('asks a proof before any unlock or proof in this tab', () => {
+    expect(vault().proven).toBe(false);
+  });
+
+  it.each<[string, (api: VaultApi) => Promise<unknown>]>([
+    ['a new vault', api => api.init('the passphrase')],
+    ['a recovery unlock', api => api.unlockRecovery('the passphrase')],
+    ['a password unlock', api => api.unlockPassword('a password', '123456')],
+    ['a passkey unlock', api => api.unlockPasskey('AAEC', 'CQkJ')],
+    ['a password shown for a proof', api => api.revealPassword('nas', PROOF)],
+    ['a new passkey', api => api.addPasskey(SLOT, PROOF)],
+    ['a new pair', api => api.addMfa('a password', 'KEY', '123456', PROOF)],
+    ['a new recovery passphrase', api => api.replaceRecovery('new', PROOF)]
+  ])('asks none after %s', async (_what, request) => {
+    mockMakeRequest.mockResolvedValue(answer(200, { value: 's3cret' }));
+    const api = vault();
+    await request(api);
+    expect(api.proven).toBe(true);
+  });
+
+  it('asks a proof again once the minute is over', async () => {
+    mockMakeRequest.mockResolvedValue(answer(200, {}));
+    const api = vault();
+    const start = Date.now();
+    const now = jest.spyOn(Date, 'now').mockReturnValue(start);
+    await api.unlockRecovery('the passphrase');
+    now.mockReturnValue(start + PROVEN_MS - 1);
+    expect(api.proven).toBe(true);
+    now.mockReturnValue(start + PROVEN_MS);
+    expect(api.proven).toBe(false);
+    // A system clock set back does not keep the minute open until it catches up.
+    now.mockReturnValue(start - 1);
+    expect(api.proven).toBe(false);
+  });
+
+  it('asks a proof again after a lock in this tab', async () => {
+    mockMakeRequest.mockResolvedValue(answer(200, {}));
+    const api = vault();
+    await api.unlockRecovery('the passphrase');
+    await api.lock();
+    expect(api.proven).toBe(false);
+  });
+
+  it('is not started by a refused unlock or proof', async () => {
+    mockMakeRequest.mockResolvedValue(answer(403, { error: 'wrong code' }));
+    const api = vault();
+    await expect(api.unlockPassword('a password', '000000')).rejects.toThrow(
+      'wrong code'
+    );
+    await expect(api.revealPassword('nas', { code: '000000' })).rejects.toThrow(
+      'wrong code'
+    );
+    expect(api.proven).toBe(false);
+  });
+
+  it('reads a password plainly with no proof, which starts nothing', async () => {
+    mockMakeRequest.mockResolvedValue(answer(200, { value: 's3cret' }));
+    const api = vault();
+    expect(await api.revealPassword('nas')).toBe('s3cret');
+    expect(sent()).toEqual({ name: 'nas' });
+    expect(api.proven).toBe(false);
+  });
+
+  it('sends the proof with the name when it has one', async () => {
+    mockMakeRequest.mockResolvedValue(answer(200, { value: 's3cret' }));
+    expect(await vault().revealPassword('nas', PROOF)).toBe('s3cret');
+    expect(sent()).toEqual({ name: 'nas', current: 'the passphrase' });
+  });
 });

@@ -363,11 +363,17 @@
   white-space: nowrap;
 }
 
-/* Under the name of a sign-in method. The line wraps between its parts: the minute
+/* Under the name of an unlock method. The line wraps between its parts: the minute
    is what tells two same-day passkeys apart. */
 .jp-PasskeyVaultPanel-methodText .jp-PasskeyVaultPanel-rowUser {
   max-width: none;
   text-align: left;
+  white-space: normal;
+}
+
+/* The pair's name is fixed and wider than a sidebar: it wraps. A passkey's name,
+   which the user chose, is cut instead. */
+.jp-PasskeyVaultPanel-method[data-method='mfa'] .jp-PasskeyVaultPanel-rowName {
   white-space: normal;
 }
 
@@ -394,7 +400,7 @@ button.jp-mod-styled.jp-PasskeyVaultForm-choice {
   cursor: pointer;
 }
 
-/* One kind of sign-in method in the dialog that offers them: its name over one line. */
+/* One unlock method in the dialog that offers them: its name over one line. */
 button.jp-mod-styled.jp-PasskeyVaultForm-choice {
   display: flex;
   flex-direction: column;

@@ -794,6 +794,7 @@ Opening the vault with a passkey or the recovery passphrase, and closing it
   - log: 2026-09-26T15:31:58Z @kj added
   - log: 2026-09-28T00:23:21Z @kj closed
 - [x] `ACC-UNLOCK-106` **Locked access refused** - HIGH; entry reads and writes on a locked vault answer 423, except the panel's passkey reveal, which unwraps its own key (ACC-REST-167)
+  - overridden-by: ACC-UNLOCK-217
   - evidence: test_vault_routes.py test_lock_then_every_call_that_needs_the_held_key_answers_423; the exception: test_a_passkey_reveal_answers_the_password_only_for_a_prf_that_opens_a_slot (the passkey reveal answers after a lock); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: call each entry endpoint while locked, assert 423
   - test-tags: UNIT
@@ -820,23 +821,67 @@ Opening the vault with a passkey or the recovery passphrase, and closing it
   - log: 2026-09-26T18:25:03Z @kj edited text "the passkey unlock offers only slots registered for the tab's hostname; with none, the panel offers the recovery passphrase" -> "the passkey unlock offers only slots registered for the tab's hostname or a parent domain of it; with none, the panel offers the recovery passphrase"
   - log: 2026-09-28T00:23:21Z @kj closed
 - [x] `ACC-UNLOCK-202` **Unlock password slot** - HIGH; the vault holds at most one unlock password: a slot of type `password` that wraps the data key under scrypt of the password, at the recovery slot's cost; POST vault/unlock with `password` opens the vault, a wrong one answers 400; nothing of it is logged
+  - overridden-by: ACC-UNLOCK-215
   - evidence: pytest test_an_unlock_password_is_set_with_a_proof_and_opens_the_vault: the slot is stored and the password unlocks; pytest 456/456, build 1.1.27
   - test: pytest: set a password, lock, unlock with it; a wrong one 400 and still locked; the file has one `password` slot and not the password; caplog holds none
   - test-tags: UNIT
   - log: 2026-10-02T14:25:27Z @kj added
   - log: 2026-10-02T21:24:22Z @kj closed
 - [x] `ACC-UNLOCK-203` **Unlock password is set with a proof** - HIGH; POST vault/password sets or replaces the unlock password for a proof (passkey, app code or recovery passphrase) and refuses one shorter than the configured minimum; POST vault/password-remove removes it on an unlocked vault and answers 423 on a locked one
+  - overridden-by: ACC-UNLOCK-218
   - evidence: pytest test_an_unlock_password_is_set_with_a_proof_and_opens_the_vault (no proof 403, too short 400, a second call replaces it), test_the_unlock_password_is_removed_on_an_unlocked_vault (locked 423); pytest 456/456, build 1.1.27
   - test: pytest: no proof 403, too short 400, right proof stores it, a second call replaces it (the old one no longer unlocks); remove locked 423, unlocked removes the slot
   - test-tags: UNIT
   - log: 2026-10-02T14:25:27Z @kj added
   - log: 2026-10-02T21:24:25Z @kj closed
 - [x] `ACC-UNLOCK-204` **Unlock password proves a reveal only** - HIGH; the unlock password is a proof for the panel's reveal, locked or not; it is refused as a proof for a new passkey, a new authenticator app, a recovery passphrase change and its own replacement
+  - overridden-by: ACC-UNLOCK-219
   - evidence: pytest test_the_unlock_password_proves_a_reveal_and_nothing_else: the reveal answers the password; a new passkey, a new app, a recovery change and its own replacement answer 403; pytest 456/456, build 1.1.27
   - test: pytest: reveal with `password` answers the password, a wrong one 403; passkeys, authenticator, recovery and password each answer 403 for a `password` proof and change nothing
   - test-tags: UNIT
   - log: 2026-10-02T14:25:27Z @kj added
   - log: 2026-10-02T21:24:28Z @kj closed
+- [x] `ACC-UNLOCK-215` **Three ways to unlock** - CRITICAL; the vault unlocks by a passkey, by the unlock password together with a code of the authenticator app, or by the recovery passphrase; the unlock password alone and a code alone unlock nothing
+  - evidence: pytest test_the_unlock_password_opens_the_vault_only_with_a_code and the passkey and recovery unlock tests; Galata 'a password and an authenticator app are added in one flow, and the two unlock the vault'; pytest 454/454, Galata 40/40; build 1.1.36
+  - overrides: ACC-UNLOCK-202, ACC-TOTP-194
+  - test: pytest: each way unlocks; the password alone and a code alone are refused; Galata: the locked view unlocks with the password, then a code
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-10-03T17:10:12Z @kj the password slot decrypts the data key; the server puts the key in the holder only after it checked the code against the app's secret, which that key opens
+  - log: 2026-10-03T17:10:12Z @kj added
+  - log: 2026-10-03T17:12:20Z @kj closed
+- [x] `ACC-UNLOCK-216` **Password unlock checks the code** - CRITICAL; POST vault/unlock with password and code: the server keeps the data key only for a right code not used before; no code, a wrong code or a used code answers 403 and the vault stays locked; a wrong password answers 400 and uses up no code
+  - evidence: pytest test_the_unlock_password_opens_the_vault_only_with_a_code: no code 403, wrong code 403, used code 403, wrong password 400 without using the code, right pair unlocks; build 1.1.36
+  - test: pytest: unlock with the password and no code, a wrong code, a used code, a wrong password with a right code, then the right pair
+  - test-tags: UNIT
+  - log: 2026-10-03T17:10:16Z @kj added
+  - log: 2026-10-03T17:12:23Z @kj closed
+- [x] `ACC-UNLOCK-217` **Locked vault shows nothing** - CRITICAL; on a locked vault POST vault/reveal answers 423 whatever the proof: a passkey, the recovery passphrase, the unlock password or a code; the panel lists no entry while locked
+  - evidence: pytest: reveal on a locked vault answers 423 with a passkey (test_a_passkey_reveal_answers...), the recovery passphrase (test_a_reveal_takes_the_recovery_passphrase...), the unlock password and a code (test_a_code_proves_on_an_unlocked_vault...); jest locked view has no entry row; build 1.1.36
+  - overrides: ACC-UNLOCK-106, ACC-REST-167
+  - test: pytest: lock, then reveal with each proof answers 423; jest: the locked view has no entry row
+  - test-tags: UNIT
+  - log: 2026-10-03T17:10:19Z @kj added
+  - log: 2026-10-03T17:12:27Z @kj closed
+- [x] `ACC-UNLOCK-218` **Password and app are one pair** - HIGH; POST vault/mfa adds the unlock password and the authenticator app in one write, for a proof, a password of the minimum length and a right code of the new app; a second pair answers 409; POST vault/mfa-remove removes both on an unlocked vault, 423 on a locked one
+  - evidence: pytest test_the_password_and_the_app_are_added_together_with_a_right_code_and_a_proof (ten refusals store nothing, one write adds both, second pair 409) and test_the_password_and_the_app_are_removed_together; build 1.1.36
+  - overrides: ACC-UNLOCK-203, ACC-TOTP-193, ACC-TOTP-196
+  - test: pytest: mfa with each bad input stores nothing; a right one adds a password slot and the sealed secret; mfa-remove locked and unlocked
+  - test-tags: UNIT
+  - log: 2026-10-03T17:10:28Z @kj added
+  - log: 2026-10-03T17:12:31Z @kj closed
+- [x] `ACC-UNLOCK-219` **What each half proves alone** - HIGH; on an unlocked vault a code alone is a proof for a reveal, a new passkey and a recovery passphrase change; the unlock password alone proves a reveal only and is refused as a proof for a new passkey, a new pair and a recovery passphrase change
+  - evidence: pytest test_a_code_proves_on_an_unlocked_vault_and_the_password_alone_only_a_reveal; Galata 'a code, the unlock password or the recovery passphrase shows a password at a hostname with no passkey'; build 1.1.36
+  - overrides: ACC-UNLOCK-204
+  - test: pytest: a code proves all three; the password alone shows a password and is refused for the two changes; the vault file is unchanged after a refusal
+  - test-tags: UNIT
+  - log: 2026-10-03T17:10:32Z @kj added
+  - log: 2026-10-03T17:12:34Z @kj closed
+- [x] `ACC-UNLOCK-220` **Vault of an earlier build** - LOW; a vault of 1.1.28 to 1.1.31 can hold the password or the app alone; a password with no app unlocks alone; the panel row and vault status say which half is there; a new pair answers 409; Remove removes what is there
+  - evidence: pytest test_a_vault_of_an_earlier_build_holds_one_without_the_other and test_status_names_a_password_or_an_app_an_earlier_build_left_alone; jest 'takes no code for a password an earlier build added without an app, ...'; build 1.1.36
+  - test: pytest: remove one half from the vault file, then unlock, mfa and mfa-remove; jest: the row text of each lone half
+  - test-tags: UNIT
+  - log: 2026-10-03T17:10:36Z @kj added
+  - log: 2026-10-03T17:12:37Z @kj closed
 
 ## Vault entries `ENTRY`
 
@@ -986,12 +1031,20 @@ The `jupyterlab-passkey vault` subcommands
   - log: 2026-09-30T09:37:47Z @kj added
   - log: 2026-09-30T09:43:44Z @kj closed
 - [x] `ACC-VAULT-207` **CLI unlocks with the unlock password** - MEDIUM; vault unlock --password reads the unlock password from a hidden prompt, stdin or the browser dialog and opens the vault; vault status says whether the vault has an unlock password and an authenticator app, each with the date it was added
+  - overridden-by: ACC-VAULT-222
   - evidence: pytest test_unlock_with_the_unlock_password (stdin password opens the vault, a wrong one exits 1, status prints unlock password: added <date>), test_status_prints_state_holder_and_capabilities (authenticator app: none); pytest 456/456, build 1.1.27
   - test: pytest: unlock --password with the password on stdin opens a locked vault, a wrong one exits 1; status prints unlock password: added <date> or none
   - test-tags: UNIT
   - log: 2026-10-02T14:25:27Z @kj added
   - log: 2026-10-02T16:18:11Z @kj edited text "`vault unlock --password` reads the unlock password from a hidden prompt, stdin or the browser dialog and opens the vault; `vault status` says whether an unlock password and an authenticator app are set" -> "vault unlock --password reads the unlock password from a hidden prompt, stdin or the browser dialog and opens the vault; vault status says whether the vault has an unlock password and an authenticator app, each with the date it was added"; test "pytest: unlock --password with the password on stdin opens a locked vault, a wrong one exits 1; status prints `unlock password: set` or `none`" -> "pytest: unlock --password with the password on stdin opens a locked vault, a wrong one exits 1; status prints unlock password: added <date> or none"
   - log: 2026-10-02T21:24:37Z @kj closed
+- [x] `ACC-VAULT-222` **CLI unlocks with password and code** - MEDIUM; vault unlock --password asks the unlock password, then a code of the authenticator app, at a terminal or with --in-browser; from a pipe it refuses before it reads anything; vault status prints one line, password and authenticator app: added <date> or none
+  - evidence: pytest test_unlock_with_the_unlock_password_and_a_code (pipe refused, wrong password, wrong code, prompts in order, status lines) and test_status_prints_state_holder_and_capabilities; build 1.1.36
+  - overrides: ACC-VAULT-207
+  - test: pytest: unlock --password from a pipe, with a wrong password, a wrong code and the right pair; the two prompts in order; status before and after
+  - test-tags: UNIT
+  - log: 2026-10-03T17:10:49Z @kj added
+  - log: 2026-10-03T17:12:45Z @kj closed
 
 ## Vault Python API `PYAPI`
 
@@ -1042,6 +1095,7 @@ The server endpoints the CLI, the Python API and the panel call
   - log: 2026-09-26T15:32:10Z @kj added
   - log: 2026-09-28T00:23:23Z @kj closed
 - [x] `ACC-REST-167` **Reveal endpoint** - HIGH; POST vault/reveal with the entry name and a passkey PRF answers the password, locked or not; a PRF that opens no passkey slot answers 403; neither the PRF nor the password is logged
+  - overridden-by: ACC-UNLOCK-217
   - evidence: test_vault_routes.py test_a_passkey_reveal_answers_the_password_only_for_a_prf_that_opens_a_slot (the password, also after a lock; 403 for a wrong PRF, another cred_id, a malformed or missing PRF; caplog holds neither PRF nor password); pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: pytest: reveal with the registered PRF returns the password, also after a lock, a wrong PRF 403, caplog holds neither
   - test-tags: INTEGRATION
@@ -1272,6 +1326,7 @@ The vault sidebar panel in JupyterLab
   - log: 2026-09-26T19:42:50Z @kj added
   - log: 2026-09-28T00:23:24Z @kj closed
 - [x] `ACC-PANEL-161` **Reveal needs a passkey** - CRITICAL; the eye runs a passkey request for this host; the server returns the password only for a proof - that request's PRF opening a passkey slot, or one of the other proofs of ACC-PANEL-200 - and answers 403 otherwise
+  - overridden-by: ACC-PANEL-229
   - evidence: jest vault.spec.ts 'reveals through a passkey request, sending the server that request's PRF'; test_vault_routes.py test_a_passkey_reveal_answers_the_password_only_for_a_prf_that_opens_a_slot; Galata vault.spec.ts eye with the virtual authenticator shows the password; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: Galata: click the eye with the virtual authenticator, assert the password shows; REST: a wrong PRF answers 403
   - test-tags: INTEGRATION, E2E
@@ -1353,7 +1408,7 @@ The vault sidebar panel in JupyterLab
   - log: 2026-09-26T22:21:42Z @kj amended text "before the proof's passkey request for registering or the recovery change, the panel says First confirm with a passkey you already have; a cancel clears the line" -> "MEDIUM; during the proof's passkey request for registering or the recovery change, the panel says First confirm with a passkey you already have; the line clears once the proof is in, and on a cancel"
   - log: 2026-09-26T22:21:42Z @kj edited test "jest: the line shows right after the Register click, before any dialog; a cancelled proof leaves no line" -> "jest: the line shows right after the Register click, before any dialog; it is gone when the browser creates the passkey after a passphrase fallback; a cancelled proof leaves no line"
   - log: 2026-09-28T00:23:25Z @kj closed
-- [x] `ACC-PANEL-176` **IP address named, with where to go** - MEDIUM; on a tab at an IP address the locked view, the Add sign-in method dialog, create view, eye and unlock say where to open JupyterLab: the passkeys' hostnames (localhost marked as this computer) or its hostname over HTTPS; the dialog's Passkey kind is disabled; Create vault skips the passkey; passkey:vault-register stops first
+- [x] `ACC-PANEL-176` **IP address named, with where to go** - MEDIUM; on a tab at an IP address the locked view, the Add unlock method dialog, create view, eye and unlock say where to open JupyterLab: the passkeys' hostnames (localhost marked as this computer) or its hostname over HTTPS; the dialog's Passkey button is disabled; Create vault skips the passkey; passkey:vault-register stops first
   - evidence: jest vault.spec.ts 'says an IP address cannot hold a passkey, and where to open JupyterLab instead', 'creates a vault at an IP address without a passkey step, saying so first', 'names localhost as a place on the computer that runs JupyterLab, and every passkey hostname'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: jest: unlock at 127.0.0.1 names the passkey's hostname and HTTPS; the locked view and the cog say it, no Register; at 192.168.1.10 with no passkey the create view says it and Create vault runs no create; localhost marked as this computer, plural for several hostnames
   - test-tags: UNIT
@@ -1364,6 +1419,7 @@ The vault sidebar panel in JupyterLab
   - log: 2026-09-27T00:19:31Z @kj edited test "jest: unlock at 127.0.0.1 names the passkey's hostname; the locked view and the cog say it and the cog has no Register; at 192.168.1.10 with no passkey the create view says open by hostname and Create vault runs no create" -> "jest: unlock at 127.0.0.1 names the passkey's hostname and HTTPS; the locked view and the cog say it, no Register; at 192.168.1.10 with no passkey the create view says it and Create vault runs no create; localhost marked as this computer, plural for several hostnames"
   - log: 2026-09-28T00:23:25Z @kj closed; reason: names each test that proves a many-case criterion
   - log: 2026-10-02T16:18:35Z @kj edited text "on a tab at an IP address the locked view, cog, create view, eye and unlock say where to open JupyterLab: the passkeys' hostnames (localhost marked as this computer) or its hostname over HTTPS; no Register in the cog, no passkey step in Create vault; passkey:vault-register stops first" -> "on a tab at an IP address the locked view, the Add sign-in method dialog, create view, eye and unlock say where to open JupyterLab: the passkeys' hostnames (localhost marked as this computer) or its hostname over HTTPS; the dialog's Passkey kind is disabled; Create vault skips the passkey; passkey:vault-register stops first"; reason: replaces 'no Register in the cog': the cog now disables the Passkey kind in the Add sign-in method dialog
+  - log: 2026-10-03T17:12:16Z @kj amended text "on a tab at an IP address the locked view, the Add sign-in method dialog, create view, eye and unlock say where to open JupyterLab: the passkeys' hostnames (localhost marked as this computer) or its hostname over HTTPS; the dialog's Passkey kind is disabled; Create vault skips the passkey; passkey:vault-register stops first" -> "MEDIUM; on a tab at an IP address the locked view, the Add unlock method dialog, create view, eye and unlock say where to open JupyterLab: the passkeys' hostnames (localhost marked as this computer) or its hostname over HTTPS; the dialog's Passkey button is disabled; Create vault skips the passkey; passkey:vault-register stops first"; reason: the body lists the six places that show the advice; only the dialog's name changed
 - [x] `ACC-PANEL-177` **No form after the vault locked** - MEDIUM; when the unlock ran out since the last read - behind an entry's popup, or before + is clicked - Edit, Delete and Add open nothing; the panel draws the locked view, with its unlock, and says The vault locked - unlock it, then try again, in amber
   - evidence: jest vault.spec.ts 'opens no form when the unlock ran out behind the popup, before the next read', 'opens no form when the vault locked while the popup was open', 'opens no Add form when the unlock ran out before the next read'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: jest: the countdown runs out behind the popup, Edit chosen, no form, locked view with its unlock; a read says locked behind the popup, no form; Add clicked after the countdown ran out, no form, locked view, amber line
@@ -1492,6 +1548,7 @@ The vault sidebar panel in JupyterLab
   - log: 2026-10-02T01:01:59Z @kj added
   - log: 2026-10-02T02:01:57Z @kj closed
 - [x] `ACC-PANEL-198` **Authenticator app in the cog view** - HIGH; Add sign-in method adds one authenticator app: the proof first, then a dialog with a QR code, the setup key as text and a code field; a wrong code opens the dialog again with the same key; Sign-in methods then shows the app, its date and a two-step Remove
+  - overridden-by: ACC-PANEL-225
   - evidence: jest 'registers the app whose setup key the dialog shows; a wrong code opens it again with the same key', 'registers from the cog view after a proof, then shows the app with a two-step Remove'; Galata 'an authenticator app is added, ...'; build 1.1.27, Galata 40/40
   - test: jest: the setup key and the code sent with the proof, a wrong code opens the dialog again with the same key; Galata: add with a code computed in the test, the row appears, Remove in two steps
   - test-tags: UNIT, FUNCTIONAL
@@ -1509,11 +1566,13 @@ The vault sidebar panel in JupyterLab
 - [x] `ACC-PANEL-200` **Reveal asks the fallback proof in the popup** - HIGH; with no passkey for this hostname, or no answer from one, the eye opens a row under the password that asks a code of the authenticator app or the recovery passphrase; a right one shows the password, a wrong one is said in the line and the row stays
   - evidence: jest EntryView 'asks the recovery passphrase in a row of its own when this hostname has no passkey', 'keeps the row and says why after a wrong proof, and sends the proof on Enter', 'asks the typed proofs in their order'; Galata app and unlock password tests; build 1.1.27
   - related: ACC-PANEL-163 - the criterion rejected on 2026-09-26, taken up again on the report DEF-PANEL-27
+  - overridden-by: ACC-PANEL-229
   - test: jest EntryView: no passkey opens the row, a right proof shows the password, a wrong one keeps the row and says why; Galata: reveal with the recovery passphrase at a hostname without a passkey
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-10-02T14:06:53Z @kj added
   - log: 2026-10-02T21:24:16Z @kj closed
 - [x] `ACC-PANEL-206` **Unlock password in the panel** - HIGH; the locked view offers Unlock with password while one is set; Add sign-in method adds or replaces it: the new one typed twice with Submit disabled under the minimum length, then the proof; its row has a two-step Remove; the entry popup's proof row asks it before the recovery passphrase
+  - overridden-by: ACC-PANEL-225
   - evidence: jest 'the unlock password' (5 tests: locked view button, typed before the proof, replace and remove, cancel, proof row order); Galata 'an unlock password is added, opens the vault, and shows a password at a hostname with no passkey'; build 1.1.27, Galata 40/40
   - test: jest: locked view button, the row, Submit gate, password typed before the proof, proof row order code then password then passphrase; Galata: add a password, lock, unlock with it, reveal with it at a hostname with no passkey
   - test-tags: UNIT, FUNCTIONAL
@@ -1521,12 +1580,14 @@ The vault sidebar panel in JupyterLab
   - log: 2026-10-02T16:17:59Z @kj edited text "the locked view offers Unlock with password while one is set; the cog view sets, changes and removes it (Remove in two steps), the new one typed twice with Submit disabled under the minimum length; the entry popup's proof row asks it before the recovery passphrase" -> "the locked view offers Unlock with password while one is set; Add sign-in method adds or replaces it: the new one typed twice with Submit disabled under the minimum length, then the proof; its row has a two-step Remove; the entry popup's proof row asks it before the recovery passphrase"; test "jest: locked view button, cog section in each state, Submit gate, proof row order code then password then passphrase; Galata: set a password, lock, unlock with it, reveal with it at a hostname with no passkey" -> "jest: locked view button, the row, Submit gate, password typed before the proof, proof row order code then password then passphrase; Galata: add a password, lock, unlock with it, reveal with it at a hostname with no passkey"
   - log: 2026-10-02T21:24:34Z @kj closed
 - [x] `ACC-PANEL-209` **One Sign-in methods section** - HIGH; the cog view has three sections: Security, Sign-in methods, Settings; Sign-in methods has one row for each passkey, for the unlock password, for the authenticator app and for the recovery passphrase; the first three have a two-step Remove on an unlocked vault, the recovery passphrase has Change
+  - overridden-by: ACC-PANEL-223
   - evidence: jest 'lists every sign-in method in one section, each with its one action' (section headers Security, Sign-in methods, Settings; four rows by kind); Galata rows appear and disappear in the passkey, app and password tests; build 1.1.27, Galata 40/40
   - test: jest: section headers, the rows by kind with their text and button; Galata: rows appear and disappear as methods are added and removed
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-10-02T16:17:28Z @kj added
   - log: 2026-10-02T21:24:43Z @kj closed
 - [x] `ACC-PANEL-210` **Add sign-in method offers the kinds** - HIGH; Add sign-in method opens one dialog with three buttons: Passkey, Unlock password, Authenticator app, each with one short line; a press chooses the kind, Cancel is the only other button; a kind that cannot be added is a disabled button that says why (IP address, an app already added); a new unlock password replaces the one there is
+  - overridden-by: ACC-PANEL-224
   - evidence: jest 'the dialog that offers the kinds of sign-in method' (3 tests: lines, disabled kinds, the note, the kind pressed, Enter); Galata 'a passkey is added with a passkey as the proof, ...' (button names, descriptions, one width, Enter), app button disabled after one is added; build 1.1.30
   - test: jest: the three buttons with their lines, disabled states, the note, the kind pressed, Enter; Galata: button names and descriptions, Enter chooses, the app button disabled after one is added
   - test-tags: UNIT, FUNCTIONAL
@@ -1536,6 +1597,7 @@ The vault sidebar panel in JupyterLab
   - log: 2026-10-03T05:10:05Z @kj edited text "Add sign-in method opens one dialog with three radio buttons: Passkey, Unlock password, Authenticator app, each with what the kind may do; a kind that cannot be chosen is disabled and says why (IP address, an app already added); a new unlock password replaces the one there is" -> "HIGH; Add sign-in method opens one dialog with three buttons: Passkey, Unlock password, Authenticator app, each with one short line; a press chooses the kind, Cancel is the only other button; a kind that cannot be added is a disabled button that says why (IP address, an app already added); a new unlock password replaces the one there is"; test "jest: the three options with their texts, disabled states, the note, the kind returned; Galata: radio names and description, the app option disabled after one is added" -> "jest: the three buttons with their lines, disabled states, the note, the kind pressed, Enter; Galata: button names and descriptions, Enter chooses, the app button disabled after one is added"; reason: the body lists three states of the dialog, each needed to test it
   - log: 2026-10-03T05:10:08Z @kj closed
 - [x] `ACC-PANEL-211` **Standard names: add, sign-in method** - MEDIUM; the vault's panel, dialogs, CLI texts, server refusals and documents say add where they said register, and sign-in method for a passkey, an unlock password or an authenticator app; the bridge commands and the command id passkey:vault-register keep their names
+  - overridden-by: ACC-PANEL-227
   - evidence: grep of src/vault, the vault Python package and the four documents on build 1.1.27: register remains only in the command id passkey:vault-register, internal identifiers and the bridge's create command; jest 235/235, pytest 456/456 and Galata 40/40 assert the new texts
   - test: grep the vault sources and documents for register in a user-facing text: none outside the bridge and the command id; jest, pytest and Galata assert the new texts
   - test-tags: UNIT, FUNCTIONAL, MANUAL
@@ -1553,6 +1615,55 @@ The vault sidebar panel in JupyterLab
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-10-02T20:21:38Z @kj added
   - log: 2026-10-02T21:24:56Z @kj closed
+- [x] `ACC-PANEL-223` **Unlock methods section** - HIGH; the cog view has three sections: Security, Unlock methods, Settings; Unlock methods has a row for each passkey, one row Password and authenticator app with its name shown whole at sidebar width, and one for the recovery passphrase; the first two have a two-step Remove on an unlocked vault, the recovery passphrase has Change
+  - evidence: jest 'lists every unlock method in one section, each with its one action'; Galata 'a password and an authenticator app are added in one flow, ...' (row name not cut at sidebar width, Remove in two clicks); screenshots of both themes checked; build 1.1.36
+  - overrides: ACC-PANEL-209
+  - test: jest: the rows and section titles of the cog view; Galata: the pair's row name is not cut at sidebar width, Remove in two clicks
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-10-03T17:10:53Z @kj added; reason: the body names three sections and three kinds of row with their actions
+  - log: 2026-10-03T17:12:49Z @kj closed
+- [x] `ACC-PANEL-224` **Add unlock method offers two methods** - HIGH; Add unlock method opens one dialog with two buttons, Passkey and Password and authenticator app, each with one short line; a press chooses the method, Cancel is the only other button; a method that cannot be added is a disabled button saying why (IP address, a pair already added)
+  - evidence: jest 'the dialog that offers the unlock methods' (3 tests: lines, disabled state, method pressed, Enter); Galata 'a passkey is added with a passkey as the proof, ...' (two buttons, names, descriptions, Enter) and the pair's button disabled after one is added; build 1.1.36
+  - overrides: ACC-PANEL-210
+  - test: jest: the two buttons with their lines, the disabled state, the method pressed, Enter; Galata: button names and descriptions, Enter chooses, the pair's button disabled after one is added
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-10-03T17:11:01Z @kj added
+  - log: 2026-10-03T17:13:39Z @kj closed
+- [x] `ACC-PANEL-225` **Password and app are added in one flow** - HIGH; choosing Password and authenticator app runs one flow under one title: the new password twice with Submit disabled under the minimum length, then the proof, then a dialog with a QR code, the setup key and a code field; a wrong code opens that dialog again with the same key; a cancelled step adds nothing
+  - evidence: jest 'adds the two from the cog view: ...', 'adds nothing when the password dialog, the proof or the app dialog is cancelled', 'adds the app whose setup key the dialog shows, ...'; Galata 'a password and an authenticator app are added in one flow, ...'; build 1.1.36
+  - overrides: ACC-PANEL-198, ACC-PANEL-206
+  - test: jest: the order password, proof, app; each step cancelled sends nothing; Galata: the flow with a short password, a wrong code, then the right code
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-10-03T17:11:06Z @kj added; reason: the body names the three steps of the flow in order and its two failure cases
+  - log: 2026-10-03T17:13:42Z @kj closed
+- [x] `ACC-PANEL-226` **Unlock with password in the locked view** - HIGH; the locked view offers Unlock with password while the vault has the pair: the password's dialog, then a dialog that asks the code, its Unlock button disabled until six digits; a wrong code leaves the vault locked and the panel says wrong code; a cancelled step sends nothing
+  - evidence: jest 'unlocks from the locked view with the password, then a code; ...'; Galata 'a password and an authenticator app are added in one flow, and the two unlock the vault' (wrong code stays locked, right code unlocks); screenshot of the locked view checked; build 1.1.36
+  - test: jest: the two dialogs in order, a cancelled password asks no code, a cancelled code sends nothing; Galata: a wrong code, then the right code unlocks
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-10-03T17:11:10Z @kj added
+  - log: 2026-10-03T17:13:46Z @kj closed
+- [x] `ACC-PANEL-227` **Wording: unlock method** - MEDIUM; the panel, dialogs, CLI texts and documents say unlock method for a passkey and for the password and authenticator app, and add for adding one; sign-in method is not used; the bridge commands and the command id passkey:vault-register keep their names
+  - evidence: grep for 'sign-in method' in src, the vault Python package, schema, style, README and the three documents on build 1.1.36: no match; jest 235/235 and Galata 40/40 assert Unlock methods and Add unlock method
+  - overrides: ACC-PANEL-211
+  - test: grep the vault sources and the four documents for sign-in method: none; jest and Galata assert Unlock methods and Add unlock method
+  - test-tags: UNIT, FUNCTIONAL, MANUAL
+  - log: 2026-10-03T17:11:15Z @kj added
+  - log: 2026-10-03T17:13:50Z @kj closed
+- [x] `ACC-PANEL-229` **No second proof for a minute** - HIGH; for 60 s after the tab unlocked the vault or had a proof accepted, the eye shows a password and asks no proof; ends after 60 s, at a lock in the tab, at a page reload; adding an unlock method and changing the recovery passphrase still ask a proof
+  - evidence: jest vault-api.spec 'the minute after an unlock or a proof' (14 tests) and EntryView 'asks no proof while this tab has just unlocked or proven'; Galata 'a code, the unlock password or the recovery passphrase shows a password at a hostname with no passkey'; build 1.1.38, jest 252, Galata 40
+  - overrides: ACC-PANEL-161, ACC-PANEL-200
+  - test: jest vault-api.spec 'the minute after an unlock or a proof' and EntryView 'asks no proof while this tab has just unlocked or proven'; Galata: unlock with password and code, press the eye, assert the request carries no proof
+  - test-tags: UNIT, E2E
+  - mechanism: 2026-10-03T18:50:51Z @kj the tab keeps the time of its last unlock or accepted proof (VaultApi.proven, PROVEN_MS); in the minute the eye sends the plain read that vault get sends; the server keeps no count
+  - log: 2026-10-03T18:50:51Z @kj added
+  - log: 2026-10-03T19:00:36Z @kj closed
+- [x] `ACC-PANEL-230` **A refused pair names the app's unused entry** - MEDIUM; when the server refuses the pair with a 4xx answer other than a wrong code, the panel's line ends with: the entry your authenticator app added is unused - you can delete it in the app; a lost answer and a 5xx answer say nothing about the entry
+  - evidence: jest 'the password and authenticator app' registerMfa test: a 403 is passed on with the sentence about the app's unused entry and its status, a lost answer unchanged; build 1.1.38, jest 252
+  - test: jest: registerMfa with a 403 'wrong recovery passphrase' rejects with that message and status; with NoAnswer it rejects with the same error object
+  - test-tags: UNIT
+  - log: 2026-10-03T18:50:55Z @kj added
+  - log: 2026-10-03T19:00:40Z @kj closed
+  - log: 2026-10-03T19:20:33Z @kj amended text "when the server refuses the pair for another reason than a wrong code, the panel's line ends with: the entry your authenticator app added is unused - you can delete it in the app; a lost answer says nothing about the entry" -> "when the server refuses the pair with a 4xx answer other than a wrong code, the panel's line ends with: the entry your authenticator app added is unused - you can delete it in the app; a lost answer and a 5xx answer say nothing about the entry"
 
 ## Vault settings `CONFIG`
 
@@ -1608,12 +1719,14 @@ What the README and the CLI reference say about the vault
   - log: 2026-09-30T09:37:47Z @kj added
   - log: 2026-09-30T09:43:44Z @kj closed
 - [x] `ACC-VDOCS-201` **Authenticator app documented** - MEDIUM; docs/design-vault.md states what a code proves, why a code cannot unlock, where the app's secret is kept and the code rules; the README names the authenticator app among the proofs
+  - overridden-by: ACC-VDOCS-228
   - evidence: docs/design-vault.md sections 3, 6 and 9 and README.md read against service.py and totp.py; the four-lens review, with the documents in scope, ended SHIP in round 3 (run wf_a421dbe9-558); build 1.1.27
   - test: read docs/design-vault.md and README.md against the implementation
   - test-tags: MANUAL
   - log: 2026-10-02T14:06:53Z @kj added
   - log: 2026-10-02T21:24:19Z @kj closed
 - [x] `ACC-VDOCS-208` **Unlock password documented** - MEDIUM; docs/design-vault.md states the unlock password's slot, what it proves and what it does not, its minimum length setting, and that the vault file is as strong as the weakest of its secrets; the README and the CLI reference name it
+  - overridden-by: ACC-VDOCS-228
   - evidence: docs/design-vault.md (file format, section 6 table, security limits, configuration), README.md and docs/cli-reference.md read against store.py and service.py; the four-lens review, with the documents in scope, ended SHIP in round 3; build 1.1.27
   - test: read docs/design-vault.md, README.md and docs/cli-reference.md against the implementation
   - test-tags: MANUAL
@@ -1625,6 +1738,13 @@ What the README and the CLI reference say about the vault
   - test-tags: MANUAL
   - log: 2026-10-02T20:21:42Z @kj added
   - log: 2026-10-02T21:24:58Z @kj closed
+- [x] `ACC-VDOCS-228` **Code documented as a server check** - HIGH; docs/design-vault.md and the README state that a code takes no part in the encryption: the password slot decrypts the data key and the server keeps it only for a right code; a person with a copy of the vault file and the unlock password decrypts it without a code
+  - evidence: docs/design-vault.md section 3 (the authenticator app is no slot), section 6 (A code is a check, not encryption) and section 10 (Copied file, Authenticator code); README Encryption bullet; read on build 1.1.36
+  - overrides: ACC-VDOCS-201, ACC-VDOCS-208
+  - test: read section 6 and section 10 of docs/design-vault.md and the Encryption bullet of the README
+  - test-tags: MANUAL
+  - log: 2026-10-03T17:11:18Z @kj added
+  - log: 2026-10-03T17:13:53Z @kj closed
 
 ## Vault authenticator app `TOTP`
 
@@ -1638,6 +1758,7 @@ A 6-digit code app as a proof on an unlocked vault
   - log: 2026-10-02T16:18:43Z @kj edited text "the vault file holds at most one authenticator app: its date in clear, its secret sealed with the data key under its own associated data; a locked vault tells only that an app is registered and since when" -> "the vault file holds at most one authenticator app: its date in clear, its secret sealed with the data key under its own associated data; a locked vault tells only that the vault has an app and since when"
   - log: 2026-10-02T21:23:52Z @kj closed
 - [x] `ACC-TOTP-193` **Adding the app needs a proof and a right code** - HIGH; POST vault/authenticator takes the app's secret (base32, 16 to 64 bytes), a current code and a proof (passkey or recovery passphrase); a wrong code, a missing or wrong proof, a bad secret or a second app is refused and nothing is stored
+  - overridden-by: ACC-UNLOCK-218
   - evidence: pytest test_an_authenticator_app_is_registered_with_a_right_code_and_a_proof: wrong code 403, no proof 403, second app 409, short secret 400, the file unchanged after each; pytest 456/456, build 1.1.27
   - test: pytest: right code and proof store the app; wrong code 403, no proof 403, second app 409, short secret 400; the file is unchanged after each refusal
   - test-tags: UNIT
@@ -1645,6 +1766,7 @@ A 6-digit code app as a proof on an unlocked vault
   - log: 2026-10-02T16:18:02Z @kj edited title "Registration needs a proof and a right code" -> "Adding the app needs a proof and a right code"; text "POST vault/authenticator takes the app's secret (base32, 16 to 64 bytes), a current code and a proof (passkey or recovery passphrase); a wrong code, a missing or wrong proof, a bad secret or an app already registered is refused and nothing is stored" -> "POST vault/authenticator takes the app's secret (base32, 16 to 64 bytes), a current code and a proof (passkey or recovery passphrase); a wrong code, a missing or wrong proof, a bad secret or a second app is refused and nothing is stored"
   - log: 2026-10-02T21:23:55Z @kj closed
 - [x] `ACC-TOTP-194` **Code as a proof** - HIGH; on an unlocked vault a current code is accepted wherever a proof is asked: reveal, a new passkey, recovery passphrase change; on a locked vault a code answers 423; a code never unlocks
+  - overridden-by: ACC-UNLOCK-215
   - evidence: pytest test_a_code_proves_on_an_unlocked_vault_and_never_unlocks: reveal, new passkey and recovery change take a code; locked answers 423; pytest 456/456, build 1.1.27
   - test: pytest: reveal, passkey registration and recovery change each succeed with a code; each answers 423 after a lock; POST unlock takes no code
   - test-tags: UNIT
@@ -1652,12 +1774,14 @@ A 6-digit code app as a proof on an unlocked vault
   - log: 2026-10-02T16:18:45Z @kj edited text "on an unlocked vault a current code is accepted wherever a proof is asked: reveal, passkey registration, recovery passphrase change; on a locked vault a code answers 423; a code never unlocks" -> "on an unlocked vault a current code is accepted wherever a proof is asked: reveal, a new passkey, recovery passphrase change; on a locked vault a code answers 423; a code never unlocks"
   - log: 2026-10-02T21:23:58Z @kj closed
 - [x] `ACC-TOTP-195` **Code rules** - HIGH; codes follow RFC 6238 with SHA-1, 6 digits and 30 s; the step before and the step after the current one are accepted; a code is accepted once; after 5 wrong codes in a row every code is refused until the next unlock
+  - overridden-by: ACC-TOTP-221
   - evidence: pytest test_codes_match_the_rfc_6238_test_vectors, test_a_code_is_accepted_one_step_either_side_once_and_five_wrong_ones_stop_codes; pytest 456/456, build 1.1.27
   - test: pytest: RFC 6238 test vectors; previous and next step accepted, two steps away refused; the same code twice refused; a right code after five wrong ones refused, accepted after lock and unlock
   - test-tags: UNIT
   - log: 2026-10-02T14:06:39Z @kj added
   - log: 2026-10-02T21:24:01Z @kj closed
 - [x] `ACC-TOTP-196` **Removal** - MEDIUM; POST vault/authenticator-remove removes the app on an unlocked vault and answers 423 on a locked one; afterwards a code is refused and a new app can be added
+  - overridden-by: ACC-UNLOCK-218
   - evidence: pytest test_authenticator_app_removal: locked 423, the file has no authenticator after removal, a code answers 403, adding an app again succeeds; pytest 456/456, build 1.1.27
   - test: pytest: remove on a locked vault 423; after removal the file has no authenticator, a code proof answers 403, adding an app again succeeds
   - test-tags: UNIT
@@ -1670,4 +1794,11 @@ A 6-digit code app as a proof on an unlocked vault
   - test-tags: UNIT
   - log: 2026-10-02T14:06:52Z @kj added
   - log: 2026-10-02T21:24:07Z @kj closed
+- [x] `ACC-TOTP-221` **Code rules, at unlock too** - HIGH; codes follow RFC 6238 with SHA-1, 6 digits and 30 s; the steps before and after the current one are accepted; a code is accepted once; after 5 wrong codes in a row every code is refused, at unlock too, until an unlock by passkey or recovery passphrase
+  - evidence: pytest test_a_code_is_accepted_one_step_either_side_once_and_five_wrong_ones_stop_codes (as a proof) and test_the_unlock_password_opens_the_vault_only_with_a_code (five wrong codes at unlock, then a recovery unlock); test_codes_match_the_rfc_6238_test_vectors; build 1.1.36
+  - overrides: ACC-TOTP-195
+  - test: pytest: codes one and two steps away, a code used twice, five wrong codes as a proof and at unlock, then an unlock with the recovery passphrase
+  - test-tags: UNIT
+  - log: 2026-10-03T17:10:44Z @kj added
+  - log: 2026-10-03T17:12:41Z @kj closed
 

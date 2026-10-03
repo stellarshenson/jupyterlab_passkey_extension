@@ -94,6 +94,13 @@ The vault server side, CLI and Python API
   - root-cause: 2026-10-02T14:06:38Z @kj the vault knows two proofs, `current` and `prf` (`_proven_dek`); no code proof and no stored app secret exist
   - log: 2026-10-02T14:06:38Z @kj added
   - log: 2026-10-02T21:23:30Z @kj closed
+- [x] `DEF-VAULT-33` **Design document states the old unlock signature and slot wording** - MINOR; docs/design-vault.md 9.2 lists unlock(recovery=None, password=None) without code; its section 4 and the store.py docstring say any slot opens the vault, which is false for the password slot of a pair
+  - evidence: docs/design-vault.md 9.2 reads unlock(recovery=None, password=None, code=None); its section 4 and the store.py docstring read 'decrypts the data key'; read against client.py on 2026-10-03, build 1.1.38
+  - repro: read docs/design-vault.md sections 4 and 9.2 and the module docstring of vault/store.py against client.py unlock
+  - test-tags: MANUAL
+  - root-cause: 2026-10-03T18:50:28Z @kj the unlock-methods change reworded the README sentence and the client signature, and left these three lines as they were
+  - log: 2026-10-03T18:50:28Z @kj added
+  - log: 2026-10-03T19:00:33Z @kj closed
 
 ## Vault panel `PANEL`
 
@@ -265,4 +272,18 @@ The vault sidebar panel, its dialogs and styles
   - root-cause: 2026-10-03T05:09:57Z @kj the dialog was built as a form: a choice then Continue; each kind's line copied the rule table of docs/design-vault.md section 6
   - log: 2026-10-03T05:09:57Z @kj added
   - log: 2026-10-03T05:10:00Z @kj closed
+- [x] `DEF-PANEL-31` **Unlock code refused at the eye** - MAJOR; after an unlock with the password and a code, the eye asks a code and refuses the same code as already used until the app shows the next one; hostname with no passkey; found by review round 1
+  - evidence: for 60 s after an unlock or a proof in the tab the eye asks no proof (ACC-PANEL-229); Galata 'a code, the unlock password or the recovery passphrase shows a password at a hostname with no passkey' unlocks with password and code, then the eye shows the password with no proof; build 1.1.38, pytest 454, jest 252, Galata 40
+  - repro: no passkey for the host: unlock with password and code, open an entry, press the eye, type the code the app still shows
+  - test-tags: UNIT, E2E
+  - root-cause: 2026-10-03T18:50:20Z @kj unlock_password records the code's time step, a code is accepted once, and the eye asked a proof right after every unlock
+  - log: 2026-10-03T18:50:20Z @kj added
+  - log: 2026-10-03T19:00:27Z @kj closed; reason: the evidence names the rule, the test and the build
+- [x] `DEF-PANEL-32` **Refused pair leaves an unnamed unused app entry** - MINOR; the server refuses the pair after the app was scanned (wrong recovery passphrase): the app keeps an entry of a key the vault does not hold, no line says so, and a retry adds a second entry with the same name
+  - evidence: registerMfa passes a server refusal on with the sentence that the app's entry is unused; jest 'the password and authenticator app' registerMfa test asserts the message, the status and an unchanged lost answer; build 1.1.38, jest 252
+  - repro: Add unlock method, password and authenticator app, a wrong recovery passphrase as the proof, scan the QR code, type the code
+  - test-tags: UNIT
+  - root-cause: 2026-10-03T18:50:24Z @kj the proof is checked with the last request, after the app took the setup key; registerMfa passed the refusal on unchanged
+  - log: 2026-10-03T18:50:24Z @kj added
+  - log: 2026-10-03T19:00:30Z @kj closed
 

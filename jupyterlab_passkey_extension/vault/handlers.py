@@ -23,14 +23,15 @@ def _unlock(s, body):
     if "recovery" in body:
         s.unlock_recovery(body.get("recovery"))
     elif "password" in body:
-        s.unlock_password(body.get("password"))
+        s.unlock_password(body.get("password"), body.get("code"))
     else:
         s.unlock_passkey(body.get("cred_id"), body.get("prf"))
     return s.status()
 
 
 def _reveal(s, body):
-    # With a proof, the panel's proven reveal; without, the CLI's `vault get`.
+    # With a proof, the panel's proven reveal. Without, the plain read: the CLI's
+    # `vault get`, and the panel's eye in the minute after an unlock or a proof.
     if any(k in body for k in PROOFS):
         proof = {k: body[k] for k in ("cred_id", *PROOFS) if k in body}
         return {"value": s.reveal_proven(body.get("name"), proof)}
@@ -65,10 +66,8 @@ _POST = {
         b.get("cred_id"), b.get("rp_id"), b.get("prf_salt"), b.get("prf"), b.get("label"),
         b.get("proof")),
     "passkeys-remove": lambda s, b: s.remove_passkey(b.get("cred_id")),
-    "password": lambda s, b: s.set_password(b.get("password"), b.get("proof")),
-    "password-remove": lambda s, b: s.remove_password(),
-    "authenticator": lambda s, b: s.add_authenticator(b.get("secret"), b.get("code"), b.get("proof")),
-    "authenticator-remove": lambda s, b: s.remove_authenticator(),
+    "mfa": lambda s, b: s.add_mfa(b.get("password"), b.get("secret"), b.get("code"), b.get("proof")),
+    "mfa-remove": lambda s, b: s.remove_mfa(),
     "recovery": lambda s, b: s.replace_recovery(b.get("recovery"), b.get("proof")),
 }
 
