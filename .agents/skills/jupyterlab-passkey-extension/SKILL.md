@@ -13,4 +13,5 @@ Runs on Jupyter server machine. `vault`: encrypted passwords server keeps, unloc
 - Python keeps value in process: `from jupyterlab_passkey_extension.vault import Vault; Vault().get("github/api")`. Refusal raises `VaultClientError` from `jupyterlab_passkey_extension.vault.client`
 - Never secret on command line. New secret: `--in-browser`, user types it in JupyterLab dialog. Agent shell has no terminal for hidden prompt
 - Tell user before command that waits. Locked vault, passkey step or dialog raises notification; command blocks until user clicks
+- Notification must name who asks: it starts `Asked by <name>:`. Default name: project directory command runs in (nearest `.git` upwards). Run from your project's directory. Elsewhere, or when project name does not say who you are: `JLAB_PASSKEY_CALLER="<project or caller>" jupyterlab-passkey ...`; in Python set `os.environ["JLAB_PASSKEY_CALLER"]` before `Vault()` raises one. Never another project's name
 - Never ask user for recovery passphrase in chat. Use `vault unlock --recovery --in-browser`

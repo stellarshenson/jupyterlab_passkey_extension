@@ -1802,3 +1802,33 @@ A 6-digit code app as a proof on an unlocked vault
   - log: 2026-10-03T17:10:44Z @kj added
   - log: 2026-10-03T17:12:41Z @kj closed
 
+## CLI notification `NOTIFY`
+
+The notification that the CLI and the Python Vault class raise in the JupyterLab tab
+
+- [x] `ACC-NOTIFY-231` **Notification names who asks** - HIGH; every notification the CLI or the Python Vault class raises starts with 'Asked by <name>:' before its request: create, get, passphrase, copy, show, vault unlock, vault copy, vault show, vault passkey add and --in-browser
+  - evidence: pytest test_trigger_starts_the_message_with_who_asks and test_copy_label_names_the_secret_without_carrying_it; Galata cli.spec copy toast reads 'Asked by the copy test: A secret is waiting: GitHub token'; build 1.1.41, pytest 459, Galata 40
+  - test: pytest test_trigger_starts_the_message_with_who_asks; Galata cli.spec: the copy toast reads 'Asked by the copy test: A secret is waiting: GitHub token'
+  - test-tags: UNIT, E2E
+  - mechanism: 2026-10-03T20:22:03Z @kj cli._trigger builds every notification and puts _caller() before the message
+  - log: 2026-10-03T20:22:03Z @kj added
+  - log: 2026-10-03T20:28:02Z @kj closed
+- [x] `ACC-NOTIFY-232` **Default name is the project** - HIGH; with JLAB_PASSKEY_CALLER unset or blank the name is the nearest directory, from the working directory upwards, that holds .git (a directory or a file), else the working directory's name; a removed working directory gives 'an unknown project'
+  - evidence: pytest test_the_caller_is_the_project_the_command_runs_in, test_the_caller_outside_a_repository_is_the_working_directory, test_a_removed_working_directory_still_names_a_caller; build 1.1.41, pytest 459
+  - test: pytest test_the_caller_is_the_project_the_command_runs_in, test_the_caller_outside_a_repository_is_the_working_directory, test_a_removed_working_directory_still_names_a_caller
+  - test-tags: UNIT
+  - log: 2026-10-03T20:22:06Z @kj added
+  - log: 2026-10-03T20:28:04Z @kj closed
+- [x] `ACC-NOTIFY-233` **A caller states its name** - MEDIUM; JLAB_PASSKEY_CALLER, when it holds a printable character, is the name; it is shown as one line without control characters and cut at 60 characters; the name is the caller's statement and proves nothing
+  - evidence: pytest test_a_stated_caller_is_one_bounded_line; Galata cli.spec copy runs with JLAB_PASSKEY_CALLER and the toast shows that name; build 1.1.41, pytest 459, Galata 40
+  - test: pytest test_a_stated_caller_is_one_bounded_line; Galata cli.spec copy runs with JLAB_PASSKEY_CALLER and reads the name in the toast
+  - test-tags: UNIT, E2E
+  - log: 2026-10-03T20:22:09Z @kj added
+  - log: 2026-10-03T20:28:07Z @kj closed
+- [x] `ACC-NOTIFY-234` **Skill and documents state who asks** - MEDIUM; the package's agent skill says a notification must name who asks: run from the project's directory or set JLAB_PASSKEY_CALLER, never another project's name; docs/cli-reference.md, the README and the top-level --help state the rule, and the two documents say the name proves nothing
+  - evidence: read on 2026-10-03, build 1.1.41: the rule is in .agents/skills/jupyterlab-passkey-extension/SKILL.md and in the installed copy under share/jupyter/agents/skills, in docs/cli-reference.md (bullet Who asks), README.md and jupyterlab-passkey --help (JLAB_PASSKEY_CALLER)
+  - test: read .agents/skills/jupyterlab-passkey-extension/SKILL.md, docs/cli-reference.md, README.md and jupyterlab-passkey --help for JLAB_PASSKEY_CALLER and 'Asked by'
+  - test-tags: MANUAL
+  - log: 2026-10-03T20:22:13Z @kj added
+  - log: 2026-10-03T20:28:10Z @kj closed
+

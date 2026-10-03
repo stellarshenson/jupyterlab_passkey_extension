@@ -9,6 +9,7 @@
 - **Blocking** - `create`, `get` and `passphrase` wait for you to click the button and approve the prompt; `copy` and `show` return at once (`copy` unless given `--block`); a [`vault`](#vault) subcommand waits only for its browser steps
 - **Timeout** - `--timeout` seconds, default `120` (`600` for `vault init` and `vault passkey add`); exit `1` if no relay arrives. On `copy` it applies only with `--block`, and is rejected without it; `show`, `vault lock`, `vault status`, `vault generate`, `vault passkey list` and `vault passkey rm` never wait and take none
 - **Failure** - a failed ceremony exits `1` with the error on stderr, nothing on stdout
+- **Who asks** - every notification starts with `Asked by <name>:`, so the person who clicks knows which project raised it. The name is the environment variable `JLAB_PASSKEY_CALLER` when it is set. Otherwise it is the project the command runs in: the name of the nearest directory, from the working directory upwards, that holds `.git`, or of the working directory when none does. The name is one line of at most 60 characters. It is the caller's own statement and proves nothing: any process of your user can state any name
 - **Debug** - `--debug` on any subcommand reports the relay backend decision on stderr before running: which backend was chosen, where `keyctl` was found, and, when keyctl was rejected, the step that failed with the kernel's own message
 
 The click is not incidental - WebAuthn requires a user gesture, and a terminal has none. The notification button is the gesture.

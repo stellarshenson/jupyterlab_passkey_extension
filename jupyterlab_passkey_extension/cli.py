@@ -183,11 +183,44 @@ def _forget_server() -> None:
 _LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+# The longest caller name a notification shows, and the name when none can be read.
+CALLER_MAX = 60
+NO_CALLER = "an unknown project"
+
+
+def _caller() -> str:
+    """Who a notification says is asking: `JLAB_PASSKEY_CALLER` when the caller sets it,
+    else the project the command runs in - the name of the nearest directory, from the
+    working directory upwards, that holds `.git`, or of the working directory when none
+    does. One line of at most CALLER_MAX characters, so a name cannot push the request
+    out of sight. The name is the caller's own statement: it tells the person who
+    clicks which project asks, and it proves nothing."""
+    name = os.environ.get("JLAB_PASSKEY_CALLER", "")
+    if not name.strip():
+        try:
+            here = os.getcwd()
+        except OSError:
+            # The working directory was removed under the process.
+            return NO_CALLER
+        folder = here
+        while not os.path.exists(os.path.join(folder, ".git")):
+            parent = os.path.dirname(folder)
+            if parent == folder:
+                folder = here
+                break
+            folder = parent
+        name = os.path.basename(folder) or folder
+    name = " ".join("".join(c if c.isprintable() else " " for c in name).split())
+    return name[:CALLER_MAX] or NO_CALLER
+
+
 def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
-    """Post the notification whose button runs `command_id` with `args_obj`."""
+    """Post the notification whose button runs `command_id` with `args_obj`. Its text
+    starts with who asks (`_caller`), so the person who clicks knows which project
+    raised it."""
     base, token = _server()
     payload = {
-        "message": message,
+        "message": f"Asked by {_caller()}: {message}",
         "type": "info",
         "autoClose": False,
         "immediate": True,
@@ -716,6 +749,8 @@ environment:
   JUPYTER_TOKEN                        the token when `jupyter server list` reports no server
   JUPYTER_PORT, JUPYTERHUB_SERVICE_PREFIX
                                        where the server answers when the list reports none
+  JLAB_PASSKEY_CALLER                  who a notification says is asking (default: the project
+                                       directory the command runs in)
   JLAB_PASSKEY_RELAY_BACKEND           auto (default), keyctl or shm: where a relayed secret waits
   JLAB_PASSKEY_RELAY_DIR               the shm relay directory (default /dev/shm/jlab-passkey-<uid>)
 """,

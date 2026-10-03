@@ -168,7 +168,9 @@ function runCopy(secret: string, args: string[] = []): Promise<IResult> {
     // Pin shm so the CLI and the test server agree on the backend, and the tests can
     // read back the file the server writes. The server config pins the same value.
     JLAB_PASSKEY_RELAY_BACKEND: 'shm',
-    JUPYTER_PORT: PORT
+    JUPYTER_PORT: PORT,
+    // Who the notification says is asking; without it, the project this suite runs in.
+    JLAB_PASSKEY_CALLER: 'the copy test'
   };
   for (const name of DISCOVERY_ENV) {
     delete env[name];
@@ -398,9 +400,10 @@ test('copy hands a piped secret to the clipboard through the real binary', async
     .poll(() => buttons.count(), { timeout: 45000 })
     .toBeGreaterThan(0);
 
-  // The label is the only thing telling two staged secrets apart.
+  // The notification starts with who asks. The label is the only thing telling two
+  // staged secrets of one caller apart.
   await expect(page.locator('.jp-toast-message').first()).toContainText(
-    'GitHub token'
+    'Asked by the copy test: A secret is waiting: GitHub token'
   );
   await buttons.first().click();
 

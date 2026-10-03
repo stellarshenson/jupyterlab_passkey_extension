@@ -52,7 +52,9 @@ def no_wait(monkeypatch):
 
 @pytest.fixture
 def posted(monkeypatch):
-    """Capture the notification payload instead of sending it."""
+    """Capture the notification payload instead of sending it. The caller is named, so
+    a message does not depend on the directory the tests run in."""
+    monkeypatch.setenv("JLAB_PASSKEY_CALLER", "the tests")
     sent = []
 
     def fake_urlopen(req, timeout=None):
@@ -106,6 +108,64 @@ def test_trigger_posts_command_to_ingest_with_auth(posted):
     assert action["commandId"] == "passkey:run"
     assert action["args"] == {"nonce": "n" * 20}
     assert action["label"] == "Approve"
+
+
+def test_trigger_starts_the_message_with_who_asks(posted):
+    # Several projects call the vault: the person who clicks reads which one asks.
+    cli._trigger("passkey:run", {"nonce": "n" * 20}, "Approve", "Approve the request.")
+
+    assert posted[0]["payload"]["message"] == "Asked by the tests: Approve the request."
+
+
+def test_the_caller_is_the_project_the_command_runs_in(tmp_path, monkeypatch):
+    monkeypatch.delenv("JLAB_PASSKEY_CALLER", raising=False)
+    project = tmp_path / "invoice-processing"
+    (project / ".git").mkdir(parents=True)
+    (project / "notebooks" / "2026").mkdir(parents=True)
+    # A submodule keeps `.git` as a file; the nearest one upwards names the project.
+    (project / "vendor" / "tool" / "src").mkdir(parents=True)
+    (project / "vendor" / "tool" / ".git").write_text("gitdir: ../../.git/modules/tool")
+
+    monkeypatch.chdir(project / "notebooks" / "2026")
+    assert cli._caller() == "invoice-processing"
+    monkeypatch.chdir(project / "vendor" / "tool" / "src")
+    assert cli._caller() == "tool"
+
+
+def test_the_caller_outside_a_repository_is_the_working_directory(tmp_path, monkeypatch):
+    monkeypatch.delenv("JLAB_PASSKEY_CALLER", raising=False)
+    monkeypatch.setattr(cli.os.path, "exists", lambda path: False)
+    (tmp_path / "scratch").mkdir()
+    monkeypatch.chdir(tmp_path / "scratch")
+    assert cli._caller() == "scratch"
+
+    monkeypatch.chdir("/")
+    assert cli._caller() == "/"
+
+
+def test_a_stated_caller_is_one_bounded_line(tmp_path, monkeypatch):
+    # The name is shown before the request: it cannot add lines or push it away.
+    monkeypatch.setenv("JLAB_PASSKEY_CALLER", "  invoice\n processing\t\x1b[0m " + "x" * 80)
+    name = cli._caller()
+    assert name.startswith("invoice processing [0m xxx")
+    assert len(name) == cli.CALLER_MAX
+    assert name.isprintable()
+
+    # Nothing printable stated: the project is named, as if nothing was set.
+    monkeypatch.setenv("JLAB_PASSKEY_CALLER", " \n\t ")
+    (tmp_path / "ksef" / ".git").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path / "ksef")
+    assert cli._caller() == "ksef"
+
+
+def test_a_removed_working_directory_still_names_a_caller(monkeypatch):
+    monkeypatch.delenv("JLAB_PASSKEY_CALLER", raising=False)
+
+    def gone():
+        raise FileNotFoundError("the working directory was removed")
+
+    monkeypatch.setattr(cli.os, "getcwd", gone)
+    assert cli._caller() == "an unknown project"
 
 
 def test_trigger_keeps_the_button_up_and_pushes_immediately(posted):
@@ -551,7 +611,7 @@ def test_copy_label_names_the_secret_without_carrying_it(relay_dir, tmp_path, po
     cli.cmd_copy(_copy_ns(file=str(src), label="GitHub token"))
 
     payload = posted[0]["payload"]
-    assert payload["message"] == "A secret is waiting: GitHub token"
+    assert payload["message"] == "Asked by the tests: A secret is waiting: GitHub token"
     # The label names the secret; it must not become a place to leak one.
     assert COPY_SECRET not in json.dumps(payload)
     # It rides in the command args too, so the frontend can name the secret if

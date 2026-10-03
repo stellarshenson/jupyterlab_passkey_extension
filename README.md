@@ -127,7 +127,7 @@ pip install jupyterlab_passkey_extension
 
 ## Command line
 
-`jupyterlab-passkey` ships with the package and is the intended way in. It turns a browser ceremony into a blocking local call: it posts the notification carrying the request, waits for your click, and prints the result. A caller needs to know none of the relay contract below, beyond the reference `passphrase` hands it.
+`jupyterlab-passkey` ships with the package and is the intended way in. It turns a browser ceremony into a blocking local call: it posts the notification carrying the request, waits for your click, and prints the result. Every notification starts with who asks - `Asked by <name>:` - which is the project directory the command runs in, or the name the caller sets in `JLAB_PASSKEY_CALLER`; the name tells you which project raised the request and proves nothing. A caller needs to know none of the relay contract below, beyond the reference `passphrase` hands it.
 
 | Command      | Does                                      | Prints                                                        |
 | ------------ | ----------------------------------------- | ------------------------------------------------------------- |

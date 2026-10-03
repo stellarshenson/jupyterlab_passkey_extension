@@ -2,6 +2,19 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.42] - 2026-10-03
+
+Names who asks in every notification the CLI raises, so the person who clicks knows which project raised it.
+
+### Added
+
+- Every notification that `jupyterlab-passkey` or the Python `Vault` class raises starts with `Asked by <name>:`. This covers `create`, `get`, `passphrase`, `copy`, `show`, `vault unlock`, `vault copy`, `vault show`, `vault passkey add` and `--in-browser`
+- The name is the project the command runs in: the nearest directory, from the working directory upwards, that holds `.git`, or the working directory when none does
+- The environment variable `JLAB_PASSKEY_CALLER` states another name. The name is shown as one line of at most 60 characters. It is the caller's own statement and proves nothing
+- The agent skill that ships with the package tells agents that a notification must name who asks, and how to state the name
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.1.40] - 2026-10-03
 
 Makes the unlock password and the authenticator app one unlock method, so the vault unlocks by a passkey, by the password together with a code, or by the recovery passphrase, and lets the panel show a password without a second proof for 60 seconds after an unlock or a proof.
@@ -29,8 +42,6 @@ Makes the unlock password and the authenticator app one unlock method, so the va
 - On a hostname with no passkey, the code that unlocked the vault was refused when the entry popup asked a code right after, until the app showed its next code
 - The unlock password alone, sent as a proof, read an entry's password from a locked vault
 - The design document stated the Python `unlock` signature without `code` and said that any slot opens the vault
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.1.31] - 2026-10-03
 

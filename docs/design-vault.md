@@ -33,7 +33,7 @@ This section states what the vault is and which parts take part in it. The vault
 - **Three clients** - the `jupyterlab-passkey vault` CLI, the Python `Vault` class and the sidebar panel
 - **Three ways in** - a passkey added for the hostname of the browser tab, the unlock password together with a code of the authenticator app, or the recovery passphrase
 - **One unlock for all clients** - an unlock keeps the data key for the unlock duration (default 240 minutes), and the CLI, the Python class and the panel all use that one unlock
-- **Passkey steps run in the tab** - WebAuthn runs only in a browser tab after a click, so the CLI and the Python class raise a notification, and its button starts the passkey step in the tab
+- **Passkey steps run in the tab** - WebAuthn runs only in a browser tab after a click, so the CLI and the Python class raise a notification, and its button starts the passkey step in the tab. The notification starts with the name of the project that asked (`Asked by <name>:`, see the [CLI reference](cli-reference.md)); the name is the caller's statement, not a proof
 
 ```mermaid
 %%{init: {'themeCSS': '.cluster-label span, .cluster-label text, .edgeLabel span {color:var(--jp-ui-font-color1, var(--vscode-editor-foreground, var(--fgColor-default, #1f2937))); fill:var(--jp-ui-font-color1, var(--vscode-editor-foreground, var(--fgColor-default, #1f2937)))} @media (prefers-color-scheme: dark){.cluster-label span, .cluster-label text, .edgeLabel span {color:var(--jp-ui-font-color1, var(--vscode-editor-foreground, var(--fgColor-default, #e5e7eb))); fill:var(--jp-ui-font-color1, var(--vscode-editor-foreground, var(--fgColor-default, #e5e7eb)))}}'}}%%
