@@ -813,94 +813,102 @@ export async function askProof(
 export type SignInMethod = 'passkey' | 'password' | 'authenticator';
 
 /**
- * What each kind may do, as the dialog that offers them says it. The server holds the
- * rule (`PROOFS` in service.py); this is its wording for the person who chooses.
+ * Each kind as the dialog that offers them names it, with one line on what it is and
+ * its limit. The server holds the rule (`PROOFS` in service.py).
  */
 const METHODS: Record<SignInMethod, { label: string; about: string }> = {
   passkey: {
     label: 'Passkey',
-    about:
-      'Unlocks the vault, and is asked before a password is shown, a sign-in method is added or the recovery passphrase is changed.'
+    about: 'Fingerprint, face, PIN or security key.'
   },
   password: {
     label: 'Unlock password',
-    about:
-      'Unlocks the vault, and is accepted before a password is shown. It is not accepted before a sign-in method is added or the recovery passphrase is changed.'
+    about: 'Unlocks the vault and shows passwords. Cannot add a sign-in method.'
   },
   authenticator: {
     label: 'Authenticator app',
-    about:
-      'Its code is accepted where a passkey is asked while the vault is unlocked. It does not unlock the vault.'
+    about: 'A 6-digit code from your phone. Cannot unlock the vault.'
   }
 };
 
-/** A kind's state in this vault: `unavailable` says why it cannot be chosen now. */
+/**
+ * A kind's state in this vault: `note` is shown in place of the kind's line,
+ * `unavailable` says why the kind cannot be chosen now.
+ */
 export interface IMethodState {
   note?: string;
   unavailable?: string;
 }
 
-/** The body of the dialog that offers the kinds: one radio button for each. */
+/** The body of the dialog that offers the kinds: one button for each. */
 class MethodForm extends Widget {
-  constructor(states: Record<SignInMethod, IMethodState>) {
+  /** The kind whose button was pressed. */
+  chosen: SignInMethod | null = null;
+
+  /** `close` closes the dialog once a kind is chosen. */
+  constructor(states: Record<SignInMethod, IMethodState>, close: () => void) {
     super();
     this.addClass('jp-PasskeyVaultForm');
     for (const kind of Object.keys(METHODS) as SignInMethod[]) {
       const { label, about } = METHODS[kind];
       const { note, unavailable } = states[kind];
-      const radio = document.createElement('input');
-      radio.type = 'radio';
-      radio.name = 'jp-PasskeyVaultForm-method';
-      radio.value = kind;
-      radio.disabled = unavailable !== undefined;
-      radio.checked = !radio.disabled && this.getValue() === null;
-      const text = document.createElement('span');
-      text.className = 'jp-PasskeyVaultForm-choiceText';
       const name = document.createElement('span');
       name.textContent = label;
       const help = document.createElement('span');
       help.className = 'jp-PasskeyVaultForm-help';
-      help.textContent = unavailable ?? (note ? `${about} ${note}` : about);
-      text.append(name, help);
-      // The radio button is named by the kind alone; what the kind does is read after it.
+      help.textContent = unavailable ?? note ?? about;
+      const choice = document.createElement('button');
+      choice.type = 'button';
+      choice.className = 'jp-mod-styled jp-PasskeyVaultForm-choice';
+      choice.dataset.method = kind;
+      choice.disabled = unavailable !== undefined;
+      // The button is named by the kind alone; the line under the name is read after it.
       name.id = `jp-PasskeyVaultForm-method-${kind}`;
       help.id = `${name.id}-help`;
-      radio.setAttribute('aria-labelledby', name.id);
-      radio.setAttribute('aria-describedby', help.id);
-      const choice = document.createElement('label');
-      choice.className = 'jp-PasskeyVaultForm-choice';
-      choice.classList.toggle('jp-mod-disabled', radio.disabled);
-      choice.append(radio, text);
+      choice.setAttribute('aria-labelledby', name.id);
+      choice.setAttribute('aria-describedby', help.id);
+      choice.append(name, help);
+      choice.addEventListener('click', () => {
+        this.chosen = kind;
+        close();
+      });
       this.node.appendChild(choice);
     }
   }
 
-  getValue(): SignInMethod | null {
-    const checked = this.node.querySelector<HTMLInputElement>('input:checked');
-    return checked ? (checked.value as SignInMethod) : null;
+  onAfterAttach(): void {
+    document.addEventListener('keydown', this._keepEnter, true);
   }
+
+  onBeforeDetach(): void {
+    document.removeEventListener('keydown', this._keepEnter, true);
+  }
+
+  /** Dialog swallows Enter on a body control; see EntryView._keepEnter. Enter on a kind presses it. */
+  private readonly _keepEnter = (event: KeyboardEvent): void => {
+    if (event.key === 'Enter' && this.node.contains(event.target as Node)) {
+      event.stopPropagation();
+    }
+  };
 }
 
 /**
- * Ask which kind of sign-in method to add. Resolves to null when the user backs out.
+ * Ask which kind of sign-in method to add: a press on a kind chooses it and closes
+ * the dialog. Resolves to null when the user backs out.
  */
 export async function chooseSignInMethod(
   states: Record<SignInMethod, IMethodState>
 ): Promise<SignInMethod | null> {
-  const body = new MethodForm(states);
-  const { button } = await launchWithEscape(
-    new Dialog({
-      title: 'Add sign-in method',
-      body,
-      focusNodeSelector: 'input:checked',
-      hasClose: false,
-      buttons: [
-        Dialog.cancelButton(),
-        Dialog.okButton({ label: 'Continue', accept: true })
-      ]
-    })
-  );
-  return button.accept ? body.getValue() : null;
+  const body = new MethodForm(states, () => dialog.reject());
+  const dialog = new Dialog({
+    title: 'Add sign-in method',
+    body,
+    focusNodeSelector: '.jp-PasskeyVaultForm-choice:enabled',
+    hasClose: false,
+    buttons: [Dialog.cancelButton()]
+  });
+  await launchWithEscape(dialog);
+  return body.chosen;
 }
 
 /** The body of the dialog that adds an app: the QR code, the setup key, and the code field. */

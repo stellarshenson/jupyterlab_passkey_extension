@@ -121,8 +121,7 @@ async function addMethod(page: any, kind: Kind) {
   await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
     'Add sign-in method'
   );
-  await dialog.locator(`input[value="${kind}"]`).check();
-  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await dialog.locator(`button[data-method="${kind}"]`).click();
 }
 
 /** Remove a sign-in method: two clicks, the second at least half a second later. */
@@ -565,22 +564,57 @@ test('a passkey is added with a passkey as the proof, or the recovery passphrase
   const rows = method(page, 'passkey');
   const remove = (n: number) => removeMethod(page, rows.nth(n));
 
-  // The dialog offers the three kinds, the passkey chosen; each radio button is
-  // named by its kind and described by what the kind may do.
+  // The dialog offers the three kinds as buttons, the first one focused; each button
+  // is named by its kind and described by the line under the name.
   await add.click();
-  await expect(dialog.getByRole('radio')).toHaveCount(3);
-  const first = dialog.getByRole('radio', { name: 'Passkey', exact: true });
-  await expect(first).toBeChecked();
-  // Drawn as a radio button, not as the text field JupyterLab makes of a dialog's inputs.
-  await expect(first).toHaveCSS('appearance', 'auto');
-  expect(Math.round((await first.boundingBox())!.width)).toBe(13);
+  const kinds = dialog.locator('.jp-Dialog-body').getByRole('button');
+  await expect(kinds).toHaveCount(3);
+  const first = dialog.getByRole('button', { name: 'Passkey', exact: true });
+  await expect(first).toBeFocused();
+  await expect(first).toHaveAccessibleDescription(
+    'Fingerprint, face, PIN or security key.'
+  );
   await expect(
-    dialog.getByRole('radio', { name: 'Unlock password', exact: true })
+    dialog.getByRole('button', { name: 'Unlock password', exact: true })
   ).toHaveAccessibleDescription(
-    'Unlocks the vault, and is accepted before a password is shown. It is not accepted before a sign-in method is added or the recovery passphrase is changed.'
+    'Unlocks the vault and shows passwords. Cannot add a sign-in method.'
+  );
+  await expect(
+    dialog.getByRole('button', { name: 'Authenticator app', exact: true })
+  ).toHaveAccessibleDescription(
+    'A 6-digit code from your phone. Cannot unlock the vault.'
+  );
+  // The three buttons have one width, and the name sits over its line.
+  const boxes = await kinds.evaluateAll(buttons =>
+    buttons.map(b => {
+      const [name, help] = Array.from(b.children).map(c =>
+        c.getBoundingClientRect()
+      );
+      return {
+        width: Math.round(b.getBoundingClientRect().width),
+        stacked: name.bottom <= help.top && name.left === help.left
+      };
+    })
+  );
+  expect(new Set(boxes.map(b => b.width)).size).toBe(1);
+  expect(boxes.every(b => b.stacked)).toBe(true);
+  // Cancel is the dialog's only button of its own: there is no Continue.
+  await expect(
+    dialog.locator('.jp-Dialog-footer').getByRole('button')
+  ).toHaveText(['Cancel']);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // Enter on the focused kind chooses it.
+  await add.click();
+  await expect(first).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
+    'Name the new passkey'
   );
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
 
   // This host has a passkey: it is the proof, then the user names the new passkey
   // and that click lets the browser create it. No passphrase is asked.
@@ -660,7 +694,9 @@ test('an authenticator app is added, and its code or the recovery passphrase sho
   await expect(app).toContainText('Added 20');
   // A vault has one app: the dialog says so and the kind cannot be chosen.
   await panel(page).getByRole('button', { name: 'Add sign-in method' }).click();
-  await expect(dialog.locator('input[value="authenticator"]')).toBeDisabled();
+  await expect(
+    dialog.locator('button[data-method="authenticator"]')
+  ).toBeDisabled();
   await expect(dialog).toContainText('Remove it to add another.');
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
@@ -795,7 +831,7 @@ test('an unlock password is added, opens the vault, and shows a password at a ho
   await expect(row).toContainText('Added 20');
   // A second one replaces it: the dialog says so beside the kind.
   await panel(page).getByRole('button', { name: 'Add sign-in method' }).click();
-  await expect(dialog).toContainText('It replaces the one added 20');
+  await expect(dialog).toContainText('Replaces the one added 20');
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
 

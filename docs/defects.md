@@ -258,4 +258,11 @@ The vault sidebar panel, its dialogs and styles
   - root-cause: 2026-10-02T16:17:24Z @kj the panel's styles were copied from jupyterlab_share_files_extension, which has an 8 px inset and 20 px buttons, and its section headers were given no band
   - log: 2026-10-02T16:17:24Z @kj added
   - log: 2026-10-02T16:18:40Z @kj closed
+- [x] `DEF-PANEL-30` **Sign-in method chooser: radio buttons, long texts** - MINOR; Add sign-in method shows three radio buttons and Continue, each kind with a 20 to 30 word sentence; expected: one button per kind, pressed to choose, each with one short line
+  - evidence: three buttons, Cancel only, lines of 6 to 11 words; jest 'the dialog that offers the kinds of sign-in method' (3 tests), Galata 'a passkey is added with a passkey as the proof, ...' (button names, descriptions, Enter); jest 236/236, Galata 40/40; build 1.1.30
+  - repro: cog view, Add sign-in method
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-10-03T05:09:57Z @kj the dialog was built as a form: a choice then Continue; each kind's line copied the rule table of docs/design-vault.md section 6
+  - log: 2026-10-03T05:09:57Z @kj added
+  - log: 2026-10-03T05:10:00Z @kj closed
 

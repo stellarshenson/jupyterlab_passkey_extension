@@ -584,7 +584,7 @@ export class VaultPanel extends Widget {
         ? { unavailable: sentence(ipAddressAdvice(s.slots)) }
         : {},
       password: password
-        ? { note: `It replaces the one added ${addedAt(password.created)}.` }
+        ? { note: `Replaces the one added ${addedAt(password.created)}.` }
         : {},
       authenticator: s.authenticator
         ? {

@@ -2,6 +2,19 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.31] - 2026-10-03
+
+Shows the kinds of sign-in method as buttons with one short line each.
+
+### Changed
+
+- The dialog `Add sign-in method` shows one button for a passkey, one for an unlock password and one for an authenticator app. A press on a button chooses that kind and closes the dialog; `Continue` is removed and `Cancel` is the dialog's only other button
+- Each kind has one short line under its name in place of a sentence of 20 to 30 words
+- A kind that cannot be added is a disabled button whose line says why
+- When the vault has an unlock password, its button shows `Replaces the one added <date>.` in place of its line
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.1.28] - 2026-10-03
 
 Adds an authenticator app and an unlock password to the vault, lists every sign-in method in one section of the cog view, and gives the vault panel the geometry of the AI assistants panels.
@@ -23,8 +36,6 @@ Adds an authenticator app and an unlock password to the vault, lists every sign-
 ### Fixed
 
 - In a tab at a hostname with no passkey, the eye of the entry popup showed no password. The popup now asks a typed proof in a row of the popup: a code of the authenticator app, the unlock password or the recovery passphrase. The same row appears when the passkey does not answer
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.1.13] - 2026-10-02
 

@@ -38,8 +38,12 @@ jest.mock('@jupyterlab/apputils', () => ({
     static warnButton(o: any = {}): any {
       return { accept: true, ...o };
     }
+    rejected = false;
     constructor(readonly options: any) {}
     addClass(): void {}
+    reject(): void {
+      this.rejected = true;
+    }
   }
 }));
 
@@ -3653,7 +3657,7 @@ describe('the unlock password', () => {
     addMethod(panel, 'password');
     // The dialog that offers the kinds says a new password replaces the one there is.
     expect(mockChoose.mock.calls[0][0].password).toEqual({
-      note: 'It replaces the one added 2026-10-02 11:00 UTC.'
+      note: 'Replaces the one added 2026-10-02 11:00 UTC.'
     });
     await flush();
     await flush();
@@ -3935,87 +3939,102 @@ describe('the authenticator app', () => {
 
 describe('the dialog that offers the kinds of sign-in method', () => {
   const { chooseSignInMethod } = jest.requireActual('../vault/dialogs');
-  const options = (dialog: any): [string, string, boolean, boolean][] =>
-    Array.from(
-      dialog.options.body.node.querySelectorAll('label') as HTMLElement[]
-    ).map(label => {
-      const radio = label.querySelector('input') as HTMLInputElement;
-      const [name, help] = Array.from(label.querySelectorAll('span span'));
+  const kinds = (dialog: any): HTMLButtonElement[] =>
+    Array.from(dialog.options.body.node.querySelectorAll('button'));
+  const options = (dialog: any): [string, string, boolean][] =>
+    kinds(dialog).map(button => {
+      const [name, help] = Array.from(button.children);
+      // The button is named by the kind and described by the line under it.
+      expect(button.getAttribute('aria-labelledby')).toBe(name.id);
+      expect(button.getAttribute('aria-describedby')).toBe(help.id);
       return [
         name.textContent as string,
         help.textContent as string,
-        radio.disabled,
-        radio.checked
+        button.disabled
       ];
     });
+  const press = (dialog: any, kind: string): void =>
+    (
+      dialog.options.body.node.querySelector(
+        `button[data-method="${kind}"]`
+      ) as HTMLButtonElement
+    ).click();
 
-  it('offers a passkey, an unlock password and an authenticator app, each with what it may do', async () => {
-    answerDialogs({ 'Add sign-in method': true });
+  it('offers a passkey, an unlock password and an authenticator app as buttons, each with one line', async () => {
+    answerDialogs({});
+    // Cancelled: no kind.
     expect(
       await chooseSignInMethod({ passkey: {}, password: {}, authenticator: {} })
-    ).toBe('passkey');
+    ).toBeNull();
     const dialog = mockLaunch.mock.calls[0][0];
-    expect(dialog.options.buttons.map((b: any) => b.label)).toEqual([
-      undefined,
-      'Continue'
-    ]);
+    // Cancel is the dialog's only button of its own: a press on a kind chooses it.
+    expect(dialog.options.buttons).toEqual([{ accept: false }]);
+    expect(dialog.options.focusNodeSelector).toBe(
+      '.jp-PasskeyVaultForm-choice:enabled'
+    );
     expect(options(dialog)).toEqual([
-      [
-        'Passkey',
-        'Unlocks the vault, and is asked before a password is shown, a sign-in method is added or the recovery passphrase is changed.',
-        false,
-        true
-      ],
+      ['Passkey', 'Fingerprint, face, PIN or security key.', false],
       [
         'Unlock password',
-        'Unlocks the vault, and is accepted before a password is shown. It is not accepted before a sign-in method is added or the recovery passphrase is changed.',
-        false,
+        'Unlocks the vault and shows passwords. Cannot add a sign-in method.',
         false
       ],
       [
         'Authenticator app',
-        'Its code is accepted where a passkey is asked while the vault is unlocked. It does not unlock the vault.',
-        false,
+        'A 6-digit code from your phone. Cannot unlock the vault.',
         false
       ]
     ]);
   });
 
-  it('says why a kind cannot be chosen, adds a note to one that can, and returns the kind chosen', async () => {
+  it('says why a kind cannot be chosen, shows a note in place of the line, and returns the kind pressed', async () => {
     mockLaunch.mockImplementation(async (dialog: any) => {
-      (
-        dialog.options.body.node.querySelector(
-          'input[value="password"]'
-        ) as HTMLInputElement
-      ).checked = true;
-      return { button: { accept: true } };
+      // A kind that cannot be added is a disabled button: a press does nothing.
+      press(dialog, 'authenticator');
+      expect(dialog.rejected).toBe(false);
+      // A press on a kind chooses it and closes the dialog.
+      press(dialog, 'password');
+      expect(dialog.rejected).toBe(true);
+      return { button: { accept: false } };
     });
     const states = {
       passkey: { unavailable: 'An IP address cannot hold a passkey.' },
-      password: { note: 'It replaces the one added 2026-10-02 11:00 UTC.' },
+      password: { note: 'Replaces the one added 2026-10-02 11:00 UTC.' },
       authenticator: {
         unavailable: 'Added 2026-10-02 10:00 UTC. Remove it to add another.'
       }
     };
     expect(await chooseSignInMethod(states)).toBe('password');
     expect(options(mockLaunch.mock.calls[0][0])).toEqual([
-      ['Passkey', 'An IP address cannot hold a passkey.', true, false],
+      ['Passkey', 'An IP address cannot hold a passkey.', true],
       [
         'Unlock password',
-        'Unlocks the vault, and is accepted before a password is shown. It is not accepted before a sign-in method is added or the recovery passphrase is changed. It replaces the one added 2026-10-02 11:00 UTC.',
-        false,
-        true
+        'Replaces the one added 2026-10-02 11:00 UTC.',
+        false
       ],
       [
         'Authenticator app',
         'Added 2026-10-02 10:00 UTC. Remove it to add another.',
-        true,
-        false
+        true
       ]
     ]);
-    // Cancelled: no kind.
-    answerDialogs({});
-    expect(await chooseSignInMethod(states)).toBeNull();
+  });
+
+  it('lets Enter on a kind press it instead of the default dialog button', async () => {
+    mockLaunch.mockImplementation(async (dialog: any) => {
+      const body = dialog.options.body;
+      Widget.attach(body, document.body);
+      const reachedDialog = jest.fn();
+      body.node.addEventListener('keydown', reachedDialog, true);
+      kinds(dialog)[0].dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+      );
+      expect(reachedDialog).not.toHaveBeenCalled();
+      body.dispose();
+      return { button: { accept: false } };
+    });
+    await chooseSignInMethod({ passkey: {}, password: {}, authenticator: {} });
+    expect(mockLaunch).toHaveBeenCalledTimes(1);
   });
 });
 
