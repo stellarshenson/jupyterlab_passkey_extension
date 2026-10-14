@@ -6,6 +6,8 @@ import { Widget } from '@lumino/widgets';
 
 import { requestAPI } from './request';
 
+import { trans } from './trans';
+
 export interface IPassphraseArgs {
   nonce: string;
   prompt?: string;
@@ -334,7 +336,7 @@ export async function askSecret(
     focusNodeSelector: 'input',
     buttons: [
       Dialog.cancelButton(),
-      Dialog.okButton({ label: 'Submit', accept: true })
+      Dialog.okButton({ label: trans.__('Submit'), accept: true })
     ]
   });
 

@@ -5,7 +5,11 @@ import {
 
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
 
+import { ITranslator } from '@jupyterlab/translation';
+
 import { requestAPI } from '../request';
+
+import { setTranslator, trans } from '../trans';
 
 import { VaultApi, VaultError } from './api';
 
@@ -92,11 +96,13 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
   description:
     'A password vault the Jupyter server keeps, unlocked with a passkey, with an unlock password and an authenticator code, or with the recovery passphrase',
   autoStart: true,
-  optional: [ISettingRegistry],
+  optional: [ISettingRegistry, ITranslator],
   activate: async (
     app: JupyterFrontEnd,
-    settingRegistry: ISettingRegistry | null
+    settingRegistry: ISettingRegistry | null,
+    translator: ITranslator | null
   ) => {
+    setTranslator(translator);
     const api = new VaultApi(app.serviceManager.serverSettings);
     const panel = new VaultPanel({
       api,
@@ -115,7 +121,19 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
     };
 
     app.commands.addCommand(UNLOCK_COMMAND, {
-      label: 'Unlock Vault With Passkey',
+      label: trans.__('Unlock Vault With Passkey'),
+      describedBy: {
+        args: {
+          type: 'object',
+          properties: {
+            nonce: {
+              type: 'string',
+              description:
+                'Names the relay the outcome is posted to; with none, nothing is posted.'
+            }
+          }
+        }
+      },
       execute: args =>
         answerCli(
           app,
@@ -135,7 +153,23 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
     });
 
     app.commands.addCommand(REGISTER_COMMAND, {
-      label: 'Add Vault Passkey',
+      label: trans.__('Add Vault Passkey'),
+      describedBy: {
+        args: {
+          type: 'object',
+          properties: {
+            nonce: {
+              type: 'string',
+              description:
+                'Names the relay the outcome is posted to; with none, nothing is posted.'
+            },
+            label: {
+              type: 'string',
+              description: 'The name offered for the new passkey.'
+            }
+          }
+        }
+      },
       execute: args =>
         answerCli(
           app,

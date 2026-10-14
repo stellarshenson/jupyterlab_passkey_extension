@@ -3,6 +3,7 @@
 The JupyterLab commands the extension registers, and the server contract behind them. These run **in the browser** - a consumer reaches them through a notification button, whose click supplies the user gesture WebAuthn requires. For a ready-made local wrapper, see [cli-reference.md](cli-reference.md).
 
 - **Commands** - `passkey:run` (ceremony), `passkey:passphrase` (secret capture), `passkey:copy` (secret to clipboard), `passkey:show` (code as a scraper-resistant image), and for the [vault](../README.md#vault) `passkey:vault-unlock` and `passkey:vault-register`
+- **Described** - each command carries `describedBy` with a JSON schema of the arguments in its table below, so a caller can read them from the command registry
 - **Trigger** - a `jupyterlab-notify` action button bound to the command id
 - **Return path** - the frontend POSTs to the server, which stages the value in a relay
 - **Relay backend** - a uid-scoped kernel `keyctl` key (preferred, no swap, self-destructs at a TTL) or a `/dev/shm` `0600` file (fallback); chosen once per process, forced with `JLAB_PASSKEY_RELAY_BACKEND=keyctl|shm|auto`

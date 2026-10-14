@@ -8,6 +8,8 @@ import { askSecret, launchWithEscape } from '../passphrase';
 
 import { mapCeremonyError } from '../passkey-util';
 
+import { trans } from '../trans';
+
 import {
   IEntry,
   IEntryFields,
@@ -253,7 +255,7 @@ export async function editEntry(
     hasClose: false,
     buttons: [
       Dialog.cancelButton(),
-      Dialog.okButton({ label: 'Save', accept: true })
+      Dialog.okButton({ label: trans.__('Save'), accept: true })
     ]
   });
   dialog.addClass('jp-PasskeyVaultForm-dialog');
@@ -595,6 +597,9 @@ export async function viewEntry(
   entry: IEntry,
   how: IReveal
 ): Promise<'edit' | 'delete' | null> {
+  // The pressed button is told by its label, so both read the same strings.
+  const edit = trans.__('Edit');
+  const remove = trans.__('Delete');
   const dialog = new Dialog({
     title: entry.name,
     body: new EntryView(entry, how),
@@ -604,29 +609,31 @@ export async function viewEntry(
     defaultButton: 1,
     hasClose: false,
     buttons: [
-      Dialog.warnButton({ label: 'Delete' }),
-      Dialog.cancelButton({ label: 'Close' }),
-      Dialog.okButton({ label: 'Edit' })
+      Dialog.warnButton({ label: remove }),
+      Dialog.cancelButton({ label: trans.__('Close') }),
+      Dialog.okButton({ label: edit })
     ]
   });
   dialog.addClass('jp-PasskeyVaultForm-dialog');
   const { label } = (await launchWithEscape(dialog)).button;
-  return label === 'Edit' ? 'edit' : label === 'Delete' ? 'delete' : null;
+  return label === edit ? 'edit' : label === remove ? 'delete' : null;
 }
 
 /** Ask before deleting `name`; true when confirmed. */
 export async function confirmDelete(name: string): Promise<boolean> {
+  // The pressed button is told by its label, so both read the same string.
+  const remove = trans.__('Delete');
   const result = await launchWithEscape(
     new Dialog({
-      title: 'Delete entry',
+      title: trans.__('Delete entry'),
       body: `Delete ${name}? This cannot be undone.`,
       hasClose: false,
-      buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Delete' })],
+      buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: remove })],
       // Enter cancels: the popup before it closes on Enter, and a delete has no undo.
       defaultButton: 0
     })
   );
-  return result.button.label === 'Delete';
+  return result.button.label === remove;
 }
 
 /** The naming step's body: what happens next, and a name for the passkey. */
@@ -666,14 +673,14 @@ async function nameNewPasskey(
   const body = new PasskeyNameForm(suggested, intro);
   const result = await launchWithEscape(
     new Dialog({
-      title: 'Name the new passkey',
+      title: trans.__('Name the new passkey'),
       body,
       // Typing starts in the name field; a space typed on the button would create.
       focusNodeSelector: 'input',
       hasClose: false,
       buttons: [
         Dialog.cancelButton(),
-        Dialog.okButton({ label: 'Create passkey', accept: true })
+        Dialog.okButton({ label: trans.__('Create passkey'), accept: true })
       ]
     })
   );
@@ -688,12 +695,12 @@ async function nameNewPasskey(
 async function confirmNewPasskey(name: string): Promise<boolean> {
   const result = await launchWithEscape(
     new Dialog({
-      title: 'Confirm the new passkey',
+      title: trans.__('Confirm the new passkey'),
       body: `The passkey "${name}" was created. Confirm it once more so the vault can derive its key from it.`,
       hasClose: false,
       buttons: [
         Dialog.cancelButton(),
-        Dialog.okButton({ label: 'Confirm passkey', accept: true })
+        Dialog.okButton({ label: trans.__('Confirm passkey'), accept: true })
       ]
     })
   );
@@ -930,7 +937,7 @@ export async function chooseUnlockMethod(
 ): Promise<UnlockMethod | null> {
   const body = new MethodForm(states, () => dialog.reject());
   const dialog = new Dialog({
-    title: 'Add unlock method',
+    title: trans.__('Add unlock method'),
     body,
     focusNodeSelector: '.jp-PasskeyVaultForm-choice:enabled',
     hasClose: false,
@@ -954,7 +961,7 @@ class AuthenticatorForm extends Widget {
     qr.className = 'jp-PasskeyVaultForm-qr';
     const picture = qrSvg(otpauthUri(setupKey, host));
     picture.setAttribute('role', 'img');
-    picture.setAttribute('aria-label', 'QR code of the setup key');
+    picture.setAttribute('aria-label', trans.__('QR code of the setup key'));
     qr.appendChild(picture);
     // In groups of four, as apps show a key, so it can be compared by eye.
     const key = document.createElement('div');
@@ -1010,7 +1017,7 @@ export async function registerMfa(
         hasClose: false,
         buttons: [
           Dialog.cancelButton(),
-          Dialog.okButton({ label: 'Add', accept: true })
+          Dialog.okButton({ label: trans.__('Add'), accept: true })
         ]
       })
     );

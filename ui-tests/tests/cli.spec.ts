@@ -168,15 +168,19 @@ function runCopy(secret: string, args: string[] = []): Promise<IResult> {
     // Pin shm so the CLI and the test server agree on the backend, and the tests can
     // read back the file the server writes. The server config pins the same value.
     JLAB_PASSKEY_RELAY_BACKEND: 'shm',
-    JUPYTER_PORT: PORT,
-    // Who the notification says is asking; without it, the project this suite runs in.
-    JLAB_PASSKEY_CALLER: 'the copy test'
+    JUPYTER_PORT: PORT
   };
   for (const name of DISCOVERY_ENV) {
     delete env[name];
   }
 
-  const child = spawn('jupyterlab-passkey', ['copy', ...args], { env });
+  // --caller: who the notification says is asking. Without it, the project this
+  // suite runs in.
+  const child = spawn(
+    'jupyterlab-passkey',
+    ['copy', ...args, '--caller', 'the copy test'],
+    { env }
+  );
 
   return new Promise<IResult>(resolve => {
     let stdout = '';

@@ -152,10 +152,51 @@ def test_a_stated_caller_is_one_bounded_line(tmp_path, monkeypatch):
     assert name.isprintable()
 
     # Nothing printable stated: the project is named, as if nothing was set.
-    monkeypatch.setenv("JLAB_PASSKEY_CALLER", " \n\t ")
     (tmp_path / "ksef" / ".git").mkdir(parents=True)
     monkeypatch.chdir(tmp_path / "ksef")
-    assert cli._caller() == "ksef"
+    for nothing in (" \n\t ", "\x1b\u200b", "\x7f"):
+        monkeypatch.setenv("JLAB_PASSKEY_CALLER", nothing)
+        assert cli._caller() == "ksef", repr(nothing)
+
+
+def test_caller_option_names_who_asks_and_outranks_the_variable(relay_dir, tmp_path, posted, monkeypatch):
+    # `posted` sets JLAB_PASSKEY_CALLER to "the tests"; the option is stated per call.
+    src = tmp_path / "token.txt"
+    src.write_text(COPY_SECRET)
+    monkeypatch.setattr(sys, "argv", [
+        "jupyterlab-passkey", "copy", str(src), "--caller", "invoice-processing",
+    ])
+
+    assert cli.main() == 0
+
+    message = posted[0]["payload"]["message"]
+    assert message.startswith("Asked by invoice-processing: ")
+    # The command that `vault exec` runs inherits the name.
+    assert os.environ["JLAB_PASSKEY_CALLER"] == "invoice-processing"
+
+
+def test_an_empty_caller_option_falls_back(relay_dir, tmp_path, posted, monkeypatch):
+    src = tmp_path / "token.txt"
+    src.write_text(COPY_SECRET)
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "copy", str(src), "--caller", ""])
+
+    assert cli.main() == 0
+
+    assert posted[0]["payload"]["message"].startswith("Asked by the tests: ")
+
+
+def test_every_subcommand_takes_the_caller_option(monkeypatch, capsys):
+    # A vault command raises the unlock notification when it meets a locked vault, so
+    # the option is on the commands that usually raise none too.
+    for argv in (["create", "--help"], ["get", "--help"], ["passphrase", "--help"],
+                 ["copy", "--help"], ["show", "--help"], ["vault", "get", "--help"],
+                 ["vault", "unlock", "--help"], ["vault", "exec", "--help"],
+                 ["vault", "list", "--help"], ["vault", "passkey", "add", "--help"]):
+        monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", *argv])
+        with pytest.raises(SystemExit) as e:
+            cli.main()
+        assert e.value.code == 0
+        assert "--caller" in capsys.readouterr().out, argv
 
 
 def test_a_removed_working_directory_still_names_a_caller(monkeypatch):

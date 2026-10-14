@@ -15,6 +15,8 @@ import { askSecret } from '../passphrase';
 
 import { mapCeremonyError } from '../passkey-util';
 
+import { trans } from '../trans';
+
 import {
   ICapabilities,
   IEntry,
@@ -203,7 +205,7 @@ export class VaultPanel extends Widget {
     this.id = 'jp-passkey-vault';
     this.addClass(C);
     this.title.icon = lockIcon;
-    this.title.caption = 'Vault';
+    this.title.caption = trans.__('Vault');
 
     const header = el('div', `${C}-header`);
     header.appendChild(el('span', `${C}-headerTitle`, 'Vault'));
@@ -244,7 +246,10 @@ export class VaultPanel extends Widget {
     this._filter = el('input', `${C}-filterInput`);
     this._filter.type = 'search';
     this._filter.placeholder = 'Filter entries...';
-    this._filter.setAttribute('aria-label', 'Filter by name, username or URL');
+    this._filter.setAttribute(
+      'aria-label',
+      trans.__('Filter by name, username or URL')
+    );
     this._filter.dataset.focusKey = 'filter';
     this._filter.addEventListener('input', () => this._renderList());
     this._list = el('div', `${C}-list`);
@@ -1197,7 +1202,7 @@ export class VaultPanel extends Widget {
         false,
         'recovery'
       );
-      change.setAttribute('aria-label', 'Change recovery passphrase');
+      change.setAttribute('aria-label', trans.__('Change recovery passphrase'));
       methods.appendChild(
         this._method('recovery', 'Recovery passphrase', [], change)
       );

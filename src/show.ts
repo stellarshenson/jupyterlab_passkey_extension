@@ -8,6 +8,8 @@ import { launchWithEscape } from './passphrase';
 
 import { requestAPI } from './request';
 
+import { trans } from './trans';
+
 export interface IShowArgs {
   nonce: string;
   label?: string;
@@ -60,10 +62,10 @@ export async function runShow(
   // moment focus moves. Close and Escape are the ways out.
   await launchWithEscape(
     new Dialog({
-      title: 'Code',
+      title: trans.__('Code'),
       body,
       hasClose: false,
-      buttons: [Dialog.okButton({ label: 'Close' })]
+      buttons: [Dialog.okButton({ label: trans.__('Close') })]
     })
   );
 }

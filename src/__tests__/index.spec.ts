@@ -22,6 +22,7 @@ import { runShow } from '../show';
 jest.mock('../vault/plugin', () => ({
   vaultPlugin: { id: 'jupyterlab_passkey_extension:vault' }
 }));
+import { ITranslator } from '@jupyterlab/translation';
 import plugins from '../index';
 
 const plugin = plugins[0];
@@ -150,6 +151,51 @@ describe('plugin activation', () => {
   it('activates without a command palette', () => {
     const { app } = fakeApp();
     expect(() => plugin.activate!(app, null)).not.toThrow();
+  });
+
+  it('labels the commands through the lab translator and describes their arguments', () => {
+    const { app, addCommand } = fakeApp();
+    const translator = { load: () => ({ __: (s: string) => `<${s}>` }) } as any;
+
+    plugin.activate!(app, null, translator);
+
+    const commands = new Map<string, any>(addCommand.mock.calls as any);
+    expect(
+      Array.from(commands, ([id, options]) => [id, options.label])
+    ).toEqual([
+      ['passkey:run', '<Run Passkey Ceremony>'],
+      ['passkey:passphrase', '<Enter Passphrase>'],
+      ['passkey:copy', '<Copy Secret To Clipboard>'],
+      ['passkey:show', '<Show Code>']
+    ]);
+    // Each command says what arguments it takes, as a JSON schema.
+    for (const options of commands.values()) {
+      expect(options.describedBy.args.type).toBe('object');
+      expect(options.describedBy.args.required).toContain('nonce');
+      expect(options.describedBy.args.properties.nonce.type).toBe('string');
+    }
+    expect(commands.get('passkey:run').describedBy.args.required).toEqual([
+      'op',
+      'nonce',
+      'rp_id'
+    ]);
+    expect(
+      Object.keys(
+        commands.get('passkey:passphrase').describedBy.args.properties
+      )
+    ).toEqual(['nonce', 'prompt', 'once']);
+
+    // A lab with no translator: each label is returned as written.
+    const plain = fakeApp();
+    plugin.activate!(plain.app, null, null);
+    expect(plain.addCommand.mock.calls[0][1].label).toBe(
+      'Run Passkey Ceremony'
+    );
+  });
+
+  it('declares the translator optional', () => {
+    expect(plugin.optional).toContain(ITranslator);
+    expect(plugin.requires ?? []).not.toContain(ITranslator);
   });
 
   it('declares the palette optional and auto-starts (DI wiring)', () => {

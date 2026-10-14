@@ -84,7 +84,8 @@ let mockPanel: any;
 let mockApp: any;
 
 async function activate(
-  settingRegistry: any = null
+  settingRegistry: any = null,
+  translator: any = null
 ): Promise<Map<string, any>> {
   Object.assign(mockApi, {
     status: jest.fn().mockResolvedValue(vaultStatus()),
@@ -104,9 +105,30 @@ async function activate(
       })
     }
   };
-  await vaultPlugin.activate(mockApp, settingRegistry);
+  await vaultPlugin.activate(mockApp, settingRegistry, translator);
   return commands;
 }
+
+it('labels its commands and the panel through the lab translator, and describes the arguments', async () => {
+  const translator = { load: () => ({ __: (s: string) => `<${s}>` }) };
+  const commands = await activate(null, translator);
+  const unlock = commands.get('passkey:vault-unlock');
+  const register = commands.get(REGISTER_COMMAND);
+  expect(unlock.label).toBe('<Unlock Vault With Passkey>');
+  expect(register.label).toBe('<Add Vault Passkey>');
+  expect(Object.keys(unlock.describedBy.args.properties)).toEqual(['nonce']);
+  expect(Object.keys(register.describedBy.args.properties)).toEqual([
+    'nonce',
+    'label'
+  ]);
+  // The sidebar caption of the panel reads the same bundle.
+  expect(mockPanel.title.caption).toBe('<Vault>');
+
+  // A lab with no translator: each string is returned as written.
+  const plain = await activate();
+  expect(plain.get(REGISTER_COMMAND).label).toBe('Add Vault Passkey');
+  expect(mockPanel.title.caption).toBe('Vault');
+});
 
 /** The passkey on another device: the proof request fails, the rest succeeds. */
 function browser(): { create: jest.Mock } {

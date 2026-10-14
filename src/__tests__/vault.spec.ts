@@ -90,6 +90,7 @@ jest.mock('@jupyterlab/ui-components', () => {
 
 import { IStatus, NoAnswer, Proof, VaultError } from '../vault/api';
 import { askProof, EntryForm, EntryView, registerMfa } from '../vault/dialogs';
+import { setTranslator } from '../trans';
 import {
   ARM_DELAY_MS,
   formatMinutes,
@@ -3558,6 +3559,21 @@ describe('confirmDelete', () => {
     // The default is the button that does not accept: Cancel.
     expect(options.buttons[options.defaultButton].accept).toBe(false);
   });
+
+  it('confirms on the Delete button, translated or not', async () => {
+    // The pressed button is the one of the dialog whose label reads Delete.
+    mockLaunch.mockImplementation(async (dialog: any) => ({
+      button: dialog.options.buttons[1]
+    }));
+    await expect(confirmDelete('nas/ugos')).resolves.toBe(true);
+
+    setTranslator({ load: () => ({ __: (s: string) => `<${s}>` }) } as any);
+    try {
+      await expect(confirmDelete('nas/ugos')).resolves.toBe(true);
+    } finally {
+      setTranslator(null);
+    }
+  });
 });
 
 describe('the password and authenticator app', () => {
@@ -4045,6 +4061,36 @@ describe('the dialog that offers the unlock methods', () => {
     });
     await chooseUnlockMethod({ passkey: {}, mfa: {} });
     expect(mockLaunch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('viewEntry', () => {
+  // The panel tests replace viewEntry; this is the function itself.
+  const { viewEntry } = jest.requireActual('../vault/dialogs');
+  const how = {
+    proven: () => false,
+    passkey: jest.fn(),
+    reveal: jest.fn(),
+    typed: ['passphrase']
+  };
+
+  it('tells the pressed button by its label, translated or not', async () => {
+    const pressed = async (label: string) => {
+      answerDialogs({ 'nas/ugos': label });
+      return viewEntry(ENTRIES[2], how);
+    };
+    expect(await pressed('Edit')).toBe('edit');
+    expect(await pressed('Delete')).toBe('delete');
+    expect(await pressed('Close')).toBeNull();
+
+    setTranslator({ load: () => ({ __: (s: string) => `<${s}>` }) } as any);
+    try {
+      expect(await pressed('<Edit>')).toBe('edit');
+      expect(await pressed('<Delete>')).toBe('delete');
+      expect(await pressed('<Close>')).toBeNull();
+    } finally {
+      setTranslator(null);
+    }
   });
 });
 

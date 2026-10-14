@@ -189,14 +189,16 @@ NO_CALLER = "an unknown project"
 
 
 def _caller() -> str:
-    """Who a notification says is asking: `JLAB_PASSKEY_CALLER` when the caller sets it,
-    else the project the command runs in - the name of the nearest directory, from the
-    working directory upwards, that holds `.git`, or of the working directory when none
-    does. One line of at most CALLER_MAX characters, so a name cannot push the request
-    out of sight. The name is the caller's own statement: it tells the person who
-    clicks which project asks, and it proves nothing."""
+    """Who a notification says is asking: the name the caller states - `--caller`,
+    which main() puts in `JLAB_PASSKEY_CALLER`, or that variable set by a caller with
+    no command line (the Python `Vault` class) - else the project the command runs in:
+    the name of the nearest directory, from the working directory upwards, that holds
+    `.git`, or of the working directory when none does. One line of at most
+    CALLER_MAX characters, so a name cannot push the request out of sight. The name is
+    the caller's own statement: it tells the person who clicks which project asks,
+    and it proves nothing."""
     name = os.environ.get("JLAB_PASSKEY_CALLER", "")
-    if not name.strip():
+    if not any(c.isprintable() and not c.isspace() for c in name):
         try:
             here = os.getcwd()
         except OSError:
@@ -749,8 +751,9 @@ environment:
   JUPYTER_TOKEN                        the token when `jupyter server list` reports no server
   JUPYTER_PORT, JUPYTERHUB_SERVICE_PREFIX
                                        where the server answers when the list reports none
-  JLAB_PASSKEY_CALLER                  who a notification says is asking (default: the project
-                                       directory the command runs in)
+  JLAB_PASSKEY_CALLER                  who a notification says is asking, for a caller that cannot
+                                       pass --caller (default: the project directory the command
+                                       runs in)
   JLAB_PASSKEY_RELAY_BACKEND           auto (default), keyctl or shm: where a relayed secret waits
   JLAB_PASSKEY_RELAY_DIR               the shm relay directory (default /dev/shm/jlab-passkey-<uid>)
 """,
@@ -772,6 +775,14 @@ environment:
     debugp.add_argument(
         "--debug", action="store_true",
         help="report the relay backend and, for vault commands, the key-holder decision on stderr",
+    )
+    # --caller rides the same parent: any subcommand can raise a notification, a vault
+    # one when it meets a locked vault, and the notification starts with who asks.
+    debugp.add_argument(
+        "--caller", metavar="NAME",
+        help="who asks: your project, shown at the start of a notification this "
+             "command raises (default: JLAB_PASSKEY_CALLER, else the project directory "
+             "the command runs in)",
     )
     sub = p.add_subparsers(dest="op", required=True, metavar="COMMAND")
 
@@ -995,6 +1006,10 @@ examples:
         return 2
 
     a = p.parse_args(argv)
+    if getattr(a, "caller", None):
+        # In the environment, where _caller reads it: the command of `vault exec`
+        # inherits it, so a notification that command raises names the same caller.
+        os.environ["JLAB_PASSKEY_CALLER"] = a.caller
     if getattr(a, "debug", False):
         # Before the command runs, so the backend is on the record even if what follows
         # times out. _say, not print: a closed stderr must not fail the command.

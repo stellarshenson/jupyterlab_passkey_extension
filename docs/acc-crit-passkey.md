@@ -1825,10 +1825,43 @@ The notification that the CLI and the Python Vault class raise in the JupyterLab
   - test-tags: UNIT, E2E
   - log: 2026-10-03T20:22:09Z @kj added
   - log: 2026-10-03T20:28:07Z @kj closed
-- [x] `ACC-NOTIFY-234` **Skill and documents state who asks** - MEDIUM; the package's agent skill says a notification must name who asks: run from the project's directory or set JLAB_PASSKEY_CALLER, never another project's name; docs/cli-reference.md, the README and the top-level --help state the rule, and the two documents say the name proves nothing
+- [x] `ACC-NOTIFY-234` **Skill and documents state who asks** - MEDIUM; the package's agent skill says a notification must name who asks: always pass --caller, from Python set JLAB_PASSKEY_CALLER, never another project's name; docs/cli-reference.md, the README and --help state the rule, and the two documents say the name proves nothing
   - evidence: read on 2026-10-03, build 1.1.41: the rule is in .agents/skills/jupyterlab-passkey-extension/SKILL.md and in the installed copy under share/jupyter/agents/skills, in docs/cli-reference.md (bullet Who asks), README.md and jupyterlab-passkey --help (JLAB_PASSKEY_CALLER)
   - test: read .agents/skills/jupyterlab-passkey-extension/SKILL.md, docs/cli-reference.md, README.md and jupyterlab-passkey --help for JLAB_PASSKEY_CALLER and 'Asked by'
   - test-tags: MANUAL
   - log: 2026-10-03T20:22:13Z @kj added
   - log: 2026-10-03T20:28:10Z @kj closed
+  - log: 2026-10-03T20:45:17Z @kj amended text "the package's agent skill says a notification must name who asks: run from the project's directory or set JLAB_PASSKEY_CALLER, never another project's name; docs/cli-reference.md, the README and the top-level --help state the rule, and the two documents say the name proves nothing" -> "the package's agent skill says a notification must name who asks: always pass --caller, from Python set JLAB_PASSKEY_CALLER, never another project's name; docs/cli-reference.md, the README and --help state the rule, and the two documents say the name proves nothing"
+- [x] `ACC-NOTIFY-235` **--caller states the name** - HIGH; every subcommand takes --caller NAME; the notification the command raises starts with that name; --caller outranks JLAB_PASSKEY_CALLER; an empty value falls back to the variable, then to the project directory; the command of vault exec inherits the name
+  - evidence: pytest test_caller_option_names_who_asks_and_outranks_the_variable, test_an_empty_caller_option_falls_back, test_every_subcommand_takes_the_caller_option; Galata cli.spec copy with --caller shows the name in the toast; build 1.1.43, pytest 462, Galata 40
+  - test: pytest test_caller_option_names_who_asks_and_outranks_the_variable, test_an_empty_caller_option_falls_back, test_every_subcommand_takes_the_caller_option; Galata cli.spec: copy with --caller, the toast shows the name
+  - test-tags: UNIT, E2E
+  - mechanism: 2026-10-03T20:45:14Z @kj the parent parser every subcommand takes carries --caller; main() puts a stated name in JLAB_PASSKEY_CALLER, which _caller reads
+  - log: 2026-10-03T20:45:14Z @kj added
+  - log: 2026-10-03T20:54:35Z @kj closed
+
+## Lint `LINT`
+
+What the lint check asks of the frontend: described commands, labels read through the translator, no problem reported
+
+- [x] `ACC-LINT-236` **Commands describe their arguments** - MEDIUM; each of the six commands (passkey:run, passkey:passphrase, passkey:copy, passkey:show, passkey:vault-unlock, passkey:vault-register) carries describedBy with a JSON schema of its arguments: the properties of its table in docs/commands-reference.md and the required ones
+  - evidence: jest index.spec 'labels the commands through the lab translator and describes their arguments' and vault-plugin.spec 'labels its commands and the panel through the lab translator, and describes the arguments'; build 1.1.43, jest 256
+  - test: jest index.spec 'labels the commands through the lab translator and describes their arguments'; vault-plugin.spec 'labels its commands and the panel through the lab translator, and describes the arguments'
+  - test-tags: UNIT
+  - log: 2026-10-03T20:48:13Z @kj added
+  - log: 2026-10-03T20:54:38Z @kj closed
+- [x] `ACC-LINT-237` **Labels are read through the lab's translator** - MEDIUM; the strings the lint rule jupyter/no-untranslated-string names - command labels, and dialog titles, dialog button labels, aria labels and the panel's caption written as literals - are read through the lab's translator, which both plugins take as optional; viewEntry and confirmDelete tell the pressed button by the same translated label
+  - evidence: jest index.spec and vault-plugin.spec translator tests, vault.spec viewEntry 'tells the pressed button by its label, translated or not'; Galata 40 of 40 reads the labels as written with no language pack; build 1.1.43, jest 256
+  - test: jest index.spec and vault-plugin.spec translator tests; vault.spec viewEntry 'tells the pressed button by its label, translated or not'
+  - test-tags: UNIT
+  - mechanism: 2026-10-03T20:48:18Z @kj src/trans.ts holds one bundle; each plugin's activate calls setTranslator; the strings the lint rule names are wrapped in trans.__
+  - log: 2026-10-03T20:48:18Z @kj added
+  - log: 2026-10-03T20:54:41Z @kj closed
+  - log: 2026-10-03T21:16:04Z @kj amended text "command labels, dialog titles, dialog button labels, aria labels and the panel's caption are read through the lab's translator, which both plugins take as optional; with none, each string shows as written; the entry popup tells Edit and Delete by the same translated label" -> "the strings the lint rule jupyter/no-untranslated-string names - command labels, and dialog titles, dialog button labels, aria labels and the panel's caption written as literals - are read through the lab's translator, which both plugins take as optional; viewEntry and confirmDelete tell the pressed button by the same translated label"
+- [x] `ACC-LINT-238` **The lint check reports no problem** - MEDIUM; jlpm run lint:check exits 0 with no warning and no error: stylelint, prettier and eslint with the recommended rules of @jupyter/eslint-plugin, none of them switched off
+  - evidence: jlpm run lint:check on build 1.1.43, 2026-10-03: exit 0, prettier clean, no warning and no error line (32 warnings before); eslint.config.mjs unchanged, no rule set to off for these
+  - test: run jlpm run lint:check in the repository and read its last lines; read eslint.config.mjs for a rule set to off
+  - test-tags: MANUAL
+  - log: 2026-10-03T20:48:21Z @kj added
+  - log: 2026-10-03T20:54:44Z @kj closed
 
