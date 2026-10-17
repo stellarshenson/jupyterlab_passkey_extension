@@ -1,6 +1,6 @@
 {
     "name": "jupyterlab_passkey_extension",
-    "version": "1.1.46",
+    "version": "1.1.47",
     "description": "JupyterLab extension that gives the terminal, scripts, CLIs and AI agents on the Jupyter server the passkeys of the user's browser or operating system, moves secrets between the browser and local processes without printing them, and keeps a password vault that a passkey unlocks",
     "keywords": [
         "jupyter",
@@ -57,22 +57,22 @@
         "watch:labextension": "jupyter-builder watch ."
     },
     "dependencies": {
-        "@jupyterlab/application": "^4.0.0",
-        "@jupyterlab/apputils": "^4.0.0",
-        "@jupyterlab/coreutils": "^6.0.0",
-        "@jupyterlab/services": "^7.0.0",
-        "@jupyterlab/settingregistry": "^4.0.0",
-        "@jupyterlab/translation": "^4.0.0",
-        "@jupyterlab/ui-components": "^4.0.0",
+        "@jupyterlab/application": "^4.6.0",
+        "@jupyterlab/apputils": "^4.7.0",
+        "@jupyterlab/coreutils": "^6.6.0",
+        "@jupyterlab/services": "^7.6.0",
+        "@jupyterlab/settingregistry": "^4.6.0",
+        "@jupyterlab/translation": "^4.6.0",
+        "@jupyterlab/ui-components": "^4.6.0",
         "@lumino/messaging": "^2.0.0",
         "@lumino/widgets": "^2.0.0",
         "qrcode-generator": "^1.4.4"
     },
     "devDependencies": {
         "@eslint/js": "^9.0.0",
-        "@jupyter/builder": "^1.0.0",
-        "@jupyter/eslint-plugin": "^0.0.5",
-        "@jupyterlab/testutils": "^4.0.0",
+        "@jupyter/builder": "^1.2.0",
+        "@jupyter/eslint-plugin": "^1.1.0",
+        "@jupyterlab/testutils": "^4.6.0",
         "@types/jest": "^29.2.0",
         "@types/json-schema": "^7.0.11",
         "@types/react": "^18.0.26",
@@ -157,5 +157,8 @@
             "selector-no-vendor-prefix": null,
             "value-no-vendor-prefix": null
         }
+    },
+    "allowScripts": {
+        "@fortawesome/fontawesome-free": true
     }
 }

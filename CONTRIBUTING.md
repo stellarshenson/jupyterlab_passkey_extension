@@ -59,6 +59,17 @@ In development mode, you will also need to remove the symlink created by `jupyte
 command. To find its location, you can run `jupyter labextension list` to figure out where the `labextensions`
 folder is located. Then you can remove the symlink named `jupyterlab_passkey_extension` within that folder.
 
+## Endpoint authentication
+
+Every verb method of every handler must carry a `@tornado.web.authenticated`
+decorator, or, if the endpoint is meant to be public, an explicit
+`@allow_unauthenticated`/`@ws_authenticated` decorator from
+`jupyter_server.auth.decorator`. The `build` workflow enforces this by running:
+
+```sh
+python .github/scripts/check_auth.py
+```
+
 ## Testing the extension
 
 ### Server tests

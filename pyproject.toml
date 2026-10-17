@@ -1,11 +1,12 @@
 [build-system]
-requires = ["hatchling>=1.5.0", "hatch-nodejs-version>=0.3.2", "jupyter-builder>=1.0.0,<2"]
+requires = ["hatchling>=1.5.0", "hatch-nodejs-version>=0.3.2", "jupyter-builder>=1.2.0,<2"]
 build-backend = "hatchling.build"
 
 [project]
 name = "jupyterlab_passkey_extension"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 classifiers = [
     "Framework :: Jupyter",
@@ -13,7 +14,6 @@ classifiers = [
     "Framework :: Jupyter :: JupyterLab :: 4",
     "Framework :: Jupyter :: JupyterLab :: Extensions",
     "Framework :: Jupyter :: JupyterLab :: Extensions :: Prebuilt",
-    "License :: OSI Approved :: BSD License",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -23,19 +23,19 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "jupyter_server>=2.4.0,<3",
+    "jupyter_server>=2.21,<3",
     # The jupyterlab-passkey CLI posts its trigger to this extension's ingest endpoint
     # to raise the notification button that supplies WebAuthn's user gesture. The
     # console script ships unconditionally, so this is a hard requirement, not an
     # extra - without it the very first command dies with a 404.
-    "jupyterlab_notifications_extension>=1.2",
+    "jupyterlab_notifications_extension>=1.2,<2",
     # The `render` endpoint draws a staged code to a distorted PNG the `show` command
     # displays, so the code never reaches the page as text. Pillow >= 10.1 provides
     # ImageFont.load_default(size=...), so no font file has to ship with the package.
-    "Pillow>=10.1",
+    "Pillow>=10.1,<14",
     # The vault: AES-256-GCM for the entries and the wrapped data key, Scrypt for the
     # recovery slot, HKDF for a passkey slot's PRF.
-    "cryptography>=42"
+    "cryptography>=50.0,<51"
 ]
 dynamic = ["version", "description", "authors", "urls", "keywords"]
 
@@ -44,15 +44,15 @@ jupyterlab-passkey = "jupyterlab_passkey_extension.cli:main"
 
 [project.optional-dependencies]
 dev = [
-    "jupyterlab>=4",
-    "jupyter-builder>=1.0.0",
+    "jupyterlab>=4.6,<5",
+    "jupyter-builder>=1.2,<2",
 ]
 test = [
-    "coverage",
-    "pytest",
-    "pytest-asyncio",
-    "pytest-cov",
-    "pytest-jupyter[server]>=0.6.0",
+    "coverage>=7.16,<8",
+    "pytest>=9.1,<10",
+    "pytest-asyncio>=1.4,<2",
+    "pytest-cov>=7.1,<8",
+    "pytest-jupyter[server]>=0.11,<1",
     # The Galata test server: ui-tests/jupyter_server_test_config.py imports jupyterlab.galata
     "jupyterlab>=4.6,<5"
 ]
@@ -100,7 +100,7 @@ version_cmd = "hatch version"
 
 [tool.jupyter-releaser.hooks]
 before-build-npm = [
-    "python -m pip install 'jupyter-builder>=1.0.0,<2'",
+    "python -m pip install 'jupyter-builder>=1.2.0,<2'",
     "jlpm",
     "jlpm build:prod"
 ]

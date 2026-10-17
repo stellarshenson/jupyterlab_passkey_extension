@@ -48,6 +48,11 @@ jobs:
         jupyter labextension list 2>&1 | grep -ie "jupyterlab_passkey_extension.*OK"
         python -m jupyterlab.browser_check
 
+    - name: Check that all endpoints are authenticated
+      run: |
+        set -eux
+        python .github/scripts/check_auth.py
+
     - name: Package the extension
       run: |
         set -eux
