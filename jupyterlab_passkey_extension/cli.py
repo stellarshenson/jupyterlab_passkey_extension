@@ -115,17 +115,75 @@ def _ignore_hangup() -> None:
 
 
 def _server_list() -> dict:
-    """The running server's own record: port, base_url, and its token."""
+    """The lab's server record: port, base_url, and its token.
+
+    `jupyter server list --json` prints one record per line, one per running
+    server. A leftover test server can sort before the lab, so the first line is
+    not necessarily the server the person is looking at. Pick the record named by
+    the environment first: JUPYTERHUB_SERVICE_PREFIX or JUPYTER_PORT. Without one,
+    prefer a record with a token - a tokenless leftover is a Galata test server -
+    and fall back to the first.
+    """
     try:
         out = subprocess.run(
             ["jupyter", "server", "list", "--json"],
             capture_output=True, text=True, timeout=5,
         )
-        if out.returncode == 0 and out.stdout.strip():
-            return json.loads(out.stdout.strip().split("\n")[0])
-    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+        if out.returncode == 0:
+            records = []
+            for line in out.stdout.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    records.append(record)
+            return _pick_server(records)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return {}
+
+
+def _pick_server(records: list[dict]) -> dict:
+    """The lab's record among every running server's record.
+
+    A match on the hub prefix or the port settles it. Both take the first record
+    that carries a token, because a tokenless record is a test server answering
+    "I want none", not the server being used.
+    """
+    if not records:
+        return {}
+
+    def first_with_token(matches: list[dict]) -> dict:
+        return next((r for r in matches if r.get("token")), matches[0])
+
+    prefix = os.environ.get("JUPYTERHUB_SERVICE_PREFIX", "")
+    if prefix:
+        wanted = prefix.rstrip("/")
+        matches = [
+            r for r in records
+            if str(r.get("base_url", "")).rstrip("/") == wanted
+        ]
+        if matches:
+            return first_with_token(matches)
+
+    port = os.environ.get("JUPYTER_PORT", "")
+    if port:
+        try:
+            wanted_port = int(port)
+        except ValueError:
+            wanted_port = None
+        if wanted_port is not None:
+            matches = [r for r in records if r.get("port") == wanted_port]
+            if matches:
+                return first_with_token(matches)
+
+    with_token = [r for r in records if r.get("token")]
+    if with_token:
+        return with_token[0]
+    return records[0]
 
 
 def _base_url(info: dict) -> str:

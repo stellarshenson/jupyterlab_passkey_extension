@@ -993,13 +993,53 @@ def test_wait_times_out_when_nothing_is_relayed(relay_dir):
 
 
 def _server_list(monkeypatch, record, argv_sink=None):
-    """Stub `jupyter server list`, recording the argv it was actually asked to run."""
+    """Stub `jupyter server list`, recording the argv it was actually asked to run.
+
+    `record` is one server record or a list of them; the real command prints one
+    JSON object per line, one per running server.
+    """
+    records = record if isinstance(record, list) else [record]
+
     def fake_run(cmd, *a, **k):
         if argv_sink is not None:
             argv_sink.extend(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(record), stderr="")
+        stdout = "\n".join(json.dumps(r) for r in records)
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+
+def test_hub_prefix_picks_the_lab_record_not_the_first(monkeypatch):
+    # The reported defect: a leftover Galata test server at port 33935 with no
+    # token sorted before the lab, so unlock and add raised their notification
+    # there and the lab at 8888 showed nothing.
+    monkeypatch.delenv("JUPYTER_PORT", raising=False)
+    monkeypatch.setenv("JUPYTERHUB_SERVICE_PREFIX", "/user/bob/")
+    test_server = {"port": 33935, "base_url": "/", "token": ""}
+    lab = {"port": 8888, "base_url": "/user/bob/", "token": "T"}
+    _server_list(monkeypatch, [test_server, lab])
+
+    assert cli._server_list() == lab
+
+
+def test_jupyter_port_picks_the_lab_record_when_several_servers_run(monkeypatch):
+    monkeypatch.delenv("JUPYTERHUB_SERVICE_PREFIX", raising=False)
+    monkeypatch.setenv("JUPYTER_PORT", "8888")
+    test_server = {"port": 33935, "base_url": "/", "token": ""}
+    lab = {"port": 8888, "base_url": "/user/bob/", "token": "T"}
+    _server_list(monkeypatch, [test_server, lab])
+
+    assert cli._server_list() == lab
+
+
+def test_the_token_picks_the_lab_record_when_no_environment_names_it(monkeypatch):
+    monkeypatch.delenv("JUPYTERHUB_SERVICE_PREFIX", raising=False)
+    monkeypatch.delenv("JUPYTER_PORT", raising=False)
+    test_server = {"port": 33935, "base_url": "/", "token": ""}
+    lab = {"port": 8888, "base_url": "/user/bob/", "token": "T"}
+    _server_list(monkeypatch, [test_server, lab])
+
+    assert cli._server_list() == lab
 
 
 def test_server_list_is_asked_for_json(monkeypatch):

@@ -101,6 +101,11 @@ The vault server side, CLI and Python API
   - root-cause: 2026-10-03T18:50:28Z @kj the unlock-methods change reworded the README sentence and the client signature, and left these three lines as they were
   - log: 2026-10-03T18:50:28Z @kj added
   - log: 2026-10-03T19:00:33Z @kj closed
+- [ ] `DEF-VAULT-34` **CLI notification goes to a leftover test server when several servers run** - CRITICAL; On a workstation with more than one Jupyter server running, jupyterlab-passkey vault unlock and vault add ... --in-browser raise no notification in the lab at port 8888. A control jupyterlab-notify -m test --now appears at once. Every browser-step command is affected: unlock, add, copy, show and passphrase. The CLI prints the click line, the request goes to another server, and the lab shows nothing.
+  - repro: leave a second jupyter-lab running, confirm jupyter server list --json lists it before the lab, run jupyterlab-passkey vault unlock; the CLI prints the click line and the lab shows no notification
+  - test-tags: UNIT, MANUAL
+  - root-cause: 2026-10-17T20:00:21Z @kj _server_list takes the first record; a leftover test server can sort first
+  - log: 2026-10-17T20:00:21Z @kj added; reason: CRITICAL: the browser step is raised on the wrong server; unlock and add silently do nothing in the lab
 
 ## Vault panel `PANEL`
 
