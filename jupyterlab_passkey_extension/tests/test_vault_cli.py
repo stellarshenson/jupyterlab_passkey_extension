@@ -589,6 +589,17 @@ def test_the_server_is_found_once_per_process(monkeypatch):
     assert found == [1]
 
 
+def test_a_server_the_cli_cannot_tell_is_a_client_error_not_an_exit(monkeypatch):
+    # The Python Vault class runs in a notebook kernel, where SystemExit is the wrong
+    # answer: the refusal must arrive as the class's own error.
+    def refuse():
+        raise SystemExit("cannot tell which running Jupyter server is the lab")
+
+    monkeypatch.setattr(cli, "_server_list", refuse)
+    with pytest.raises(client.VaultClientError, match="cannot tell which running"):
+        client.request("GET", "status")
+
+
 @pytest.fixture
 def local_server():
     """A real HTTP server on loopback that records each request's path and headers."""

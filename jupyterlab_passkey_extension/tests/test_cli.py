@@ -1014,6 +1014,7 @@ def test_hub_prefix_picks_the_lab_record_not_the_first(monkeypatch):
     # token sorted before the lab, so unlock and add raised their notification
     # there and the lab at 8888 showed nothing.
     monkeypatch.delenv("JUPYTER_PORT", raising=False)
+    monkeypatch.delenv("JUPYTER_SERVER_URL", raising=False)
     monkeypatch.setenv("JUPYTERHUB_SERVICE_PREFIX", "/user/bob/")
     test_server = {"port": 33935, "base_url": "/", "token": ""}
     lab = {"port": 8888, "base_url": "/user/bob/", "token": "T"}
@@ -1024,6 +1025,7 @@ def test_hub_prefix_picks_the_lab_record_not_the_first(monkeypatch):
 
 def test_jupyter_port_picks_the_lab_record_when_several_servers_run(monkeypatch):
     monkeypatch.delenv("JUPYTERHUB_SERVICE_PREFIX", raising=False)
+    monkeypatch.delenv("JUPYTER_SERVER_URL", raising=False)
     monkeypatch.setenv("JUPYTER_PORT", "8888")
     test_server = {"port": 33935, "base_url": "/", "token": ""}
     lab = {"port": 8888, "base_url": "/user/bob/", "token": "T"}
@@ -1035,11 +1037,87 @@ def test_jupyter_port_picks_the_lab_record_when_several_servers_run(monkeypatch)
 def test_the_token_picks_the_lab_record_when_no_environment_names_it(monkeypatch):
     monkeypatch.delenv("JUPYTERHUB_SERVICE_PREFIX", raising=False)
     monkeypatch.delenv("JUPYTER_PORT", raising=False)
+    monkeypatch.delenv("JUPYTER_SERVER_URL", raising=False)
     test_server = {"port": 33935, "base_url": "/", "token": ""}
     lab = {"port": 8888, "base_url": "/user/bob/", "token": "T"}
     _server_list(monkeypatch, [test_server, lab])
 
     assert cli._server_list() == lab
+
+
+def test_jupyter_server_url_picks_the_second_token_carrying_record(monkeypatch):
+    monkeypatch.setenv("JUPYTER_SERVER_URL", "http://127.0.0.1:8888/")
+    monkeypatch.delenv("JUPYTERHUB_SERVICE_PREFIX", raising=False)
+    monkeypatch.delenv("JUPYTER_PORT", raising=False)
+    other = {"port": 8890, "base_url": "/", "token": "SECOND"}
+    watched = {"port": 8888, "base_url": "/", "token": "WATCHED"}
+    _server_list(monkeypatch, [other, watched])
+
+    assert cli._server_list() == watched
+
+
+def test_jupyter_server_url_picks_the_tokenless_watched_lab(monkeypatch):
+    monkeypatch.setenv("JUPYTER_SERVER_URL", "http://127.0.0.1:8888/")
+    monkeypatch.delenv("JUPYTERHUB_SERVICE_PREFIX", raising=False)
+    monkeypatch.delenv("JUPYTER_PORT", raising=False)
+    watched = {"port": 8888, "base_url": "/", "token": ""}
+    other = {"port": 8890, "base_url": "/", "token": "OTHER"}
+    _server_list(monkeypatch, [watched, other])
+
+    assert cli._server_list() == watched
+
+
+@pytest.mark.parametrize("variable, value", [
+    ("JUPYTER_SERVER_URL", "http://127.0.0.1:8888/user/bob/"),
+    ("JUPYTERHUB_SERVICE_PREFIX", "/user/bob/"),
+    ("JUPYTER_PORT", "8888"),
+])
+def test_a_named_lab_that_is_not_running_stops_instead_of_using_another_server(
+        monkeypatch, variable, value):
+    # The lab the environment names is down; the test server that still runs must
+    # not receive the request in its place.
+    monkeypatch.setenv(variable, value)
+    test_server = {"port": 33935, "base_url": "/", "token": ""}
+    other_lab = {"port": 8890, "base_url": "/", "token": "OTHER"}
+    _server_list(monkeypatch, [test_server, other_lab])
+
+    with pytest.raises(SystemExit, match=f"no running Jupyter server matches {variable}="):
+        cli._server_list()
+
+
+def test_jupyter_server_url_outranks_the_other_variables(monkeypatch):
+    monkeypatch.setenv("JUPYTER_SERVER_URL", "http://127.0.0.1:8888/user/bob/")
+    monkeypatch.setenv("JUPYTERHUB_SERVICE_PREFIX", "/")
+    monkeypatch.setenv("JUPYTER_PORT", "33935")
+    test_server = {"port": 33935, "base_url": "/", "token": ""}
+    lab = {"port": 8888, "base_url": "/user/bob/", "token": "T"}
+    _server_list(monkeypatch, [test_server, lab])
+
+    assert cli._server_list() == lab
+
+
+@pytest.mark.parametrize("records", [
+    [{"port": 33935, "base_url": "/", "token": ""}],
+    [{"port": 8888, "base_url": "/", "token": "A"}, {"port": 8890, "base_url": "/", "token": "B"}],
+])
+def test_with_no_variable_set_the_cli_stops_unless_one_server_carries_a_token(
+        monkeypatch, records):
+    # A tokenless server is a test server; two token-carrying servers leave the lab
+    # unnamed. Either way the CLI does not guess.
+    _server_list(monkeypatch, records)
+
+    with pytest.raises(SystemExit, match="cannot tell which running Jupyter server is the lab"):
+        cli._server_list()
+
+
+def test_an_empty_server_list_with_no_variable_set_stops(monkeypatch):
+    # The env fallback would otherwise guess port 8888, which a test server can hold.
+    monkeypatch.setattr(
+        cli.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError)
+    )
+
+    with pytest.raises(SystemExit, match="reports no server"):
+        cli._server()
 
 
 def test_server_list_is_asked_for_json(monkeypatch):
@@ -1090,6 +1168,8 @@ def test_tokenless_server_yields_no_token(monkeypatch):
     # must resolve to None so no Authorization header is sent at all.
     for var in ("JUPYTERHUB_API_TOKEN", "JPY_API_TOKEN", "JUPYTER_TOKEN"):
         monkeypatch.delenv(var, raising=False)
+    # A tokenless server is used only when the environment names it.
+    monkeypatch.setenv("JUPYTER_PORT", "8888")
     _server_list(monkeypatch, {"port": 8888, "base_url": "/", "token": ""})
 
     assert cli._server()[1] is None
@@ -1102,6 +1182,8 @@ def test_a_tokenless_server_is_not_overridden_by_a_stale_env_token(monkeypatch):
     for var in ("JUPYTERHUB_API_TOKEN", "JPY_API_TOKEN"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("JUPYTER_TOKEN", "STALE")
+    # A tokenless server is used only when the environment names it.
+    monkeypatch.setenv("JUPYTER_PORT", "8888")
     _server_list(monkeypatch, {"port": 8888, "base_url": "/", "token": ""})
 
     assert cli._server()[1] is None
@@ -1112,6 +1194,7 @@ def test_generic_env_token_is_used_when_there_is_no_server_record(monkeypatch):
     for var in ("JUPYTERHUB_API_TOKEN", "JPY_API_TOKEN"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("JUPYTER_TOKEN", "ENVTOK")
+    monkeypatch.setenv("JUPYTER_PORT", "8888")
     monkeypatch.setattr(
         cli.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError)
     )

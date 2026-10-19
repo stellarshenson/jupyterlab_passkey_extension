@@ -101,11 +101,20 @@ The vault server side, CLI and Python API
   - root-cause: 2026-10-03T18:50:28Z @kj the unlock-methods change reworded the README sentence and the client signature, and left these three lines as they were
   - log: 2026-10-03T18:50:28Z @kj added
   - log: 2026-10-03T19:00:33Z @kj closed
-- [ ] `DEF-VAULT-34` **CLI notification goes to a leftover test server when several servers run** - CRITICAL; On a workstation with more than one Jupyter server running, jupyterlab-passkey vault unlock and vault add ... --in-browser raise no notification in the lab at port 8888. A control jupyterlab-notify -m test --now appears at once. Every browser-step command is affected: unlock, add, copy, show and passphrase. The CLI prints the click line, the request goes to another server, and the lab shows nothing.
+- [x] `DEF-VAULT-34` **CLI notification goes to a leftover test server when several servers run** - CRITICAL; On a workstation with more than one Jupyter server running, jupyterlab-passkey vault unlock and vault add ... --in-browser raise no notification in the lab at port 8888. A control jupyterlab-notify -m test --now appears at once. Every browser-step command is affected: unlock, add, copy, show and passphrase. The CLI prints the click line, the request goes to another server, and the lab shows nothing.
+  - evidence: test_hub_prefix_picks_the_lab_record_not_the_first passes, pytest 465; live _server_list returns port 8888 and /user/konrad.jelen/; commit 045b525; Build 39064995536 and Check Release 39064995532 green
   - repro: leave a second jupyter-lab running, confirm jupyter server list --json lists it before the lab, run jupyterlab-passkey vault unlock; the CLI prints the click line and the lab shows no notification
   - test-tags: UNIT, MANUAL
   - root-cause: 2026-10-17T20:00:21Z @kj _server_list takes the first record; a leftover test server can sort first
   - log: 2026-10-17T20:00:21Z @kj added; reason: CRITICAL: the browser step is raised on the wrong server; unlock and add silently do nothing in the lab
+  - log: 2026-10-17T20:13:43Z @kj closed
+- [x] `DEF-VAULT-35-GALATA-ENV` **Galata CLI tests post to the developer's lab** - MAJOR; ui-tests/tests/cli.spec.ts removes JUPYTERHUB_SERVICE_PREFIX from the CLI's environment but not JUPYTER_SERVER_URL; _pick_server checks JUPYTER_SERVER_URL first, so a suite started from a JupyterLab terminal posts its test notifications into the developer's real tab
+  - evidence: JUPYTER_SERVER_URL added to DISCOVERY_ENV; with the Galata environment the CLI chooses the test server 8898, not the lab; Galata 40 passed on port 8911
+  - repro: from a JupyterLab terminal: env -u JUPYTERHUB_SERVICE_PREFIX JUPYTER_PORT=<test port>, then _server_list returns 8888 /user/konrad.jelen/ instead of the test server
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-10-19T15:08:35Z @kj DISCOVERY_ENV in cli.spec.ts lacks JUPYTER_SERVER_URL, which the server-selection change made the first variable _pick_server reads
+  - log: 2026-10-19T15:08:35Z @kj added
+  - log: 2026-10-19T15:11:18Z @kj closed
 
 ## Vault panel `PANEL`
 

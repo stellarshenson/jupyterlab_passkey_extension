@@ -367,7 +367,7 @@ This section describes what each client adds to the REST API.
 
 The CLI is `jupyterlab-passkey vault <command>`. Its full reference is [cli-reference.md](cli-reference.md).
 
-- **Server** - the first server that `jupyter server list` reports, with that server's token
+- **Server** - chosen by the [CLI reference](cli-reference.md#how-the-server-is-found) selection rule, with that server's token
 - **No secret on the command line** - a new secret comes from a hidden prompt typed twice, from stdin, from a browser dialog with `--in-browser`, or from `--generate`
 - **Locked vault** - a read raises the unlock notification, then runs once more
 - **Waiting** - a browser step waits 120 s for the click by default, 600 s for `vault init` and `vault passkey add`
@@ -406,7 +406,7 @@ This section states what the vault does not protect against.
 - **Shared keyring** - with the keyctl holder, other containers that run as the same user id in the same user namespace can read the held key
 - **Staged values** - an uncollected `copy` or `show` value outlives `vault lock`, see [7. Reading values](#7.-Reading-values)
 - **Restart** - with keyctl or gpg-agent a key can outlive a server restart until the unlock duration ends
-- **Two servers** - the CLI uses the first server; with two servers the notification can appear in a tab nobody watches, and the command times out
+- **Two servers** - with several servers running and none named by the environment, the CLI stops with an error instead of choosing one, see [How the server is found](cli-reference.md#how-the-server-is-found)
 
 ## 11. Configuration
 

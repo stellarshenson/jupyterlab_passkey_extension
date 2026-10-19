@@ -35,7 +35,10 @@ class VaultLocked(VaultClientError):
 
 def request(method, action, body=None, params=None):
     """Call `vault/<action>`; returns the JSON answer, or None for an empty one."""
-    base, token = _cli._server()
+    try:
+        base, token = _cli._server()
+    except SystemExit as e:
+        raise VaultClientError(str(e))
     url = f"{base}/jupyterlab-passkey-extension/vault/{action}"
     if params:
         url += "?" + urllib.parse.urlencode(params)

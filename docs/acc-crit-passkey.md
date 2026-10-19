@@ -1839,6 +1839,22 @@ The notification that the CLI and the Python Vault class raise in the JupyterLab
   - mechanism: 2026-10-03T20:45:14Z @kj the parent parser every subcommand takes carries --caller; main() puts a stated name in JLAB_PASSKEY_CALLER, which _caller reads
   - log: 2026-10-03T20:45:14Z @kj added
   - log: 2026-10-03T20:54:35Z @kj closed
+- [x] `ACC-NOTIFY-239` **The CLI raises the browser step on the lab's own server** - HIGH; With several servers running, the CLI picks the record matching JUPYTER_SERVER_URL's port and base URL path, else the record matching JUPYTERHUB_SERVICE_PREFIX, else the record matching JUPYTER_PORT, else the first record carrying a token, else the first record. A leftover test server no longer receives the notification when the lab carries a token; a tokenless lab falls back to the first record.
+  - overridden-by: ACC-NOTIFY-240-SERVER-NAMED
+  - evidence: the five selection tests pass; pytest 467 passed; commit 045b525
+  - test: test_hub_prefix_picks_the_lab_record_not_the_first, test_jupyter_port_picks_the_lab_record_when_several_servers_run, test_the_token_picks_the_lab_record_when_no_environment_names_it, test_jupyter_server_url_picks_the_second_token_carrying_record, test_jupyter_server_url_picks_the_tokenless_watched_lab; live check returns port 8888
+  - test-tags: UNIT, MANUAL
+  - log: 2026-10-17T20:13:39Z @kj added
+  - log: 2026-10-17T20:13:43Z @kj closed
+  - log: 2026-10-17T20:27:48Z @kj edited text "With several servers running, the CLI picks the record whose base_url matches JUPYTERHUB_SERVICE_PREFIX, else the record whose port matches JUPYTER_PORT, else the first record with a token; a leftover test server no longer receives the notification" -> "With several servers running, the CLI picks the record matching JUPYTER_SERVER_URL's port and base URL path, else the record matching JUPYTERHUB_SERVICE_PREFIX, else the record matching JUPYTER_PORT, else the first record carrying a token, else the first record. A leftover test server no longer receives the notification when the lab carries a token; a tokenless lab falls back to the first record."; test "test_hub_prefix_picks_the_lab_record_not_the_first; test_jupyter_port_picks_the_lab_record_when_several_servers_run; test_the_token_picks_the_lab_record_when_no_environment_names_it; live check returns port 8888" -> "test_hub_prefix_picks_the_lab_record_not_the_first, test_jupyter_port_picks_the_lab_record_when_several_servers_run, test_the_token_picks_the_lab_record_when_no_environment_names_it, test_jupyter_server_url_picks_the_second_token_carrying_record, test_jupyter_server_url_picks_the_tokenless_watched_lab; live check returns port 8888"; evidence "test_hub_prefix_picks_the_lab_record_not_the_first, test_jupyter_port_picks_the_lab_record_when_several_servers_run and test_the_token_picks_the_lab_record_when_no_environment_names_it pass; live _server_list returns port 8888 and /user/konrad.jelen/; commit 045b525" -> "the five selection tests pass; pytest 467 passed; commit 045b525"; reason: the criterion must state the full selection order and the tokenless last resort
+- [x] `ACC-NOTIFY-240-SERVER-NAMED` **The CLI posts only to the server its environment names** - HIGH; JUPYTER_SERVER_URL port and base URL path, else JUPYTERHUB_SERVICE_PREFIX, else JUPYTER_PORT names the lab; no matching running server: exit 1 listing the running servers; no variable set: the one server carrying a token, else exit 1; empty server list, no variable: exit 1; tokenless test server used only when named
+  - evidence: the five tests pass; pytest 475 passed; Galata 40 passed on port 8911; live from a lab terminal 8888 /user/konrad.jelen/ chosen while a tokenless test server ran on 8898
+  - overrides: ACC-NOTIFY-239
+  - test: test_a_named_lab_that_is_not_running_stops_instead_of_using_another_server, test_jupyter_server_url_outranks_the_other_variables, test_with_no_variable_set_the_cli_stops_unless_one_server_carries_a_token, test_an_empty_server_list_with_no_variable_set_stops, test_a_server_the_cli_cannot_tell_is_a_client_error_not_an_exit; Galata cli.spec on port 8911
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-10-19T15:08:26Z @kj _pick_server takes the first set variable and returns only a record matching it, else SystemExit; with none set, the single token-carrying record; _base_url refuses the port 8888 guess when no variable is set; the Vault client turns the SystemExit into VaultClientError
+  - log: 2026-10-19T15:08:26Z @kj added
+  - log: 2026-10-19T15:11:17Z @kj closed
 
 ## Lint `LINT`
 

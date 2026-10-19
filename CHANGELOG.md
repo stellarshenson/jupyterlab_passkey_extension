@@ -2,6 +2,31 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.49] - 2026-10-19
+
+Makes the CLI post only to the Jupyter server its environment names, so a notification can no longer reach a leftover test server, and lets every subcommand state who asks.
+
+### Added
+
+- Every subcommand takes `--caller NAME`, which states the name a notification starts with. It outranks `JLAB_PASSKEY_CALLER`; on `vault exec` it goes before `--`
+- The line the CLI prints at the terminal names the server the notification went to
+- The agent skill tells agents to pass `--caller`, to keep the variables that name the lab, and to ask the user when the CLI cannot tell which server is the lab
+
+### Changed
+
+- The CLI posts only to the server its environment names: the port and base URL path of `JUPYTER_SERVER_URL`, which a JupyterLab terminal sets, else `JUPYTERHUB_SERVICE_PREFIX`, else `JUPYTER_PORT`. With none of them set it uses the one running server that carries a token. In every other case it stops with an error that lists the running servers
+- When `jupyter server list` reports no server and neither `JUPYTER_PORT` nor `JUPYTERHUB_SERVICE_PREFIX` is set, the CLI stops instead of trying port 8888
+- The Python `Vault` class raises `VaultClientError` when the server cannot be told, instead of exiting
+- Command labels, dialog titles, dialog button labels and aria labels go through the lab's translator, and the commands describe their arguments with a JSON schema
+- Extension template v4.6.5 and Makefile 1.46: JupyterLab packages `^4.6`, `jupyter_server >=2.21,<3`, and a build check that every endpoint requires authentication
+
+### Fixed
+
+- With several Jupyter servers running, the CLI raised the notification on the first server `jupyter server list` reported, such as a leftover test server, and the lab showed nothing
+- The Galata CLI tests started from a JupyterLab terminal posted their notifications into the developer's own lab
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.1.42] - 2026-10-03
 
 Names who asks in every notification the CLI raises, so the person who clicks knows which project raised it.
@@ -12,8 +37,6 @@ Names who asks in every notification the CLI raises, so the person who clicks kn
 - The name is the project the command runs in: the nearest directory, from the working directory upwards, that holds `.git`, or the working directory when none does
 - The environment variable `JLAB_PASSKEY_CALLER` states another name. The name is shown as one line of at most 60 characters. It is the caller's own statement and proves nothing
 - The agent skill that ships with the package tells agents that a notification must name who asks, and how to state the name
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.1.40] - 2026-10-03
 

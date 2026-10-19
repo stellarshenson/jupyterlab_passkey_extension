@@ -42,6 +42,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from . import relay
@@ -119,10 +120,7 @@ def _server_list() -> dict:
 
     `jupyter server list --json` prints one record per line, one per running
     server. A leftover test server can sort before the lab, so the first line is
-    not necessarily the server the person is looking at. Pick the record named by
-    the environment first: JUPYTERHUB_SERVICE_PREFIX or JUPYTER_PORT. Without one,
-    prefer a record with a token - a tokenless leftover is a Galata test server -
-    and fall back to the first.
+    not necessarily the lab; _pick_server chooses.
     """
     try:
         out = subprocess.run(
@@ -149,9 +147,13 @@ def _server_list() -> dict:
 def _pick_server(records: list[dict]) -> dict:
     """The lab's record among every running server's record.
 
-    A match on the hub prefix or the port settles it. Both take the first record
-    that carries a token, because a tokenless record is a test server answering
-    "I want none", not the server being used.
+    The environment names the lab: JUPYTER_SERVER_URL's port and base URL path
+    (a JupyterLab terminal sets it), else JUPYTERHUB_SERVICE_PREFIX, else
+    JUPYTER_PORT - the first of these that is set. Only a record matching it is
+    used; when none matches, the CLI stops instead of posting to another server.
+    With no variable set, the one record carrying a token is used, and with none
+    or several the CLI stops. So a server that asks for no token, which every
+    Galata test server is, receives a request only when the environment names it.
     """
     if not records:
         return {}
@@ -159,39 +161,70 @@ def _pick_server(records: list[dict]) -> dict:
     def first_with_token(matches: list[dict]) -> dict:
         return next((r for r in matches if r.get("token")), matches[0])
 
+    def path(value: object) -> str:
+        return str(value).rstrip("/") or "/"
+
+    running = ", ".join(
+        f"{r.get('port')}{r.get('base_url', '/')}" + ("" if r.get("token") else " (no token)")
+        for r in records
+    )
+
+    named = None
+    server_url = os.environ.get("JUPYTER_SERVER_URL", "")
+    if server_url:
+        try:
+            parsed = urllib.parse.urlsplit(server_url)
+            parsed_port = parsed.port
+        except ValueError:
+            parsed_port = None
+        if parsed_port is not None:
+            named = (f"JUPYTER_SERVER_URL={server_url}", [
+                r for r in records
+                if r.get("port") == parsed_port
+                and path(r.get("base_url", "")) == path(parsed.path)
+            ])
     prefix = os.environ.get("JUPYTERHUB_SERVICE_PREFIX", "")
-    if prefix:
-        wanted = prefix.rstrip("/")
-        matches = [
-            r for r in records
-            if str(r.get("base_url", "")).rstrip("/") == wanted
-        ]
+    if named is None and prefix:
+        named = (f"JUPYTERHUB_SERVICE_PREFIX={prefix}", [
+            r for r in records if path(r.get("base_url", "")) == path(prefix)
+        ])
+    port = os.environ.get("JUPYTER_PORT", "")
+    if named is None and port:
+        named = (f"JUPYTER_PORT={port}", [
+            r for r in records if str(r.get("port")) == port.strip()
+        ])
+
+    if named is not None:
+        variable, matches = named
         if matches:
             return first_with_token(matches)
-
-    port = os.environ.get("JUPYTER_PORT", "")
-    if port:
-        try:
-            wanted_port = int(port)
-        except ValueError:
-            wanted_port = None
-        if wanted_port is not None:
-            matches = [r for r in records if r.get("port") == wanted_port]
-            if matches:
-                return first_with_token(matches)
+        raise SystemExit(
+            f"no running Jupyter server matches {variable} - is JupyterLab running? "
+            f"Running: {running}"
+        )
 
     with_token = [r for r in records if r.get("token")]
-    if with_token:
+    if len(with_token) == 1:
         return with_token[0]
-    return records[0]
+    raise SystemExit(
+        "cannot tell which running Jupyter server is the lab - run the command in a "
+        f"JupyterLab terminal, or set JUPYTER_PORT to the lab's port. Running: {running}"
+    )
 
 
 def _base_url(info: dict) -> str:
     """Where the server answers, always on loopback."""
     if info:
         return f"http://127.0.0.1:{info.get('port', 8888)}{info.get('base_url', '/').rstrip('/')}"
-    port = os.environ.get("JUPYTER_PORT", "8888")
-    return f"http://127.0.0.1:{port}{os.environ.get('JUPYTERHUB_SERVICE_PREFIX', '').rstrip('/')}"
+    port = os.environ.get("JUPYTER_PORT", "")
+    prefix = os.environ.get("JUPYTERHUB_SERVICE_PREFIX", "")
+    if not port and not prefix:
+        # Nothing names the lab, and 8888 can be a test server's port.
+        raise SystemExit(
+            "`jupyter server list` reports no server and neither JUPYTER_PORT nor "
+            "JUPYTERHUB_SERVICE_PREFIX names one - is JupyterLab running?"
+        )
+    return f"http://127.0.0.1:{port or 8888}{prefix.rstrip('/')}"
 
 
 def _token(info: dict) -> str | None:
@@ -327,7 +360,7 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
     # stderr (a full log volume, a pipe whose reader has gone) must not report the
     # trigger as failed - `copy`'s caller answers that by unstaging the secret the
     # live button is about to ask for. See _say.
-    _say(f"click '{label}' in your JupyterLab tab")
+    _say(f"click '{label}' in your JupyterLab tab - the notification went to {base}")
 
 
 def _wait(nonce: str, kind: str, timeout: float, on_timeout: str,
@@ -801,14 +834,20 @@ server (the reason is on stderr), 2 an argument the parser rejects; `vault exec`
 exits with its command's status. Only the result goes to stdout, so `$(...)` captures it
 clean and progress chatter cannot contaminate it.
 
-The server is the first one `jupyter server list` reports. With two servers running, the
-notification can appear in a tab nobody watches, and the command times out.
+The server is the one the environment names: JUPYTER_SERVER_URL's port and base URL path (a
+JupyterLab terminal sets it), else JUPYTERHUB_SERVICE_PREFIX, else JUPYTER_PORT. When no running
+server matches, the command stops. With none of them set, it uses the one running server that
+carries a token, and stops when there are none or several. A server that asks for no token, as
+a test server does, is used only when one of these variables names it.
 
 environment:
   JUPYTERHUB_API_TOKEN, JPY_API_TOKEN  the token; under JupyterHub it outranks the server's own
   JUPYTER_TOKEN                        the token when `jupyter server list` reports no server
+  JUPYTER_SERVER_URL                   the lab a JupyterLab terminal sets: the command uses the
+                                       running server with its port and base URL path
   JUPYTER_PORT, JUPYTERHUB_SERVICE_PREFIX
-                                       where the server answers when the list reports none
+                                       name the lab when JUPYTER_SERVER_URL is not set, and give
+                                       the address when the list reports none
   JLAB_PASSKEY_CALLER                  who a notification says is asking, for a caller that cannot
                                        pass --caller (default: the project directory the command
                                        runs in)

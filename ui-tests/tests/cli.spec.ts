@@ -85,18 +85,19 @@ async function addAuthenticator(page: any, hasPrf: boolean): Promise<void> {
 }
 
 /**
- * The credentials cli.py would reach for when `jupyter server list` comes back empty.
+ * The variables that name the developer's own lab to cli.py, and the credentials it
+ * would reach for when `jupyter server list` comes back empty.
  *
- * Subtracted from the child's environment, because the private JUPYTER_RUNTIME_DIR does
- * not isolate on its own - it EMPTIES the server list, which is precisely the condition
- * that arms cli.py's env fallback. Inherited on a JupyterHub box that fallback resolves
- * to the developer's own lab, with a live token, and a test meant to be hermetic posts
- * an authenticated trigger into a real tab.
+ * Subtracted from the child's environment, so JUPYTER_PORT alone names the test
+ * server. A JupyterLab terminal sets JUPYTER_SERVER_URL and JUPYTERHUB_SERVICE_PREFIX
+ * for its own lab, and both outrank JUPYTER_PORT: inherited, they make the CLI post
+ * an authenticated trigger into the developer's real tab instead of the test server.
  */
 const DISCOVERY_ENV = [
   'JUPYTERHUB_API_TOKEN',
   'JPY_API_TOKEN',
   'JUPYTER_TOKEN',
+  'JUPYTER_SERVER_URL',
   'JUPYTERHUB_SERVICE_PREFIX'
 ];
 

@@ -4,7 +4,7 @@
 
 - **Ships with the package** - `pip install jupyterlab_passkey_extension` puts it on `PATH`
 - **Subcommands** - `create`, `get`, `passphrase`, `copy`, `show`, mirroring the commands (`create` and `get` both run `passkey:run`), and the [`vault`](#vault) group
-- **Transport** - HTTP only; it finds the server and token via `jupyter server list --json`, taking the **first** server reported
+- **Transport** - HTTP only; it finds the server and token via `jupyter server list --json`, and posts only to the server the environment names, see [How the server is found](#how-the-server-is-found)
 - **Where to run it** - a terminal on the same Jupyter server, with a JupyterLab tab open
 - **Blocking** - `create`, `get` and `passphrase` wait for you to click the button and approve the prompt; `copy` and `show` return at once (`copy` unless given `--block`); a [`vault`](#vault) subcommand waits only for its browser steps
 - **Timeout** - `--timeout` seconds, default `120` (`600` for `vault init` and `vault passkey add`); exit `1` if no relay arrives. On `copy` it applies only with `--block`, and is rejected without it; `show`, `vault lock`, `vault status`, `vault generate`, `vault passkey list` and `vault passkey rm` never wait and take none
@@ -14,19 +14,19 @@
 
 The click is not incidental - WebAuthn requires a user gesture, and a terminal has none. The notification button is the gesture.
 
-> [!IMPORTANT]
-> The CLI assumes **one** running Jupyter server, and there is no flag to select one. It takes the first entry `jupyter server list` reports, and that order follows the runtime directory's filesystem order rather than anything meaningful. With a second server running, the notification can be raised in a tab you are not watching, and the call then fails on its timeout as though the button was never clicked. Run it where exactly one server is live.
-
 ### How the server is found
 
-Discovery has a fallback, and it is worth knowing because it is silent:
+The CLI does not guess which running server is the lab. When it cannot tell, it stops with an error that lists the running servers.
 
-- **Normally** - the first entry of `jupyter server list --json` supplies the port, base URL, and token
-- **When that list is empty** - the CLI guesses instead: `JUPYTER_PORT` (defaulting to **8888**) with `JUPYTERHUB_SERVICE_PREFIX`, authenticating with `JUPYTERHUB_API_TOKEN`, `JPY_API_TOKEN` or `JUPYTER_TOKEN`
+- **Named by the environment** - the first of these that is set names the lab: `JUPYTER_SERVER_URL`'s port and base URL path (a JupyterLab terminal sets it), `JUPYTERHUB_SERVICE_PREFIX`, `JUPYTER_PORT`. The CLI uses the entry of `jupyter server list --json` that matches it, and stops when none matches
+- **Named by nothing** - the CLI uses the one running server that carries a token, and stops when there are none or several; set `JUPYTER_PORT` to the lab's port
+- **When that list is empty** - the CLI uses `JUPYTER_PORT` (8888 when only `JUPYTERHUB_SERVICE_PREFIX` is set) with `JUPYTERHUB_SERVICE_PREFIX`, authenticating with `JUPYTERHUB_API_TOKEN`, `JPY_API_TOKEN` or `JUPYTER_TOKEN`; with neither variable set it stops
+
+A server that asks for no token, as every Galata test server does, therefore receives a request only when a variable names it.
 
 The hub variables take priority over the server list's own token, because under JupyterHub a server rejects its own listed token and accepts only the hub-issued one.
 
-Pointing `JUPYTER_RUNTIME_DIR` at a specific runtime folder therefore narrows discovery only if that folder actually holds the server's record. Point it somewhere empty and the list is empty, so the CLI falls through to the guess above and quietly targets port 8888 - which is the likeliest port for some _other_ lab.
+Pointing `JUPYTER_RUNTIME_DIR` at a specific runtime folder narrows discovery only if that folder holds the server's record. Point it somewhere empty and the list is empty, so the CLI uses the empty-list rule above.
 
 ## Requirements
 
