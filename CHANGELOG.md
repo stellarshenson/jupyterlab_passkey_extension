@@ -2,6 +2,24 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.52] - 2026-10-20
+
+Lets the categories of the vault panel collapse, and makes the CLI also check the lab's root folder, so a lab that moved to another port is not mistaken for a test server.
+
+### Added
+
+- A click on a category header in the vault panel collapses or expands its entries, as in the sections of the AI assistants panels. The browser keeps the names of the collapsed categories in its local storage, in plain text, also while the vault is locked
+
+### Changed
+
+- When `JUPYTER_SERVER_URL` names the lab and `JUPYTER_SERVER_ROOT` is set, as in every JupyterLab terminal, the CLI uses only a server whose root folder is that folder, and otherwise stops with the list of running servers. A lab that found its configured port taken by a test server moves to the next port, but its terminals keep the configured port in `JUPYTER_SERVER_URL`, so without this check the CLI posted to the test server
+
+### Fixed
+
+- `VaultClientError` from the Python `Vault` class no longer carries the CLI's `SystemExit` as its cause, so a traceback shows one error for one failure
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.1.49] - 2026-10-19
 
 Makes the CLI post only to the Jupyter server its environment names, so a notification can no longer reach a leftover test server, and lets every subcommand state who asks.
@@ -24,8 +42,6 @@ Makes the CLI post only to the Jupyter server its environment names, so a notifi
 
 - With several Jupyter servers running, the CLI raised the notification on the first server `jupyter server list` reported, such as a leftover test server, and the lab showed nothing
 - The Galata CLI tests started from a JupyterLab terminal posted their notifications into the developer's own lab
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.1.42] - 2026-10-03
 

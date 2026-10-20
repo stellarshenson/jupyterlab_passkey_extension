@@ -151,6 +151,9 @@ def _pick_server(records: list[dict]) -> dict:
     (a JupyterLab terminal sets it), else JUPYTERHUB_SERVICE_PREFIX, else
     JUPYTER_PORT - the first of these that is set. Only a record matching it is
     used; when none matches, the CLI stops instead of posting to another server.
+    JUPYTER_SERVER_URL holds the port the lab was set to, not the one it bound, so
+    the record must also have the root_dir that the same terminal's
+    JUPYTER_SERVER_ROOT names, when that is set.
     With no variable set, the one record carrying a token is used, and with none
     or several the CLI stops. So a server that asks for no token, which every
     Galata test server is, receives a request only when the environment names it.
@@ -183,6 +186,12 @@ def _pick_server(records: list[dict]) -> dict:
                 if r.get("port") == parsed_port
                 and path(r.get("base_url", "")) == path(parsed.path)
             ])
+            root = os.environ.get("JUPYTER_SERVER_ROOT", "")
+            if root:
+                named = (f"{named[0]} with JUPYTER_SERVER_ROOT={root}", [
+                    r for r in named[1]
+                    if os.path.abspath(str(r.get("root_dir", ""))) == os.path.abspath(root)
+                ])
     prefix = os.environ.get("JUPYTERHUB_SERVICE_PREFIX", "")
     if named is None and prefix:
         named = (f"JUPYTERHUB_SERVICE_PREFIX={prefix}", [
@@ -845,6 +854,8 @@ environment:
   JUPYTER_TOKEN                        the token when `jupyter server list` reports no server
   JUPYTER_SERVER_URL                   the lab a JupyterLab terminal sets: the command uses the
                                        running server with its port and base URL path
+  JUPYTER_SERVER_ROOT                  the lab's root a JupyterLab terminal sets: with
+                                       JUPYTER_SERVER_URL, that server must also have this root
   JUPYTER_PORT, JUPYTERHUB_SERVICE_PREFIX
                                        name the lab when JUPYTER_SERVER_URL is not set, and give
                                        the address when the list reports none

@@ -301,6 +301,40 @@
   text-transform: uppercase;
 }
 
+/* A category header is a button that collapses the category, as in the AI
+   assistants panels: the caret takes the 14px column, so the label still starts
+   in the text column. */
+button.jp-PasskeyVaultPanel-sectionHeader {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding-left: var(--jp-passkey-vault-inset);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+
+button.jp-PasskeyVaultPanel-sectionHeader:hover {
+  background: var(--jp-layout-color3);
+}
+
+button.jp-PasskeyVaultPanel-sectionHeader:focus-visible {
+  outline: 1px solid var(--jp-brand-color1);
+  outline-offset: -1px;
+}
+
+.jp-PasskeyVaultPanel-caret {
+  flex: 0 0 auto;
+  width: calc(var(--jp-passkey-vault-text) - var(--jp-passkey-vault-inset));
+  color: var(--jp-ui-font-color2);
+}
+
+.jp-PasskeyVaultPanel-sectionLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .jp-PasskeyVaultPanel-rowLine,
 .jp-PasskeyVaultPanel-method {
   display: flex;

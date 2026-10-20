@@ -299,6 +299,7 @@ function fakePasskey(): jest.Mock {
 
 afterEach(() => {
   document.body.innerHTML = '';
+  window.localStorage.clear();
   jest.clearAllMocks();
 });
 
@@ -1137,7 +1138,7 @@ describe('VaultPanel', () => {
   it('groups entries by category and filters them as the user types', async () => {
     const panel = await panelWith(fakeApi());
     const headers = Array.from(
-      panel.node.querySelectorAll('.jp-PasskeyVaultPanel-sectionHeader')
+      panel.node.querySelectorAll('.jp-PasskeyVaultPanel-sectionLabel')
     ).map(h => h.textContent);
     expect(headers).toEqual(['home (1)', 'infra (2)']);
     // The filter field is hidden until the header's filter button is pressed, and
@@ -2071,9 +2072,60 @@ describe('VaultPanel', () => {
       })
     );
     const headers = Array.from(
-      panel.node.querySelectorAll('.jp-PasskeyVaultPanel-sectionHeader')
+      panel.node.querySelectorAll('.jp-PasskeyVaultPanel-sectionLabel')
     ).map(h => h.textContent);
     expect(headers).toEqual(['banking (1)', 'Uncategorised (1)', 'Work (1)']);
+  });
+
+  it('collapses a category from its header and keeps it collapsed after a reload', async () => {
+    const header = (panel: VaultPanel, category: string) =>
+      Array.from(
+        panel.node.querySelectorAll<HTMLButtonElement>(
+          'button.jp-PasskeyVaultPanel-sectionHeader'
+        )
+      ).find(h => h.textContent?.includes(category)) as HTMLButtonElement;
+    const names = (panel: VaultPanel) =>
+      Array.from(
+        panel.node.querySelectorAll('.jp-PasskeyVaultPanel-rowName')
+      ).map(n => n.textContent);
+    const panel = await panelWith(fakeApi());
+    expect(header(panel, 'infra').getAttribute('aria-expanded')).toBe('true');
+    expect(header(panel, 'infra').textContent).toBe('▾infra (2)');
+    header(panel, 'infra').focus();
+    header(panel, 'infra').click();
+    // The header stays, with its count; the rows go, and the focus stays on it.
+    expect(header(panel, 'infra').getAttribute('aria-expanded')).toBe('false');
+    expect(header(panel, 'infra').textContent).toBe('▸infra (2)');
+    expect(names(panel)).toEqual(['nas/ugos']);
+    expect(document.activeElement).toBe(header(panel, 'infra'));
+    expect(
+      window.localStorage.getItem(
+        'jupyterlab_passkey_extension:vault:collapsed'
+      )
+    ).toBe('["infra"]');
+    // A panel built after a reload reads the state back.
+    panel.dispose();
+    const again = await panelWith(fakeApi());
+    expect(header(again, 'infra').getAttribute('aria-expanded')).toBe('false');
+    expect(names(again)).toEqual(['nas/ugos']);
+    header(again, 'infra').click();
+    expect(names(again)).toEqual(['nas/ugos', 'github/api', 'gitlab/api']);
+    expect(
+      window.localStorage.getItem(
+        'jupyterlab_passkey_extension:vault:collapsed'
+      )
+    ).toBe('[]');
+  });
+
+  it('shows every category expanded when the stored state is unreadable', async () => {
+    window.localStorage.setItem(
+      'jupyterlab_passkey_extension:vault:collapsed',
+      '{'
+    );
+    const panel = await panelWith(fakeApi());
+    expect(
+      panel.node.querySelectorAll('.jp-PasskeyVaultPanel-rowName')
+    ).toHaveLength(3);
   });
 
   it('keeps focus in the panel when Lock is pressed from the keyboard', async () => {

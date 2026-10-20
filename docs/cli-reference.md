@@ -19,6 +19,7 @@ The click is not incidental - WebAuthn requires a user gesture, and a terminal h
 The CLI does not guess which running server is the lab. When it cannot tell, it stops with an error that lists the running servers.
 
 - **Named by the environment** - the first of these that is set names the lab: `JUPYTER_SERVER_URL`'s port and base URL path (a JupyterLab terminal sets it), `JUPYTERHUB_SERVICE_PREFIX`, `JUPYTER_PORT`. The CLI uses the entry of `jupyter server list --json` that matches it, and stops when none matches
+- **The terminal's root** - with `JUPYTER_SERVER_URL`, the entry's `root_dir` must also be the terminal's `JUPYTER_SERVER_ROOT` when that is set. The URL keeps the port the lab was set to, so a lab that found that port taken by a test server and moved to the next one would otherwise name the test server
 - **Named by nothing** - the CLI uses the one running server that carries a token, and stops when there are none or several; set `JUPYTER_PORT` to the lab's port
 - **When that list is empty** - the CLI uses `JUPYTER_PORT` (8888 when only `JUPYTERHUB_SERVICE_PREFIX` is set) with `JUPYTERHUB_SERVICE_PREFIX`, authenticating with `JUPYTERHUB_API_TOKEN`, `JPY_API_TOKEN` or `JUPYTER_TOKEN`; with neither variable set it stops
 

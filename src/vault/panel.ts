@@ -181,6 +181,30 @@ const vaultIcon = new LabIcon({
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" viewBox="0 0 24 23"><path class="jp-icon3" fill="#616161" d="M12 17a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h1V6a5 5 0 0 1 5-5 5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3"/></svg>'
 });
 
+/** The localStorage key of the categories the user collapsed in the entry list. */
+const COLLAPSED_KEY = 'jupyterlab_passkey_extension:vault:collapsed';
+
+function loadCollapsed(): Set<string> {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(COLLAPSED_KEY) ?? '[]'
+    );
+    return new Set(
+      Array.isArray(parsed) ? parsed.filter(v => typeof v === 'string') : []
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsed(collapsed: Set<string>): void {
+  try {
+    window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed]));
+  } catch {
+    // Storage blocked or full: the state lasts until the page reloads.
+  }
+}
+
 /**
  * A path as one element per part, each ending in its slash, so that the line breaks
  * after a slash: a hyphen at a line end would read as a hyphenation mark, not as part
@@ -1090,11 +1114,31 @@ export class VaultPanel extends Widget {
       a.localeCompare(b)
     )) {
       const group = groups.get(category) as IEntry[];
-      this._list.appendChild(
-        el('div', `${C}-sectionHeader`, `${category} (${group.length})`)
+      const expanded = !this._collapsed.has(category);
+      // A header collapses its category, as in the AI assistants panels.
+      const header = el('button', `${C}-sectionHeader`);
+      header.type = 'button';
+      header.dataset.focusKey = `category:${category}`;
+      header.setAttribute('aria-expanded', String(expanded));
+      const caret = el('span', `${C}-caret`, expanded ? '▾' : '▸');
+      // Decorative - the state it draws is already on the header's aria-expanded.
+      caret.setAttribute('aria-hidden', 'true');
+      header.append(
+        caret,
+        el('span', `${C}-sectionLabel`, `${category} (${group.length})`)
       );
-      for (const e of group) {
-        this._list.appendChild(this._row(e));
+      header.addEventListener('click', () => {
+        if (!this._collapsed.delete(category)) {
+          this._collapsed.add(category);
+        }
+        saveCollapsed(this._collapsed);
+        this._renderList();
+      });
+      this._list.appendChild(header);
+      if (expanded) {
+        for (const e of group) {
+          this._list.appendChild(this._row(e));
+        }
       }
     }
   }
@@ -1336,6 +1380,7 @@ export class VaultPanel extends Widget {
   private _entries: IEntry[] = [];
   private _view: 'main' | 'settings' = 'main';
   private _filterShown = false;
+  private readonly _collapsed = loadCollapsed();
   private _armed: string | null = null;
   private _bannerShown = '';
   private _entriesRead = true;

@@ -118,11 +118,10 @@ function runCli(args: string[]): Promise<IResult> {
     // Pin shm so the CLI and the test server agree on the backend, and the tests can
     // read back the file the server writes. The server config pins the same value.
     JLAB_PASSKEY_RELAY_BACKEND: 'shm',
-    // Pointed at the suite's own port rather than deleted. cli.py's fallback defaults to
-    // 8888 when JUPYTER_PORT is absent, which is the single likeliest port for the
-    // developer's real lab - and a tokenless lab there would ACCEPT the ingest and pop
-    // the toast in their tab. Setting it makes a discovery miss die on connection
-    // refused against our own port, structurally unable to reach anything else.
+    // Pointed at the suite's own port rather than deleted: with DISCOVERY_ENV removed,
+    // JUPYTER_PORT is the variable that names the test server to cli.py, so a discovery
+    // miss dies on connection refused against our own port and cannot reach a lab on
+    // another one.
     JUPYTER_PORT: PORT
   };
   for (const name of DISCOVERY_ENV) {
@@ -504,10 +503,10 @@ test('copy stages nothing when the trigger cannot reach a server', async () => {
   // retry. Driven through the real binary against a port with nothing on it.
   const before = stagedSecrets();
 
-  // An EMPTY runtime dir, not the suite's own: the test server registers itself in
-  // that one, so `jupyter server list` finds it and JUPYTER_PORT is never consulted.
-  // Emptying the list is what arms cli.py's env fallback, and only then does
-  // pointing it at a dead port actually fail the trigger.
+  // An EMPTY runtime dir, not the suite's own: there the list holds the test server,
+  // JUPYTER_PORT=1 matches no record and cli.py stops at discovery. With an empty list
+  // cli.py posts to JUPYTER_PORT, so the trigger dies on connection refused - the
+  // 'cannot reach' failure this test asserts.
   const emptyRuntime = path.resolve(__dirname, '..', '.tmp-runtime-empty');
   fs.mkdirSync(emptyRuntime, { recursive: true });
 

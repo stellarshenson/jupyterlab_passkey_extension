@@ -1664,6 +1664,13 @@ The vault sidebar panel in JupyterLab
   - log: 2026-10-03T18:50:55Z @kj added
   - log: 2026-10-03T19:00:40Z @kj closed
   - log: 2026-10-03T19:20:33Z @kj amended text "when the server refuses the pair for another reason than a wrong code, the panel's line ends with: the entry your authenticator app added is unused - you can delete it in the app; a lost answer says nothing about the entry" -> "when the server refuses the pair with a 4xx answer other than a wrong code, the panel's line ends with: the entry your authenticator app added is unused - you can delete it in the app; a lost answer and a 5xx answer say nothing about the entry"
+- [x] `ACC-PANEL-241-CATEGORY-COLLAPSE` **Categories collapse** - MEDIUM; a click on a category header collapses or expands its entries, as in the AI assistants panels: caret in the 14 px column, aria-expanded on the button; every category starts expanded; collapsed category names kept in localStorage, so they survive a reload
+  - evidence: jest 'collapses a category from its header and keeps it collapsed after a reload'; Galata 'a category collapses from its header and stays collapsed after a reload'; header measured equal to the AI panel's (21 px, caret 4 px, label 18 px); jest 259, pytest 475, Galata 41/41, build 1.1.50
+  - test: jest: click hides the rows, keeps the count and focus, writes localStorage; Galata: collapsed after page reload
+  - test-tags: UNIT, E2E
+  - mechanism: 2026-10-20T20:12:15Z @kj _fillList renders each header as a button; the collapsed set is loaded from and saved to localStorage key jupyterlab_passkey_extension:vault:collapsed
+  - log: 2026-10-20T20:12:15Z @kj added
+  - log: 2026-10-20T20:12:23Z @kj closed
 
 ## Vault settings `CONFIG`
 
@@ -1855,6 +1862,12 @@ The notification that the CLI and the Python Vault class raise in the JupyterLab
   - mechanism: 2026-10-19T15:08:26Z @kj _pick_server takes the first set variable and returns only a record matching it, else SystemExit; with none set, the single token-carrying record; _base_url refuses the port 8888 guess when no variable is set; the Vault client turns the SystemExit into VaultClientError
   - log: 2026-10-19T15:08:26Z @kj added
   - log: 2026-10-19T15:11:17Z @kj closed
+- [ ] `ACC-NOTIFY-242-SERVER-ROOT` **A terminal's lab must also match its root** - HIGH; when JUPYTER_SERVER_URL names the lab and JUPYTER_SERVER_ROOT is set, the CLI uses only a record whose root_dir equals it, else stops listing the running servers; a plain lab that moved off 8888 while a Galata server held it no longer posts to that Galata server
+  - related: ACC-NOTIFY-240-SERVER-NAMED
+  - test: pytest: JUPYTER_SERVER_URL port 8888, JUPYTER_SERVER_ROOT /lab, a Galata record on 8888 with root galata-test- -> SystemExit; same root -> lab record
+  - test-tags: UNIT
+  - mechanism: 2026-10-20T21:21:29Z @kj _pick_server filters the JUPYTER_SERVER_URL matches by root_dir == abspath(JUPYTER_SERVER_ROOT); jupyter_server_terminals sets both variables from the same serverapp, and the record's root_dir is abspath(root_dir)
+  - log: 2026-10-20T21:21:29Z @kj added
 
 ## Lint `LINT`
 

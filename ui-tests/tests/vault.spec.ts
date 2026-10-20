@@ -225,22 +225,37 @@ test('the panel has the geometry of the AI assistants panels', async ({
   // The list view. Text starts 18 px from the border: the title, the state, a
   // category and an entry's name. A field spans from 4 px to 4 px. Header buttons
   // and rows are 24 px high.
-  const [title, stateText, filter, category, row, name, icon] = await measure([
+  const [
+    title,
+    stateText,
+    filter,
+    category,
+    caret,
+    categoryLabel,
+    row,
+    name,
+    icon
+  ] = await measure([
     `${C}-headerTitle`,
     `${C}-stateText`,
     `${C}-filterInput`,
     `${C}-sectionHeader`,
+    `${C}-caret`,
+    `${C}-sectionLabel`,
     `${C}-rowLine`,
     `${C}-rowName`,
     `${C}-iconButton`
   ]);
-  expect([title[0], stateText[0], name[0]]).toEqual([18, 18, 18]);
+  expect([title[0], stateText[0], categoryLabel[0], name[0]]).toEqual([
+    18, 18, 18, 18
+  ]);
   expect(filter.slice(0, 2)).toEqual([4, 4]);
   expect(category.slice(0, 2)).toEqual([0, 0]);
   expect(row[2]).toBe(24);
   expect(icon[2]).toBe(24);
-  // A section header is a band in the header's colour, its label in the text column.
-  expect(await style(`${C}-sectionHeader`, 'padding-left')).toBe('18px');
+  // A section header is a band in the header's colour: the caret on the inset, its
+  // label in the text column.
+  expect(caret[0]).toBe(4);
   expect(await style(`${C}-sectionHeader`, 'background-color')).toBe(
     await style(`${C}-header`, 'background-color')
   );
@@ -305,6 +320,30 @@ test('a hidden panel leaves the settings view', async ({ page }) => {
   await expect(
     panel(page).getByRole('button', { name: 'Vault settings and security' })
   ).not.toHaveClass(/jp-mod-active/);
+});
+
+test('a category collapses from its header and stays collapsed after a reload', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await addEntry(page, 's3cret-value');
+  const header = panel(page).getByRole('button', { name: 'Uncategorised (1)' });
+  const row = panel(page).locator('.jp-PasskeyVaultPanel-rowName', {
+    hasText: 'github/api'
+  });
+  await expect(header).toHaveAttribute('aria-expanded', 'true');
+  await expect(row).toHaveCount(1);
+  await header.click();
+  await expect(header).toHaveAttribute('aria-expanded', 'false');
+  await expect(row).toHaveCount(0);
+  // The server keeps the vault unlocked across a reload, and the browser keeps the
+  // category collapsed.
+  await page.reload();
+  await page.sidebar.openTab(PANEL_ID);
+  await expect(state(page)).toContainText('Unlocked', { timeout: 20000 });
+  await expect(header).toHaveAttribute('aria-expanded', 'false');
+  await expect(row).toHaveCount(0);
 });
 
 test('lock, then unlock with the passkey', async ({ page }) => {

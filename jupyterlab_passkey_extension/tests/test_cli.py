@@ -1096,6 +1096,30 @@ def test_jupyter_server_url_outranks_the_other_variables(monkeypatch):
     assert cli._server_list() == lab
 
 
+def test_jupyter_server_url_stops_when_the_root_differs(monkeypatch):
+    # A plain lab set to 8888 bound 8889 because a Galata server held 8888. Its
+    # terminals still name 8888, so only the root tells the Galata server apart.
+    monkeypatch.setenv("JUPYTER_SERVER_URL", "http://localhost:8888/")
+    monkeypatch.setenv("JUPYTER_SERVER_ROOT", "/home/bob")
+    test_server = {"port": 8888, "base_url": "/", "token": "", "root_dir": "/tmp/galata-test-x1"}
+    lab = {"port": 8889, "base_url": "/", "token": "T", "root_dir": "/home/bob"}
+    _server_list(monkeypatch, [test_server, lab])
+
+    with pytest.raises(SystemExit, match="JUPYTER_SERVER_ROOT=/home/bob"):
+        cli._server_list()
+
+
+def test_jupyter_server_url_picks_the_record_with_the_terminal_root(monkeypatch):
+    # The trailing slash differs from the record's root_dir and must not stop the CLI.
+    monkeypatch.setenv("JUPYTER_SERVER_URL", "http://localhost:8888/")
+    monkeypatch.setenv("JUPYTER_SERVER_ROOT", "/home/bob/")
+    test_server = {"port": 8898, "base_url": "/", "token": "", "root_dir": "/tmp/galata-test-x1"}
+    lab = {"port": 8888, "base_url": "/", "token": "T", "root_dir": "/home/bob"}
+    _server_list(monkeypatch, [test_server, lab])
+
+    assert cli._server_list() == lab
+
+
 @pytest.mark.parametrize("records", [
     [{"port": 33935, "base_url": "/", "token": ""}],
     [{"port": 8888, "base_url": "/", "token": "A"}, {"port": 8890, "base_url": "/", "token": "B"}],

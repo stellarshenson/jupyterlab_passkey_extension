@@ -28,7 +28,8 @@ def _relay_backend(request, monkeypatch):
     monkeypatch.setattr(cli, "_found", None)
     # Start from an environment that names no Jupyter server, so the developer's own
     # lab never decides which server record a test picks.
-    for name in ("JUPYTER_SERVER_URL", "JUPYTERHUB_SERVICE_PREFIX", "JUPYTER_PORT"):
+    for name in ("JUPYTER_SERVER_URL", "JUPYTER_SERVER_ROOT", "JUPYTERHUB_SERVICE_PREFIX",
+                 "JUPYTER_PORT"):
         monkeypatch.delenv(name, raising=False)
     if request.node.get_closest_marker("keyctl"):
         monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")

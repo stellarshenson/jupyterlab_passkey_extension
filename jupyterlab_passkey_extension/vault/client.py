@@ -38,7 +38,7 @@ def request(method, action, body=None, params=None):
     try:
         base, token = _cli._server()
     except SystemExit as e:
-        raise VaultClientError(str(e))
+        raise VaultClientError(str(e)) from None
     url = f"{base}/jupyterlab-passkey-extension/vault/{action}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -78,7 +78,7 @@ def browser_step(command, args, label, message, timeout):
         _cli._run({**args, "nonce": secrets.token_urlsafe(24)}, label, message, timeout,
                   command_id=command)
     except SystemExit as e:
-        raise VaultClientError(str(e))
+        raise VaultClientError(str(e)) from None
 
 
 class Vault:

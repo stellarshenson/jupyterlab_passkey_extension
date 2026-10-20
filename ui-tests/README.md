@@ -62,10 +62,12 @@ guards together, and none of them is sufficient alone:
 
 - `JUPYTER_RUNTIME_DIR` is redirected to a private folder, so `jupyter server list` shows
   only the server the suite started and not a lab you have open
-- the CLI's discovery **fallback** variables are subtracted from its environment, and
-  `JUPYTER_PORT` is pinned to the suite's own port. Redirecting the runtime dir alone is
-  not isolation - an empty server list is exactly what makes the CLI guess, and its guess
-  is `JUPYTER_PORT` (default 8888) with your `JUPYTERHUB_API_TOKEN`
+- the variables that name a lab to the CLI (`JUPYTER_SERVER_URL`,
+  `JUPYTERHUB_SERVICE_PREFIX`) and its fallback tokens are subtracted from its environment,
+  and `JUPYTER_PORT` is pinned to the suite's own port. Redirecting the runtime dir alone is
+  not isolation - an empty server list is exactly what makes the CLI guess, and it then
+  posts to `JUPYTER_PORT` (8888 when only `JUPYTERHUB_SERVICE_PREFIX` is set) with your
+  `JUPYTERHUB_API_TOKEN`
 - the server is never reused, only started, so the suite cannot drive a lab of yours that
   happens to answer on the port
 

@@ -394,6 +394,8 @@ The panel sits in the right sidebar by default; the `sidebar` setting moves it t
 - **Layout** - the geometry of the AI assistants panels (`jupyterlab_ai_code_assistants_extension`): fields and buttons 4 px from the panel border, text 18 px from it, header buttons and rows 24 px high, section headers as bands
 - **Measured** - on 2026-10-02 in Chromium at a 250 px sidebar, in the Claude Code panel and the Codex panel of that extension, version 1.2.56 (one widget class, the same values in both): the title, a section label and a row's name start 18 px from the panel's left border; the header, a section header and a row have 4 px of padding on both sides (its variable `--aica-inset`, which its stylesheet also gives the search field as its margin); a row is 24 px high (`--aica-row-height`); a header button is 24 px wide and high; a section header is a band in the header's colour. The vault panel's Galata test reads the same values from the vault panel
 - **Filter** - the header's filter button shows the filter field and puts the typing in it; pressing it again hides the field and clears the filter
+- **Categories** - a category's header collapses and expands its entries, as a section header of the AI assistants panels does: a `▾` or `▸` in the 14 px column, the name and count from 18 px, `aria-expanded` on the button; every category starts expanded, and a filter keeps a collapsed category collapsed, with its count of matches
+- **Collapsed categories** - kept in the browser's localStorage under `jupyterlab_passkey_extension:vault:collapsed`, as the AI assistants panels keep theirs, so they survive a reload; that key holds category names in plain text, readable there while the vault is locked (the owner's choice of 2026-10-20)
 
 ## 10. Security limits
 
@@ -406,7 +408,7 @@ This section states what the vault does not protect against.
 - **Shared keyring** - with the keyctl holder, other containers that run as the same user id in the same user namespace can read the held key
 - **Staged values** - an uncollected `copy` or `show` value outlives `vault lock`, see [7. Reading values](#7.-Reading-values)
 - **Restart** - with keyctl or gpg-agent a key can outlive a server restart until the unlock duration ends
-- **Two servers** - with several servers running and none named by the environment, the CLI stops with an error instead of choosing one, see [How the server is found](cli-reference.md#how-the-server-is-found)
+- **Two servers** - with several servers carrying a token and none named by the environment, the CLI stops with an error instead of choosing one, see [How the server is found](cli-reference.md#how-the-server-is-found)
 
 ## 11. Configuration
 
