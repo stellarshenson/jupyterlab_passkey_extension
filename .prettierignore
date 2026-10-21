@@ -9,3 +9,4 @@ eslint.config.mjs
 .claude
 docs/acc-crit*.md
 docs/defects*.md
+graphify-out

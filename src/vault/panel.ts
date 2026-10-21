@@ -20,6 +20,7 @@ import { trans } from '../trans';
 import {
   ICapabilities,
   IEntry,
+  ISlot,
   IStatus,
   NoAnswer,
   VaultApi,
@@ -60,11 +61,11 @@ function shape(s: IStatus | null): string {
   return JSON.stringify([
     s?.initialized,
     s?.unlocked,
-    // A passkey by its id; the unlock password, which has none, by its date.
-    s?.slots.map(x => x.cred_id ?? `${x.type} ${x.created}`),
+    // A passkey by its id; a typed slot, which has none, by its type, date and KDF.
+    s?.slots.map(x => `${x.cred_id ?? `${x.type} ${x.created}`} ${x.kdf}`),
     s?.authenticator?.created,
-    s?.settings.unlock_minutes,
-    s?.settings.password_min_length,
+    s?.settings,
+    s?.rotation,
     s?.revision,
     s?.holder.name,
     s?.holder.capabilities,
@@ -97,6 +98,17 @@ function mfaAdded(s: IStatus): string | undefined {
     s.authenticator?.created ??
     s.slots.find(x => x.type === 'password')?.created
   );
+}
+
+/**
+ * The key derivation the vault's typed slots were written with: Argon2id, and scrypt
+ * while a vault written before it still holds such a slot.
+ */
+function encryptionOf(slots: ISlot[]): string {
+  const legacy = slots.filter(x => x.kdf === 'scrypt').length;
+  return legacy === 0
+    ? 'Argon2id'
+    : `Argon2id, scrypt for ${legacy} older slot${legacy === 1 ? '' : 's'}`;
 }
 
 export function formatRemaining(seconds: number): string {
@@ -650,7 +662,7 @@ export class VaultPanel extends Widget {
     return this._act(
       async () => {
         this._sayProofFirst(s);
-        const proof = await askProof(s, this._host, 'Add passkey');
+        const proof = await askProof(s, this._host, 'Add passkey', true);
         this.clearLine();
         return (
           proof !== null && registerWithProof(this._api, proof, '', this._host)
@@ -682,7 +694,7 @@ export class VaultPanel extends Widget {
           return false;
         }
         this._sayProofFirst(s);
-        const proof = await askProof(s, this._host, title);
+        const proof = await askProof(s, this._host, title, true);
         this.clearLine();
         return (
           proof !== null &&
@@ -701,7 +713,8 @@ export class VaultPanel extends Widget {
         const proof = await askProof(
           s,
           this._host,
-          'Change recovery passphrase'
+          'Change recovery passphrase',
+          true
         );
         this.clearLine();
         if (proof === null) {
@@ -719,6 +732,27 @@ export class VaultPanel extends Widget {
       },
       'Recovery passphrase changed',
       'Recovery passphrase change'
+    );
+  }
+
+  /**
+   * Rotate the data key: the entries and the authenticator secret are re-sealed under
+   * a new key. The proof is a passkey or the recovery passphrase; a code alone holds
+   * no key, so none is offered. The vault must be unlocked.
+   */
+  private _rotate(s: IStatus): Promise<void> {
+    return this._act(
+      async () => {
+        this._sayProofFirst(s);
+        const proof = await askProof(s, this._host, 'Rotate data key', false);
+        this.clearLine();
+        if (proof === null) {
+          return false;
+        }
+        await this._api.rotate(proof);
+      },
+      'Data key rotated',
+      'Data key rotation'
     );
   }
 
@@ -1263,14 +1297,61 @@ export class VaultPanel extends Widget {
       );
     }
 
+    const sections = [security, methods];
+    if (s.rotation) {
+      const key = this._section('Data key');
+      key.append(
+        this._pair(
+          'Created',
+          s.rotation.created
+            ? addedAt(s.rotation.created)
+            : 'at the next unlock'
+        ),
+        this._pair(
+          'Age',
+          s.rotation.age_days === null
+            ? 'none yet'
+            : `${s.rotation.age_days} ${s.rotation.age_days === 1 ? 'day' : 'days'}`
+        ),
+        this._pair(
+          'Period',
+          s.rotation.period_days === 0
+            ? 'off'
+            : `${s.rotation.period_days} ${s.rotation.period_days === 1 ? 'day' : 'days'}`
+        ),
+        this._pair('Rotation due', s.rotation.due ? 'yes' : 'no')
+      );
+      // The server rotates only an unlocked vault.
+      if (s.unlocked) {
+        key.appendChild(this._button('Rotate data key', () => this._rotate(s)));
+      } else if (s.rotation.due) {
+        key.appendChild(
+          el('p', `${C}-hint`, 'Unlock the vault to rotate the data key.')
+        );
+      }
+      sections.push(key);
+    }
+
+    // The values in effect, read-only: the server's configuration file holds them.
     const settings = this._section('Settings');
+    const period = s.rotation?.period_days ?? s.settings.rotate_days;
     settings.append(
       this._pair('Unlock duration', formatMinutes(s.settings.unlock_minutes)),
+      this._pair('Reveal window', `${s.settings.reveal_seconds}s`),
+      this._pair(
+        'Shortest unlock password',
+        `${s.settings.password_min_length} characters`
+      ),
+      this._pair('Key encryption', encryptionOf(s.slots)),
+      this._pair(
+        'Key rotation',
+        period === 0 ? 'off' : `${period} ${period === 1 ? 'day' : 'days'}`
+      ),
       this._pathPair('Vault file', s.path),
       this._button('Open settings', () => this._openSettings())
     );
 
-    this._body.append(security, methods, settings);
+    this._body.append(...sections, settings);
   }
 
   // -- small builders ---------------------------------------------------------

@@ -1,26 +1,35 @@
 """The vault file: one JSON document whose entries are sealed under a data key.
 
     {
-      "format": "jupyterlab-passkey-vault", "version": 1, "id": hex16,
+      "format": "jupyterlab-passkey-vault", "version": 2, "id": hex16,
       "slots": [
-        {"type": "recovery", "kdf": "scrypt", "n": 131072, "r": 8, "p": 1,
+        {"type": "recovery", "kdf": "argon2id", "m": 65536, "t": 3, "p": 1,
          "salt": b64, "wrapped": b64},
         {"type": "passkey", "cred_id": b64url, "rp_id": host, "prf_salt": b64url,
          "hkdf_salt": b64, "label": text, "created": iso, "wrapped": b64},
-        {"type": "password", "kdf": "scrypt", "n": 131072, "r": 8, "p": 1,
+        {"type": "password", "kdf": "argon2id", "m": 65536, "t": 3, "p": 1,
          "salt": b64, "created": iso, "wrapped": b64}
       ],
       "entries": b64(nonce | AES-256-GCM(data key, JSON list of entries)),
+      "data_key": {"created": iso, "sealed": b64(nonce | AES-256-GCM(root key, data key))},
       "authenticator": {"created": iso, "secret": b64(nonce | AES-256-GCM(data key, secret))}
     }
 
-The data key (32 random bytes) encrypts every entry, names included, as one blob. Each
-slot wraps that same key under its own key-encryption key - `Scrypt(passphrase)` for
-the recovery slot, `HKDF(PRF)` for a passkey slot, `Scrypt(password)` for the one
-unlock password slot a vault can have - so any one slot decrypts the data key and
-adding or removing a slot never re-encrypts the entries. Every slot parameter except the
+Two keys. The root key (32 random bytes) is what the slots wrap under their own
+key-encryption key - `Argon2id(passphrase)` for the recovery slot, `HKDF(PRF)` for a
+passkey slot, `Argon2id(password)` for the one unlock password slot a vault can have; a
+slot written by an earlier build keeps its scrypt parameters and is rewritten under
+Argon2id on its next unlock - so any one slot opens the root, and adding or removing a
+slot never re-encrypts the entries. Every slot parameter except the
 wrapped key itself and its label is bound into the wrap as associated data, so a changed
 salt, KDF cost, credential or hostname fails to open rather than opening wrongly.
+
+The data key (32 random bytes) encrypts every entry, names included, as one blob, and is
+itself sealed under the root key. Rotating the data key re-seals the entries and the
+authenticator secret and leaves every slot as it is, so the slots keep opening the root
+and a copy of an old data key stops reading the vault. A version-1 file, which had one
+key for both jobs, gains a data key on its first unlock (`adopt_data_key`); its slots
+stay as they are and now wrap the root, which for that file is the old single key.
 
 `authenticator` is there only while the vault has an authenticator app. Its secret is
 sealed under the data key, so a locked vault tells that an app exists and nothing more.
@@ -43,6 +52,8 @@ import re
 import tempfile
 from datetime import datetime, timezone
 
+from argon2.exceptions import HashingError
+from argon2.low_level import Type, hash_secret_raw
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -50,12 +61,25 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 FORMAT = "jupyterlab-passkey-vault"
-VERSION = 1
-# Scrypt cost for new recovery slots (~128 MiB, a fraction of a second per guess). Each
-# slot stores its own, so raising these later leaves existing slots readable.
+VERSION = 2
+# Argon2id cost for new recovery and password slots: 64 MiB, three passes, one lane.
+# Each slot stores its own cost, so raising these later leaves existing slots readable.
+# SCRYPT is the cost older builds wrote, opened from each slot's stored n, r and p, and
+# it is what the tests that fabricate old slots use.
+ARGON2 = {"m": 65536, "t": 3, "p": 1}
 SCRYPT = {"n": 2**17, "r": 8, "p": 1}
-_ENTRIES_AAD = f"{FORMAT}/v{VERSION}/entries".encode()
-_AUTHENTICATOR_AAD = f"{FORMAT}/v{VERSION}/authenticator".encode()
+_ARGON2_BOUNDS = {"m": 2**18, "t": 8, "p": 8}
+# The scrypt cost 1.1.55 and earlier wrote, as a fixed literal. It must not follow SCRYPT
+# at call time: the tests cheapen SCRYPT to n=2**10, while the 1.1.55 fixture's n=2**17
+# slot must still open.
+_SCRYPT_BOUNDS = {"n": 2**17, "r": 8, "p": 1}
+# The version-1 strings stay as that build wrote them: a version-1 file is read with
+# them, never written. Everything this build writes carries the version-2 strings.
+_ENTRIES_AAD = f"{FORMAT}/v1/entries".encode()
+_AUTHENTICATOR_AAD = f"{FORMAT}/v1/authenticator".encode()
+_ENTRIES_AAD_V2 = f"{FORMAT}/v2/entries".encode()
+_AUTHENTICATOR_AAD_V2 = f"{FORMAT}/v2/authenticator".encode()
+_DATA_KEY_AAD = f"{FORMAT}/v2/data_key".encode()
 _HKDF_INFO = f"{FORMAT}/passkey".encode()
 
 
@@ -112,18 +136,53 @@ def _open(key, sealed, aad):
     return AESGCM(key).decrypt(blob[:12], blob[12:], aad)
 
 
+def _entries_aad(doc):
+    """The associated data the entries of this document were sealed with."""
+    return _ENTRIES_AAD if doc.get("version") == 1 else _ENTRIES_AAD_V2
+
+
+def _authenticator_aad(doc):
+    """The associated data the authenticator secret of this document was sealed with."""
+    return _AUTHENTICATOR_AAD if doc.get("version") == 1 else _AUTHENTICATOR_AAD_V2
+
+
 def _slot_aad(slot):
     bound = {k: v for k, v in slot.items() if k not in ("wrapped", "label")}
     return (f"{FORMAT}/slot/" + json.dumps(bound, sort_keys=True)).encode()
 
 
 def _scrypt_kek(slot, secret):
-    """The key of a recovery or an unlock password slot, from the secret typed."""
-    if slot.get("kdf") != "scrypt":
-        raise VaultError(f"unknown KDF {slot.get('kdf')!r} in the {slot.get('type')} slot")
+    """The key of an older recovery or unlock password slot, from the secret typed."""
+    for name, bound in _SCRYPT_BOUNDS.items():
+        value = slot.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= bound:
+            raise VaultError(f"the {slot.get('type')} slot has an unusable scrypt cost")
     return Scrypt(
         salt=_b64d(slot["salt"]), length=32, n=slot["n"], r=slot["r"], p=slot["p"]
     ).derive(secret.encode("utf-8"))
+
+
+def _argon2_kek(slot, secret):
+    """The key of a recovery or an unlock password slot, from the secret typed."""
+    for name, bound in _ARGON2_BOUNDS.items():
+        value = slot.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= bound:
+            raise VaultError(f"the {slot.get('type')} slot has an unusable Argon2id cost")
+    return hash_secret_raw(
+        secret=secret.encode("utf-8"), salt=_b64d(slot["salt"]),
+        time_cost=slot["t"], memory_cost=slot["m"], parallelism=slot["p"],
+        hash_len=32, type=Type.ID,
+    )
+
+
+def _kek(slot, secret):
+    """The key-encryption key of a typed-secret slot, by the KDF the slot names."""
+    kdf = slot.get("kdf")
+    if kdf == "scrypt":
+        return _scrypt_kek(slot, secret)
+    if kdf == "argon2id":
+        return _argon2_kek(slot, secret)
+    raise VaultError(f"unknown KDF {kdf!r} in the {slot.get('type')} slot")
 
 
 def _passkey_kek(slot, prf):
@@ -132,27 +191,27 @@ def _passkey_kek(slot, prf):
     ).derive(prf)
 
 
-def _recovery_slot(dek, passphrase):
+def _recovery_slot(root, passphrase):
     if not isinstance(passphrase, str) or passphrase == "":
         raise VaultError("a recovery passphrase is required")
-    slot = {"type": "recovery", "kdf": "scrypt", **SCRYPT, "salt": _b64e(os.urandom(16))}
-    slot["wrapped"] = _seal(_scrypt_kek(slot, passphrase), dek, _slot_aad(slot))
+    slot = {"type": "recovery", "kdf": "argon2id", **ARGON2, "salt": _b64e(os.urandom(16))}
+    slot["wrapped"] = _seal(_kek(slot, passphrase), root, _slot_aad(slot))
     return slot
 
 
-def _password_slot(dek, password):
-    slot = {"type": "password", "kdf": "scrypt", **SCRYPT, "salt": _b64e(os.urandom(16)),
+def _password_slot(root, password):
+    slot = {"type": "password", "kdf": "argon2id", **ARGON2, "salt": _b64e(os.urandom(16)),
             "created": _now()}
-    slot["wrapped"] = _seal(_scrypt_kek(slot, password), dek, _slot_aad(slot))
+    slot["wrapped"] = _seal(_kek(slot, password), root, _slot_aad(slot))
     return slot
 
 
-def _passkey_slot(dek, cred_id, rp_id, prf_salt, prf, label):
+def _passkey_slot(root, cred_id, rp_id, prf_salt, prf, label):
     slot = {
         "type": "passkey", "cred_id": cred_id, "rp_id": rp_id, "prf_salt": prf_salt,
         "hkdf_salt": _b64e(os.urandom(16)), "created": _now(),
     }
-    slot["wrapped"] = _seal(_passkey_kek(slot, prf), dek, _slot_aad(slot))
+    slot["wrapped"] = _seal(_passkey_kek(slot, prf), root, _slot_aad(slot))
     slot["label"] = label
     return slot
 
@@ -210,38 +269,45 @@ def load(path):
         raise VaultError(f"cannot read the vault at {path}: {e}")
     if not isinstance(doc, dict) or doc.get("format") != FORMAT:
         raise VaultError(f"{path} is not a jupyterlab-passkey vault")
-    if doc.get("version") != VERSION:
-        raise VaultError(f"{path} is vault format version {doc.get('version')}; this code reads {VERSION}")
+    if doc.get("version") not in (1, VERSION):
+        raise VaultError(f"{path} is vault format version {doc.get('version')}; this code reads 1 or {VERSION}")
     if (not isinstance(doc.get("slots"), list) or not all(isinstance(x, dict) for x in doc["slots"])
             or not isinstance(doc.get("entries"), str)):
         raise VaultError(f"{path} is damaged: slots or entries missing")
     # The id goes into keyring and agent names, so only its own shape is accepted.
     if not isinstance(doc.get("id"), str) or not re.fullmatch(r"[0-9a-f]{16}", doc["id"]):
         raise VaultError(f"{path} is damaged: id missing")
+    if doc["version"] == VERSION:
+        data_key = doc.get("data_key")
+        if (not isinstance(data_key, dict) or not isinstance(data_key.get("created"), str)
+                or not isinstance(data_key.get("sealed"), str)):
+            raise VaultError(f"{path} is damaged: data_key missing")
     return doc
 
 
 def create(path, passphrase):
     """Write a new, empty vault with a recovery slot. Returns the data key."""
+    root = os.urandom(32)
     dek = os.urandom(32)
-    slot = _recovery_slot(dek, passphrase)
+    slot = _recovery_slot(root, passphrase)
     with _locked(path):
         if exists(path):
             raise VaultError(f"a vault already exists at {path}")
         _write(path, {
             "format": FORMAT, "version": VERSION, "id": os.urandom(8).hex(), "slots": [slot],
-            "entries": _seal(dek, b"[]", _ENTRIES_AAD),
+            "entries": _seal(dek, b"[]", _ENTRIES_AAD_V2),
+            "data_key": {"created": _now(), "sealed": _seal(root, dek, _DATA_KEY_AAD)},
         })
     return dek
 
 
 def _unwrap_typed(doc, kind, secret, wrong, missing):
-    """The data key from the slot of type `kind`, which a typed secret opens."""
+    """The root key from the slot of type `kind`, which a typed secret opens."""
     for slot in doc["slots"]:
         if slot.get("type") == kind:
             try:
-                return _open(_scrypt_kek(slot, secret), slot["wrapped"], _slot_aad(slot))
-            except (InvalidTag, ValueError, KeyError, TypeError):
+                return _open(_kek(slot, secret), slot["wrapped"], _slot_aad(slot))
+            except (InvalidTag, ValueError, KeyError, TypeError, OverflowError, HashingError):
                 raise VaultError(wrong)
     raise VaultError(missing)
 
@@ -266,9 +332,75 @@ def unwrap_passkey(doc, cred_id, prf):
     raise VaultError("this vault does not have that passkey")
 
 
+def open_data_key(doc, root):
+    """The data key of `doc`, opened with `root`: for a version-1 file the root itself,
+    where the two jobs had one key."""
+    if doc.get("version") == 1:
+        return root
+    try:
+        return _open(root, doc["data_key"]["sealed"], _DATA_KEY_AAD)
+    except (InvalidTag, ValueError, KeyError, TypeError):
+        raise VaultError("the vault data key does not decrypt - a damaged file")
+
+
+def _adopt_locked(doc, root):
+    """Migrate `doc` in memory from version 1 to version 2. Returns (data key, changed).
+
+    The slots already wrap `root`; only the entries and the authenticator secret are
+    re-sealed under a new data key, which is then sealed under the root. The caller
+    holds the file's lock and writes `doc` when `changed`."""
+    if doc["version"] != 1:
+        return open_data_key(doc, root), False
+    entries = read_entries(doc, root)
+    secret = authenticator_secret(doc, root)
+    dek = os.urandom(32)
+    doc["entries"] = _seal(dek, json.dumps(entries).encode(), _ENTRIES_AAD_V2)
+    if secret is not None:
+        doc["authenticator"]["secret"] = _seal(dek, secret, _AUTHENTICATOR_AAD_V2)
+    doc["version"] = VERSION
+    doc["data_key"] = {"created": _now(), "sealed": _seal(root, dek, _DATA_KEY_AAD)}
+    return dek, True
+
+
+def adopt_data_key(path, root):
+    """Give a version-1 file a data key, under the file's lock. Returns (data key,
+    whether the file was rewritten). No slot is touched: the slots already wrap `root`."""
+    with _locked(path):
+        doc = load(path)
+        dek, changed = _adopt_locked(doc, root)
+        if changed:
+            _write(path, doc)
+    return dek, changed
+
+
+def rotate_data_key(path, root):
+    """Re-seal the entries and the authenticator secret under a new random data key,
+    under the file's lock, and return that key. A version-1 file is adopted first; no
+    slot is touched, so every slot still opens the same root."""
+    with _locked(path):
+        doc = load(path)
+        current, _ = _adopt_locked(doc, root)
+        entries = read_entries(doc, current)
+        secret = authenticator_secret(doc, current)
+        dek = os.urandom(32)
+        doc["entries"] = _seal(dek, json.dumps(entries).encode(), _ENTRIES_AAD_V2)
+        if secret is not None:
+            doc["authenticator"]["secret"] = _seal(dek, secret, _AUTHENTICATOR_AAD_V2)
+        doc["data_key"] = {"created": _now(), "sealed": _seal(root, dek, _DATA_KEY_AAD)}
+        _write(path, doc)
+    return dek
+
+
+def data_key_created(doc):
+    """When the data key was made; None for a version-1 file, which has no data key."""
+    if doc.get("version") == 1:
+        return None
+    return doc["data_key"]["created"]
+
+
 def read_entries(doc, dek):
     try:
-        entries = json.loads(_open(dek, doc["entries"], _ENTRIES_AAD))
+        entries = json.loads(_open(dek, doc["entries"], _entries_aad(doc)))
     except (InvalidTag, ValueError):
         raise VaultError("the vault entries do not decrypt - wrong key or a damaged file")
     if not isinstance(entries, list):
@@ -281,22 +413,28 @@ def _check_dek(doc, dek):
     read_entries(doc, dek)
 
 
+def _check_root(doc, root):
+    # A slot this build adds wraps `root`, so the root must be the one the file uses.
+    read_entries(doc, open_data_key(doc, root))
+
+
 def update_entries(path, dek, change):
-    """Apply `change(entries) -> result` to the entries and write them back."""
+    """Apply `change(entries) -> result` to the entries and write them back. A
+    version-1 file stays version 1: its entries are sealed with its own AAD."""
     with _locked(path):
         doc = load(path)
         entries = read_entries(doc, dek)
         result = change(entries)
-        doc["entries"] = _seal(dek, json.dumps(entries).encode(), _ENTRIES_AAD)
+        doc["entries"] = _seal(dek, json.dumps(entries).encode(), _entries_aad(doc))
         _write(path, doc)
     return result
 
 
-def add_passkey(path, dek, cred_id, rp_id, prf_salt, prf, label):
-    slot = _passkey_slot(dek, cred_id, rp_id, prf_salt, prf, label)
+def add_passkey(path, root, cred_id, rp_id, prf_salt, prf, label):
+    slot = _passkey_slot(root, cred_id, rp_id, prf_salt, prf, label)
     with _locked(path):
         doc = load(path)
-        _check_dek(doc, dek)
+        _check_root(doc, root)
         if any(s.get("cred_id") == cred_id for s in doc["slots"]):
             raise VaultError("this vault already has that passkey")
         doc["slots"].append(slot)
@@ -313,26 +451,54 @@ def remove_passkey(path, cred_id):
         _write(path, doc)
 
 
-def replace_recovery(path, dek, passphrase):
-    slot = _recovery_slot(dek, passphrase)
+def replace_recovery(path, root, passphrase):
+    slot = _recovery_slot(root, passphrase)
     with _locked(path):
         doc = load(path)
-        _check_dek(doc, dek)
+        _check_root(doc, root)
         doc["slots"] = [slot] + [s for s in doc["slots"] if s.get("type") != "recovery"]
         _write(path, doc)
 
 
-def set_mfa(path, dek, password, secret):
-    """Add the unlock password and the authenticator app in one write: the two unlock the
-    vault only together, so the file is never left with one of them."""
-    slot = _password_slot(dek, password)
+def upgrade_slot(path, root, kind, secret):
+    """Rewrite the `kind` slot under Argon2id, if an older KDF wrote it, wrapping the
+    root key as every slot does. The unlock just proved `secret`, so no further proof
+    is asked. Returns whether it changed."""
+    if kind not in ("recovery", "password"):
+        raise VaultError(f"the {kind} slot is not upgraded")
     with _locked(path):
         doc = load(path)
+        for index, old in enumerate(doc["slots"]):
+            if old.get("type") == kind:
+                break
+        else:
+            return False
+        if old.get("kdf") == "argon2id":
+            return False
+        slot = {k: v for k, v in old.items()
+                if k not in ("kdf", "wrapped", "n", "r", "p", "salt")}
+        slot.update({"kdf": "argon2id", **ARGON2, "salt": _b64e(os.urandom(16))})
+        slot["wrapped"] = _seal(_kek(slot, secret), root, _slot_aad(slot))
+        # A wrong key must never overwrite good data.
+        read_entries(doc, open_data_key(doc, root))
+        doc["slots"][index] = slot
+        _write(path, doc)
+    return True
+
+
+def set_mfa(path, root, dek, password, secret):
+    """Add the unlock password and the authenticator app in one write: the two unlock the
+    vault only together, so the file is never left with one of them. The password slot
+    wraps the root; the app's secret is sealed with the data key, as the entries are."""
+    slot = _password_slot(root, password)
+    with _locked(path):
+        doc = load(path)
+        _check_root(doc, root)
         _check_dek(doc, dek)
         if "authenticator" in doc or any(s.get("type") == "password" for s in doc["slots"]):
             raise VaultError("the vault already has a password and authenticator app - remove them first")
         doc["slots"] = doc["slots"] + [slot]
-        doc["authenticator"] = {"created": _now(), "secret": _seal(dek, secret, _AUTHENTICATOR_AAD)}
+        doc["authenticator"] = {"created": _now(), "secret": _seal(dek, secret, _authenticator_aad(doc))}
         _write(path, doc)
 
 
@@ -354,7 +520,7 @@ def authenticator_secret(doc, dek):
     if "authenticator" not in doc:
         return None
     try:
-        return _open(dek, doc["authenticator"]["secret"], _AUTHENTICATOR_AAD)
+        return _open(dek, doc["authenticator"]["secret"], _authenticator_aad(doc))
     except (InvalidTag, ValueError, KeyError, TypeError):
         raise VaultError("the authenticator app's secret does not decrypt - a damaged file")
 

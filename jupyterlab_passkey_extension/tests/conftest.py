@@ -42,7 +42,8 @@ def _relay_backend(request, monkeypatch):
 def vault_env(tmp_path, monkeypatch):
     """A throwaway vault: its own file, state and relay dirs, the process memory holder
     (never the host's real keyring or agent), a fresh server-side service, and a cheap
-    Scrypt so a test does not spend a quarter second per passphrase."""
+    Scrypt for the helpers that fabricate old slots. Passphrase slots pay the production
+    Argon2id cost."""
     from jupyterlab_passkey_extension.vault import handlers, holders, store
 
     monkeypatch.setenv("JLAB_PASSKEY_VAULT", str(tmp_path / "vault" / "vault.json"))

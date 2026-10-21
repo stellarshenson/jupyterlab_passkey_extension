@@ -1,0 +1,1 @@
+- 2026-10-21T17:24:24Z @kj acc-crit-passkey.md 036ce7ae sha256:6ffec96e5f05a6104cbb6cc5cb6bc4fb5082ec78d74335f087c6fd631db47d41: remove the empty Vault security category created in error; pm-tools has no category removal

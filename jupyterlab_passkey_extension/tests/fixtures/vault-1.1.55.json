@@ -1,0 +1,17 @@
+{
+ "format": "jupyterlab-passkey-vault",
+ "version": 1,
+ "id": "5d47871b271a4dce",
+ "slots": [
+  {
+   "type": "recovery",
+   "kdf": "scrypt",
+   "n": 131072,
+   "r": 8,
+   "p": 1,
+   "salt": "TsDZrELMLSQnHvnvpg4dtA==",
+   "wrapped": "DLzoQCtbvrgD3JaOQOC/WC04XfO1UZEbftH0kLR1DS8MRqTsbpxUvAVCrZ1awSq9w3fyQOWtHkj4wYCo"
+  }
+ ],
+ "entries": "+GJszzSnAyhUjquuHRpzbj2pS7Iubk3Ww69Oct1/OpIRld7w0Wpedkogx8p26xnWa2m5CXeYAJlNp9dtdYbusQPCNf00DKFtKnKN4UcBdRDwGcYO+PhaUp0IslzrobZ2Ln+bSKOosiFkgoBHdhp6+NTztnjWPLOdUtrsqLh0P/oGCkqH2Ty5p0C7d3oltmozox77WQe9vU2XdMKFRw=="
+}

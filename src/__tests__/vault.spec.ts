@@ -170,7 +170,14 @@ function status(over: Partial<IStatus> = {}): IStatus {
     settings: {
       unlock_minutes: 240,
       password_min_length: 12,
-      reveal_seconds: 60
+      reveal_seconds: 60,
+      rotate_days: 365
+    },
+    rotation: {
+      created: '2026-10-11T10:00:00Z',
+      age_days: 10,
+      period_days: 365,
+      due: false
     },
     path: '~/.local/share/jupyterlab-passkey/vault.json',
     ...over
@@ -226,7 +233,7 @@ function fakeApi(over: Record<string, any> = {}): any {
     replaceRecovery: jest.fn().mockResolvedValue(undefined),
     addMfa: jest.fn().mockResolvedValue(undefined),
     removeMfa: jest.fn().mockResolvedValue(undefined),
-    setConfig: jest.fn().mockResolvedValue(undefined),
+    rotate: jest.fn().mockResolvedValue(undefined),
     proven: false,
     ...over
   };
@@ -2661,7 +2668,7 @@ describe('VaultPanel', () => {
         Array.from(
           panel.node.querySelectorAll('.jp-PasskeyVaultPanel-sectionHeader')
         ).map(header => header.textContent)
-      ).toEqual(['Security', 'Unlock methods', 'Settings']);
+      ).toEqual(['Security', 'Unlock methods', 'Data key', 'Settings']);
     });
 
     it('keeps a refused recovery change when the vault is changed elsewhere', async () => {
@@ -2902,6 +2909,29 @@ describe('VaultPanel', () => {
       });
     });
 
+    it('offers the authenticator code for a recovery change on an unlocked vault', async () => {
+      mockAskSecret.mockResolvedValue({ accepted: true, value: 'new words' });
+      answerDialogs({ 'Change recovery passphrase': true }, '123456');
+      const api = fakeApi({
+        status: jest.fn().mockResolvedValue(
+          status({
+            slots: [{ type: 'recovery' }],
+            authenticator: { created: '2026-10-02T10:00:00Z' }
+          })
+        )
+      });
+      const panel = await openCog(api);
+      button(panel, 'Change').click();
+      await flush();
+      await flush();
+      expect(mockLaunch.mock.calls[0][0].options.body.node.textContent).toBe(
+        'Enter a code of the authenticator app'
+      );
+      expect(api.replaceRecovery).toHaveBeenCalledWith('new words', {
+        code: '123456'
+      });
+    });
+
     it('says nothing changed when the recovery dialog is cancelled', async () => {
       fakePasskey();
       mockAskSecret.mockResolvedValue({ accepted: false, value: null });
@@ -2914,10 +2944,24 @@ describe('VaultPanel', () => {
       expect(text(panel)).not.toContain('Recovery passphrase changed');
     });
 
-    it('shows the unlock duration and opens the Settings Editor', async () => {
+    it('shows the values in effect read-only, the data key, and opens the Settings Editor', async () => {
       const openSettings = jest.fn();
       const panel = await openCog(fakeApi(), openSettings);
       expect(text(panel)).toContain('Unlock duration4h');
+      expect(text(panel)).toContain('Reveal window60s');
+      expect(text(panel)).toContain('Shortest unlock password12 characters');
+      expect(text(panel)).toContain('Key encryptionArgon2id');
+      expect(text(panel)).toContain('Key rotation365 days');
+      // The data key: its creation date, its age, its period and whether it is due.
+      expect(text(panel)).toContain('Created2026-10-11 10:00 UTC');
+      expect(text(panel)).toContain('Age10 days');
+      expect(text(panel)).toContain('Period365 days');
+      expect(text(panel)).toContain('Rotation dueno');
+      expect(button(panel, 'Rotate data key')).toBeTruthy();
+      // Read-only: the server's configuration file holds the policy.
+      expect(
+        panel.node.querySelectorAll('.jp-PasskeyVaultPanel-section input')
+      ).toHaveLength(0);
       expect(text(panel)).toContain(
         'Vault file~/.local/share/jupyterlab-passkey/vault.json'
       );
@@ -2935,6 +2979,128 @@ describe('VaultPanel', () => {
       ]);
       button(panel, 'Open settings').click();
       expect(openSettings).toHaveBeenCalled();
+    });
+
+    it('names scrypt while an older slot still uses it, and turns a zero rotation period into off', async () => {
+      const panel = await openCog(
+        fakeApi({
+          status: jest.fn().mockResolvedValue(
+            status({
+              slots: [
+                { type: 'recovery', kdf: 'scrypt' },
+                {
+                  type: 'password',
+                  kdf: 'argon2id',
+                  created: '2026-10-02T10:00:00Z'
+                }
+              ],
+              settings: {
+                unlock_minutes: 240,
+                password_min_length: 12,
+                reveal_seconds: 60,
+                rotate_days: 0
+              },
+              rotation: {
+                created: '2026-10-11T10:00:00Z',
+                age_days: 10,
+                period_days: 0,
+                due: false
+              }
+            })
+          )
+        })
+      );
+      expect(text(panel)).toContain(
+        'Key encryptionArgon2id, scrypt for 1 older slot'
+      );
+      expect(text(panel)).toContain('Key rotationoff');
+    });
+
+    it('says a version-1 vault gets its data key at the next unlock', async () => {
+      const panel = await openCog(
+        fakeApi({
+          status: jest.fn().mockResolvedValue(
+            status({
+              rotation: {
+                created: null,
+                age_days: null,
+                period_days: 365,
+                due: false
+              }
+            })
+          )
+        })
+      );
+      expect(text(panel)).toContain('Createdat the next unlock');
+      expect(text(panel)).toContain('Agenone yet');
+      expect(text(panel)).toContain('Period365 days');
+    });
+
+    it('rotates the data key with the proof the panel asks for, then shows the new date', async () => {
+      fakePasskey();
+      const api = fakeApi();
+      const panel = await openCog(api);
+      api.status.mockResolvedValue(
+        status({
+          rotation: {
+            created: '2026-10-21T09:00:00Z',
+            age_days: 0,
+            period_days: 365,
+            due: false
+          }
+        })
+      );
+      button(panel, 'Rotate data key').click();
+      await flush();
+      await flush();
+      expect(mockAskSecret).not.toHaveBeenCalled();
+      expect(api.rotate).toHaveBeenCalledWith({ cred_id: 'AAEC', prf: 'CQkJ' });
+      expect(text(panel)).toContain('Data key rotated');
+      expect(text(panel)).toContain('Created2026-10-21 09:00 UTC');
+    });
+
+    it('rotates with the recovery passphrase when no passkey matches, never a code', async () => {
+      mockAskSecret.mockResolvedValue({ accepted: true, value: 'words' });
+      answerDialogs({});
+      const api = fakeApi({
+        status: jest.fn().mockResolvedValue(
+          status({
+            slots: [{ type: 'recovery' }],
+            authenticator: { created: '2026-10-02T10:00:00Z' }
+          })
+        )
+      });
+      const panel = await openCog(api);
+      button(panel, 'Rotate data key').click();
+      await flush();
+      await flush();
+      // A code holds no key, so the proof chooser offers none for a rotation.
+      expect(mockLaunch).not.toHaveBeenCalled();
+      expect(mockAskSecret).toHaveBeenCalledWith(
+        'Enter the current recovery passphrase',
+        true,
+        'Rotate data key'
+      );
+      expect(api.rotate).toHaveBeenCalledWith({ current: 'words' });
+    });
+
+    it('offers rotation on an unlocked vault, and asks for an unlock when it is due and locked', async () => {
+      const locked = status({
+        unlocked: false,
+        remaining: null,
+        rotation: {
+          created: '2026-10-11T10:00:00Z',
+          age_days: 375,
+          period_days: 365,
+          due: true
+        }
+      });
+      const panel = await openCog(
+        fakeApi({ status: jest.fn().mockResolvedValue(locked) })
+      );
+      expect(text(panel)).toContain('Rotation dueyes');
+      expect(text(panel)).toContain('Unlock the vault to rotate the data key.');
+      expect(() => button(panel, 'Rotate data key')).toThrow();
     });
 
     it('asks for an unlock only to remove an unlock method on a locked vault', async () => {
@@ -3747,7 +3913,8 @@ describe('the password and authenticator app', () => {
           settings: {
             unlock_minutes: 240,
             password_min_length: 16,
-            reveal_seconds: 60
+            reveal_seconds: 60,
+            rotate_days: 365
           }
         })
       )
@@ -3830,66 +3997,61 @@ describe('the password and authenticator app', () => {
     expect(api.addMfa).not.toHaveBeenCalled();
   });
 
-  it('asks a passkey first, then a code when an app is added and the vault is unlocked, else the passphrase', async () => {
+  it('asks a passkey first; a code next when the action takes one; then the recovery passphrase', async () => {
     mockAskSecret.mockResolvedValue({ accepted: true, value: 'words' });
     const get = fakePasskey();
-    expect(await askProof(status({ authenticator: APP }), HOST, 'T')).toEqual({
-      cred_id: 'AAEC',
-      prf: 'CQkJ'
-    });
+    expect(
+      await askProof(status({ authenticator: APP }), HOST, 'T', true)
+    ).toEqual({ cred_id: 'AAEC', prf: 'CQkJ' });
     expect(mockLaunch).not.toHaveBeenCalled();
 
-    // No passkey for this hostname: the code, with a button for the passphrase.
+    // No passkey for this hostname: a code of the authenticator app, for the actions
+    // that take one (add passkey, add MFA, replace recovery), on an unlocked vault.
     const unlocked = status({ slots: NO_PASSKEY, authenticator: APP });
     answerDialogs({ T: true }, '123456');
-    expect(await askProof(unlocked, HOST, 'T')).toEqual({ code: '123456' });
-    const { options } = mockLaunch.mock.calls[0][0];
-    expect(options.body.node.textContent).toBe(
-      'Enter a code of the authenticator app'
-    );
-    expect(options.buttons.map((b: any) => b.label)).toEqual([
-      undefined,
-      'Use recovery passphrase',
-      'Submit'
-    ]);
-    // Only Submit sends the code: Dialog disables an accept button on an empty field.
-    expect(options.buttons.map((b: any) => b.accept)).toEqual([
-      false,
-      false,
-      true
-    ]);
-    // The space an app shows in the middle of a code fits the field.
-    expect(options.body.code.pattern).toBe('[0-9]{3} ?[0-9]{3}');
-    expect(options.body.code.maxLength).toBe(7);
-    expect(mockAskSecret).not.toHaveBeenCalled();
+    expect(await askProof(unlocked, HOST, 'T', true)).toEqual({
+      code: '123456'
+    });
+
+    // The code dialog offers the recovery passphrase instead.
     answerDialogs({ T: 'Use recovery passphrase' });
-    expect(await askProof(unlocked, HOST, 'T')).toEqual({ current: 'words' });
+    expect(await askProof(unlocked, HOST, 'T', true)).toEqual({
+      current: 'words'
+    });
     expect(mockAskSecret).toHaveBeenLastCalledWith(
       'Enter the current recovery passphrase',
       true,
       'T'
     );
-    answerDialogs({});
-    expect(await askProof(unlocked, HOST, 'T')).toBeNull();
-    expect(mockAskSecret).toHaveBeenCalledTimes(1);
 
-    // A code holds no key: locked, or with no app, the passphrase is asked at once.
+    // A rotation passes no `code`: the same vault asks the passphrase at once.
     mockLaunch.mockClear();
-    for (const s of [
-      status({ slots: NO_PASSKEY, authenticator: APP, unlocked: false }),
-      status({ slots: NO_PASSKEY, authenticator: null })
-    ]) {
-      expect(await askProof(s, HOST, 'T')).toEqual({ current: 'words' });
-    }
+    expect(await askProof(unlocked, HOST, 'T')).toEqual({ current: 'words' });
     expect(mockLaunch).not.toHaveBeenCalled();
+
+    // A locked vault offers no code: a code proves only through an unlocked vault.
+    const locked = status({
+      slots: NO_PASSKEY,
+      authenticator: APP,
+      unlocked: false,
+      remaining: null
+    });
+    expect(await askProof(locked, HOST, 'T', true)).toEqual({
+      current: 'words'
+    });
+    expect(mockLaunch).not.toHaveBeenCalled();
+
+    // Cancelled: null.
+    answerDialogs({});
+    expect(await askProof(unlocked, HOST, 'T', true)).toBeNull();
 
     // A passkey that does not answer leaves the code, and the prompt says why.
     get.mockRejectedValue(new DOMException('x', 'NotAllowedError'));
-    answerDialogs({ T: true }, '654321');
-    expect(await askProof(status({ authenticator: APP }), HOST, 'T')).toEqual({
-      code: '654321'
-    });
-    expect(mockLaunch.mock.calls[0][0].options.body.node.textContent).toBe(
+    answerDialogs({ T: true }, '123456');
+    expect(
+      await askProof(status({ authenticator: APP }), HOST, 'T', true)
+    ).toEqual({ code: '123456' });
+    expect(mockLaunch.mock.lastCall[0].options.body.node.textContent).toBe(
       'No passkey answered - enter a code of the authenticator app instead'
     );
   });
@@ -4527,35 +4689,31 @@ describe('EntryView', () => {
 });
 
 describe('connectSettings', () => {
-  it('sends the unlock duration, the shortest unlock password and the reveal window, and docks the panel, now and on every change', () => {
-    const values: Record<string, unknown> = {
-      unlockMinutes: 30,
-      passwordMinLength: 12,
-      revealSeconds: 60,
-      sidebar: 'right'
-    };
+  it('docks the panel on the chosen side, now and when the side changes, and sends nothing', () => {
+    const values: Record<string, unknown> = { sidebar: 'right' };
+    const read: string[] = [];
     const listeners: Array<() => void> = [];
     const settings: any = {
-      get: (key: string) => ({ composite: values[key] }),
+      get: (key: string) => {
+        read.push(key);
+        return { composite: values[key] };
+      },
       changed: { connect: (fn: () => void) => listeners.push(fn) }
     };
     const api = fakeApi();
     const dock = jest.fn();
-    connectSettings(settings, api, dock);
-    expect(api.setConfig).toHaveBeenLastCalledWith(30, 12, 60);
+    connectSettings(settings, dock);
     expect(dock).toHaveBeenLastCalledWith('right');
-    values.unlockMinutes = 90;
-    values.passwordMinLength = 16;
-    values.revealSeconds = 0;
     values.sidebar = 'left';
     listeners.forEach(fn => fn());
-    expect(api.setConfig).toHaveBeenLastCalledWith(90, 16, 0);
     expect(dock).toHaveBeenLastCalledWith('left');
-    // A change to anything else leaves the panel where it is: docking again
-    // collapses it.
-    values.unlockMinutes = 45;
+    // A change that leaves the side alone does not dock again: that collapses the
+    // open panel.
     listeners.forEach(fn => fn());
     expect(dock).toHaveBeenCalledTimes(2);
+    // Only the sidebar is the page's setting; the vault's policy lives on the server.
+    expect(read.every(key => key === 'sidebar')).toBe(true);
+    expect((api as any).setConfig).toBeUndefined();
   });
 });
 

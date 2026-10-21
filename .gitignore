@@ -149,3 +149,6 @@ junit.xml
 
 # review screenshots and scratch output
 tmp/
+
+# graphify's generated graph
+graphify-out/

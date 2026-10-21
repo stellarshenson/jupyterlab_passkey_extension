@@ -26,11 +26,24 @@ export interface IHolder {
 
 export interface ISlot {
   type: 'recovery' | 'passkey' | 'password';
+  /** The key derivation of a typed slot: argon2id today, scrypt in older slots. */
+  kdf?: string;
   cred_id?: string;
   rp_id?: string;
   prf_salt?: string;
   label?: string;
   created?: string;
+}
+
+/** The data key's age and rotation state, as the server reports them. */
+export interface IRotation {
+  /** The creation date; null for a version-1 vault, which gets a data key at its next unlock. */
+  created: string | null;
+  /** Whole days since `created`; null with none. */
+  age_days: number | null;
+  /** Days between rotations; 0 turns automatic rotation off. */
+  period_days: number;
+  due: boolean;
 }
 
 export interface IStatus {
@@ -41,11 +54,15 @@ export interface IStatus {
   slots: ISlot[];
   /** The registered authenticator app; null with none, absent with no vault. */
   authenticator?: { created: string } | null;
+  /** The data key's state; absent with no vault. */
+  rotation?: IRotation;
   settings: {
     unlock_minutes: number;
     password_min_length: number;
     /** How long a proof in this tab shows a password without another proof. */
     reveal_seconds: number;
+    /** The rotation period in days; 0 turns automatic rotation off. */
+    rotate_days: number;
   };
   path: string;
   /** Changes whenever the entries do; absent with no vault. */
@@ -120,7 +137,7 @@ export class VaultApi {
   /**
    * True for the reveal window after this tab had a proof accepted: the person at the
    * screen has just proven, so the entry popup's eye asks no second proof. The window
-   * is the `revealSeconds` setting, read from the server's status; 0 means every
+   * is the `reveal_seconds` setting, read from the server's status; 0 means every
    * reveal asks for a proof. An unlock does not start it. Kept by the tab, as the
    * eye's proof is asked by the tab: the server reads a password for any request on
    * an unlocked vault (`vault get`). A lock in this tab and a reload of the page end
@@ -135,16 +152,13 @@ export class VaultApi {
     return this._status(this._call<IStatus>('status', 'GET'));
   }
 
-  setConfig(
-    unlockMinutes: number,
-    passwordMinLength: number,
-    revealSeconds: number
-  ): Promise<void> {
-    return this._call('config', 'POST', {
-      unlock_minutes: unlockMinutes,
-      password_min_length: passwordMinLength,
-      reveal_seconds: revealSeconds
-    });
+  /**
+   * Rotate the data key now: the entries and the authenticator secret are re-sealed
+   * under a new key. The server takes a passkey or the recovery passphrase (a code
+   * alone holds no key) and needs an unlocked vault.
+   */
+  rotate(proof: Proof): Promise<void> {
+    return this._proving(this._call('rotate', 'POST', { proof }));
   }
 
   init(recovery: string): Promise<void> {
@@ -248,7 +262,7 @@ export class VaultApi {
   /** When this tab last had a proof accepted; 0 before the first and after a lock. */
   private _provenAt = 0;
 
-  /** The reveal window, from the `revealSeconds` setting; the server default until read. */
+  /** The reveal window, from the `reveal_seconds` setting; the server default until read. */
   private _revealMs = 60000;
 
   /** `request`, whose answer is the state: its settings set the reveal window. */

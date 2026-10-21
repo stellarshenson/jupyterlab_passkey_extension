@@ -5,30 +5,6 @@
   "jupyter.lab.setting-icon-label": "Passkey Vault",
   "type": "object",
   "properties": {
-    "unlockMinutes": {
-      "type": "integer",
-      "title": "Unlock duration (minutes)",
-      "description": "How long the vault stays unlocked after an unlock, for every client: the panel, the CLI and the Python API",
-      "default": 30,
-      "minimum": 1,
-      "maximum": 1440
-    },
-    "passwordMinLength": {
-      "type": "integer",
-      "title": "Shortest unlock password (characters)",
-      "description": "The fewest characters the vault accepts when an unlock password is set. A copy of the vault file can be attacked by guessing this password, so a longer one protects the file better",
-      "default": 12,
-      "minimum": 8,
-      "maximum": 128
-    },
-    "revealSeconds": {
-      "type": "integer",
-      "title": "Reveal window (seconds)",
-      "description": "After a proof in this tab the eye shows a password without another proof for this long. 0 asks for a proof at every reveal. An unlock does not start the window",
-      "default": 60,
-      "minimum": 0,
-      "maximum": 3600
-    },
     "sidebar": {
       "type": "string",
       "title": "Sidebar",

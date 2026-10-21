@@ -78,7 +78,14 @@ function vaultStatus(): any {
     settings: {
       unlock_minutes: 240,
       password_min_length: 12,
-      reveal_seconds: 60
+      reveal_seconds: 60,
+      rotate_days: 365
+    },
+    rotation: {
+      created: '2026-10-11T10:00:00Z',
+      age_days: 10,
+      period_days: 365,
+      due: false
     },
     path: '~/.local/share/jupyterlab-passkey/vault.json'
   };
@@ -93,8 +100,7 @@ async function activate(
 ): Promise<Map<string, any>> {
   Object.assign(mockApi, {
     status: jest.fn().mockResolvedValue(vaultStatus()),
-    addPasskey: jest.fn().mockResolvedValue(undefined),
-    setConfig: jest.fn().mockResolvedValue(undefined)
+    addPasskey: jest.fn().mockResolvedValue(undefined)
   });
   const commands = new Map<string, any>();
   mockApp = {
@@ -300,13 +306,18 @@ it('opens the Settings Editor at the vault settings, searched by the schema titl
     query: 'Passkey Vault'
   });
   expect(schema.title).toBe('Passkey Vault');
+  // The sidebar is the page's only setting: the vault's policy lives on the server.
+  expect(Object.keys(schema.properties)).toEqual(['sidebar']);
 });
 
 it('docks the panel on the side the setting names, and moves it when the setting changes', async () => {
   let side = 'left';
   let onChange = (): void => undefined;
+  const get = jest.fn((key: string) => ({
+    composite: key === 'sidebar' ? side : 240
+  }));
   const settings = {
-    get: (key: string) => ({ composite: key === 'sidebar' ? side : 240 }),
+    get,
     changed: { connect: (fn: () => void) => (onChange = fn) }
   };
   await activate({ load: jest.fn().mockResolvedValue(settings) });
@@ -323,4 +334,7 @@ it('docks the panel on the side the setting names, and moves it when the setting
     expect.anything()
   );
   expect(mockApp.shell.add).toHaveBeenCalledTimes(2);
+  // Only the sidebar is read, and nothing is posted to the server.
+  expect(get.mock.calls.every(call => call[0] === 'sidebar')).toBe(true);
+  expect((mockApi as any).setConfig).toBeUndefined();
 });

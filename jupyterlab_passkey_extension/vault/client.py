@@ -122,6 +122,11 @@ class Vault:
     def lock(self):
         request("POST", "lock")
 
+    def rotate(self, proof):
+        """Rotate the data key; `proof` is {"current": the recovery passphrase} or
+        {"cred_id", "prf": a passkey's PRF}. The vault must be unlocked."""
+        return request("POST", "rotate", {"proof": proof})
+
     def _unlocked(self, call):
         """Run `call`; when the vault is locked, unlock with the passkey and run it again."""
         try:

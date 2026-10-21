@@ -95,6 +95,14 @@ def test_put_then_get_returns_the_key(holder):
     assert 55 <= holder.remaining(VID) <= 60
 
 
+def test_put_then_get_returns_the_root_and_data_key_pair(holder):
+    # The service holds root || data key as one 64-byte value.
+    pair = KEY + KEY2
+    holder.put(VID, pair, 60)
+    assert holder.get(VID) == pair
+    assert 55 <= holder.remaining(VID) <= 60
+
+
 def test_a_second_put_replaces_the_first(holder):
     holder.put(VID, KEY, 60)
     holder.put(VID, KEY2, 60)

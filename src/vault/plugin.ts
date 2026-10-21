@@ -33,21 +33,17 @@ const PANEL_RANK = 900;
 export type Side = 'left' | 'right';
 
 /**
- * Apply the vault settings now and on every change: send the unlock duration, the
- * shortest unlock password and the reveal window to the server - it is the server
- * that holds the key for that long, whichever client unlocked - and move the panel to
- * the chosen sidebar.
+ * Move the panel to the chosen sidebar now and on every change. The vault's policy -
+ * the unlock duration, the reveal window, the shortest unlock password and the
+ * rotation period - lives in the server's configuration file, so the page has none to
+ * send.
  */
 export function connectSettings(
   settings: ISettingRegistry.ISettings,
-  api: VaultApi,
   dock: (side: Side) => void
 ): void {
   let docked: Side | null = null;
   const apply = (): void => {
-    const minutes = settings.get('unlockMinutes').composite as number;
-    const shortest = settings.get('passwordMinLength').composite as number;
-    const reveal = settings.get('revealSeconds').composite as number;
     const side =
       settings.get('sidebar').composite === 'left' ? 'left' : 'right';
     // Only on a change of side: docking again collapses the open panel.
@@ -55,11 +51,6 @@ export function connectSettings(
       docked = side;
       dock(side);
     }
-    api.setConfig(minutes, shortest, reveal).catch(e => {
-      console.warn(
-        `vault: could not send the settings - ${describeFailure(e)}`
-      );
-    });
   };
   apply();
   settings.changed.connect(apply);
@@ -187,7 +178,7 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
               // Said before a passphrase is asked for nothing.
               throw new VaultError(0, ipAddressAdvice(status.slots));
             }
-            const proof = await askProof(status, host, 'Add passkey');
+            const proof = await askProof(status, host, 'Add passkey', true);
             const label = (args.label as string) ?? '';
             if (
               proof === null ||
@@ -202,7 +193,7 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
 
     if (settingRegistry) {
       try {
-        connectSettings(await settingRegistry.load(VAULT_PLUGIN_ID), api, dock);
+        connectSettings(await settingRegistry.load(VAULT_PLUGIN_ID), dock);
         return;
       } catch (e) {
         console.warn('vault: settings unavailable, using defaults', e);

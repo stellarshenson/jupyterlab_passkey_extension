@@ -2,6 +2,28 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.56] - 2026-10-21
+
+Rotates the vault data key under a root key, migrates version-1 vaults on unlock, and moves vault policy from the Settings Editor into the server config file.
+
+### Added
+
+- Data-key rotation: an unlocked vault re-encrypts the entries and the authenticator secret under a new data key, with a recovery passphrase or a passkey as the proof
+- Automatic rotation at unlock once the data key is older than `rotate_days`, default 365 days; 0 turns it off
+- Version-2 vault format: every slot wraps a root key, the root seals a data key, and the data key seals the entries and the authenticator secret
+- The panel shows the data key's creation date, age, rotation period and due state, the key encryption algorithm, and the effective policy values read-only
+- Argon2id for new recovery and unlock-password slots; the slot used at unlock is rewritten under Argon2id on that unlock
+
+### Changed
+
+- Vault policy comes only from the server config file: `unlock_minutes` 30, `password_min_length` 12, `reveal_seconds` 60 and `rotate_days` 365, with defaults when a key is absent or invalid; the Settings Editor keeps only the sidebar choice
+- A version-1 vault migrates on its next unlock without any slot rewrapped, and an older build refuses version 2
+- A code proof still adds a slot or changes the recovery passphrase on an unlocked vault, but never rotates the data key
+
+### Fixed
+
+- `add_mfa` re-holds the root and data key after migrating a version-1 vault, so entry reads keep working until the next unlock
+
 ## [1.1.55] - 2026-10-21
 
 Makes the password reveal window a setting that an unlock never starts, lowers the unlock default to the 30-minute NIST idle limit, and rewrites the README.

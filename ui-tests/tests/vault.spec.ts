@@ -1069,3 +1069,28 @@ test('the recovery passphrase is changed and then opens the vault', async ({
   await submitSecret(page, 'a brand new recovery passphrase', false);
   await expect(state(page)).toContainText('Unlocked');
 });
+
+test('the data key is rotated with the recovery passphrase as the proof', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await openCog(page);
+  // This host's passkey is the first proof the panel uses. Removed, the rotation must
+  // ask for the recovery passphrase.
+  await removeMethod(page, method(page, 'passkey'));
+  await expect(method(page, 'passkey')).toHaveCount(0);
+  const vaultFile = path.join(VAULT_DIR, 'vault.json');
+  const created = (): string =>
+    JSON.parse(fs.readFileSync(vaultFile, 'utf8')).data_key.created;
+  const before = created();
+  // The date has second precision, so a second's wait keeps the rotated date distinct
+  // even when both writes land inside the same minute.
+  await page.waitForTimeout(1100);
+
+  await panel(page).getByRole('button', { name: 'Rotate data key' }).click();
+  await submitSecret(page, RECOVERY, false);
+  await expect(panel(page)).toContainText('Data key rotated');
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+  expect(created()).not.toBe(before);
+});

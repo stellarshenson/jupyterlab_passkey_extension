@@ -1,11 +1,12 @@
-"""Where the unlocked vault's data key is kept while the vault is open.
+"""Where the unlocked vault's keys are kept while the vault is open.
 
-The data key is unwrapped once, at unlock, and must then be kept for the unlock
-duration. What a host allows differs: a seccomp profile may forbid the kernel keyring,
-GnuPG may not be installed. So there are three holders behind one small interface,
-tried in a fixed order, and each reports in `capabilities` what it actually protects
-on this host - measured where it can be, never assumed. Callers never branch on which
-holder they have; `vault status` and the panel show the capabilities to the user.
+The root key and the data key are unwrapped once, at unlock, kept as one value, and
+must then be kept for the unlock duration. What a host allows differs: a seccomp
+profile may forbid the kernel keyring, GnuPG may not be installed. So there are three
+holders behind one small interface, tried in a fixed order, and each reports in
+`capabilities` what it actually protects on this host - measured where it can be, never
+assumed. Callers never branch on which holder they have; `vault status` and the panel
+show the capabilities to the user.
 
     keyctl     the kernel keyring (@u, one per uid and user namespace): kernel memory,
                kernel-enforced expiry, kept across a server restart in the same user
@@ -38,6 +39,9 @@ from .. import relay
 
 ENV = "JLAB_PASSKEY_VAULT_HOLDER"
 KEY_BYTES = 32
+# The holder keeps the root key and the data key as one value, root first. A 32-byte
+# value is a version-1 file's one key, which served both jobs.
+KEY_SIZES = (KEY_BYTES, 2 * KEY_BYTES)
 # The unlock duration setting tops out at 1440 minutes; the bound also keeps a TTL
 # far below keyctl's 32-bit timeout field.
 MAX_TTL = 24 * 3600
@@ -76,8 +80,8 @@ def _seconds_left(expiry_epoch):
 
 
 def _check(key, ttl):
-    if not isinstance(key, bytes) or len(key) != KEY_BYTES:
-        raise ValueError(f"the key must be {KEY_BYTES} bytes")
+    if not isinstance(key, bytes) or len(key) not in KEY_SIZES:
+        raise ValueError(f"the key must be {KEY_BYTES} or {2 * KEY_BYTES} bytes")
     if not isinstance(ttl, int) or isinstance(ttl, bool) or not 0 < ttl <= MAX_TTL:
         raise ValueError(f"ttl must be a whole number of seconds from 1 to {MAX_TTL}")
 
@@ -173,7 +177,7 @@ class KeyctlHolder(Holder):
 
     def get(self, vault_id):
         key = self._read(_key_desc(vault_id))
-        return key if key is not None and len(key) == KEY_BYTES else None
+        return key if key is not None and len(key) in KEY_SIZES else None
 
     def clear(self, vault_id):
         # Every match, not the first: a key added while @u was not searchable from
@@ -369,7 +373,7 @@ class GpgAgentHolder(Holder):
             key = bytes.fromhex(value) if value else None
         except ValueError:
             return None
-        return key if key is not None and len(key) == KEY_BYTES else None
+        return key if key is not None and len(key) in KEY_SIZES else None
 
     def clear(self, vault_id):
         try:

@@ -135,7 +135,14 @@ describe('the reveal window after a proof', () => {
       settings: {
         unlock_minutes: 30,
         password_min_length: 12,
-        reveal_seconds: reveal
+        reveal_seconds: reveal,
+        rotate_days: 365
+      },
+      rotation: {
+        created: '2026-10-11T10:00:00Z',
+        age_days: 10,
+        period_days: 365,
+        due: false
       },
       path: '~/.local/share/jupyterlab-passkey/vault.json'
     });
@@ -164,12 +171,29 @@ describe('the reveal window after a proof', () => {
     ['a password shown for a proof', api => api.revealPassword('nas', PROOF)],
     ['a new passkey', api => api.addPasskey(SLOT, PROOF)],
     ['a new pair', api => api.addMfa('a password', 'KEY', '123456', PROOF)],
-    ['a new recovery passphrase', api => api.replaceRecovery('new', PROOF)]
+    ['a new recovery passphrase', api => api.replaceRecovery('new', PROOF)],
+    ['a data-key rotation', api => api.rotate(PROOF)]
   ])('starts with %s', async (_what, request) => {
     mockMakeRequest.mockResolvedValue(answer(200, { value: 's3cret' }));
     const api = vault();
     await request(api);
     expect(api.proven).toBe(true);
+  });
+
+  it('rotates with the proof it was given', async () => {
+    mockMakeRequest.mockResolvedValue(answer(200, { rotation: {} }));
+    await vault().rotate(PROOF);
+    expect(mockMakeRequest).toHaveBeenCalledTimes(1);
+    expect(
+      (mockMakeRequest.mock.calls[0][0] as string).endsWith('/vault/rotate')
+    ).toBe(true);
+    expect(mockMakeRequest.mock.calls[0][1].method).toBe('POST');
+    expect(sent()).toEqual({ proof: PROOF });
+  });
+
+  it('has no way to send the vault settings to the server', () => {
+    // The policy lives in the server's configuration file; the page cannot set it.
+    expect((vault() as any).setConfig).toBeUndefined();
   });
 
   it('ends after the reveal window the status reports', async () => {

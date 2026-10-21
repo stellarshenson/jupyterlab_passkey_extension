@@ -3,6 +3,8 @@
 import base64
 import json
 import logging
+import os
+import shutil
 import string
 import time
 
@@ -10,7 +12,7 @@ import pytest
 import tornado.httpclient
 from jupyter_server.utils import url_path_join
 
-from jupyterlab_passkey_extension.vault import handlers, service as vault_service, totp
+from jupyterlab_passkey_extension.vault import handlers, service as vault_service, store, totp
 
 PASS = "correct horse battery staple"
 PRF = base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode()
@@ -87,6 +89,29 @@ def vault_file(vault_env):
     return (vault_env / "vault" / "vault.json").read_text()
 
 
+def downgrade_slot(kind, secret):
+    """Rewrite the vault's `kind` slot with scrypt, as an older build wrote it."""
+    path = store.vault_path()
+    doc = store.load(path)
+    root = store.unwrap_recovery(doc, PASS)
+    old = [s for s in doc["slots"] if s.get("type") == kind][0]
+    slot = {"type": kind, "kdf": "scrypt", **store.SCRYPT, "salt": store._b64e(os.urandom(16))}
+    if "created" in old:
+        slot["created"] = old["created"]
+    slot["wrapped"] = store._seal(store._scrypt_kek(slot, secret), root, store._slot_aad(slot))
+    doc["slots"][doc["slots"].index(old)] = slot
+    with open(path, "w") as f:
+        json.dump(doc, f)
+    return old
+
+
+def write_config(vault_env, values):
+    """Write the vault policy file the server reads, under its state directory."""
+    path = vault_env / "state" / "jupyterlab-passkey" / "vault-config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(values))
+
+
 # --------------------------------------------------------------------------- #
 # lifecycle
 # --------------------------------------------------------------------------- #
@@ -95,7 +120,8 @@ def vault_file(vault_env):
 async def test_status_before_init(jp_fetch, vault_env):
     s = await call(jp_fetch, "status", method="GET")
     assert s["initialized"] is False and s["unlocked"] is False
-    assert s["settings"] == {"unlock_minutes": 30, "password_min_length": 12, "reveal_seconds": 60}
+    assert s["settings"] == {"unlock_minutes": 30, "password_min_length": 12,
+                             "reveal_seconds": 60, "rotate_days": 365}
     assert s["holder"]["name"].startswith("memory/")
     assert set(s["holder"]["capabilities"]) == {
         "locked_memory", "no_core_dump", "holder_ttl", "locks_on_restart", "container_isolated"}
@@ -139,6 +165,7 @@ async def test_lock_then_every_call_that_needs_the_held_key_answers_423(jp_fetch
         ("stage", {"name": "github/api", "kind": "secret"}, "POST"),
         ("import", {"entries": []}, "POST"),
         ("passkeys-remove", {"cred_id": "c"}, "POST"),
+        ("rotate", {"proof": {"current": PASS}}, "POST"),
     ]:
         code, error = await fails(jp_fetch, action, body, method)
         assert code == 423, action
@@ -153,6 +180,199 @@ async def test_recovery_unlock(jp_fetch, vault_env):
     assert (await call(jp_fetch, "status", method="GET"))["unlocked"] is False
     s = await call(jp_fetch, "unlock", {"recovery": PASS})
     assert s["unlocked"] is True
+
+
+@pytest.mark.parametrize("change,error", [
+    (lambda s: s.update(m=1), "wrong recovery passphrase"),
+    (lambda s: s.update(m=-1), "the recovery slot has an unusable Argon2id cost"),
+    (lambda s: s.update(m=2**32), "the recovery slot has an unusable Argon2id cost"),
+    (lambda s: s.update(t=-1), "the recovery slot has an unusable Argon2id cost"),
+    (lambda s: s.update(p=-1), "the recovery slot has an unusable Argon2id cost"),
+])
+async def test_an_argon2_parameter_argon2_rejects_answers_400(jp_fetch, vault_env, change, error):
+    await init(jp_fetch)
+    edit_vault_file(vault_env, lambda d: change(d["slots"][0]))
+    await call(jp_fetch, "lock")
+    code, message = await fails(jp_fetch, "unlock", {"recovery": PASS})
+    assert code == 400 and message == error
+
+
+async def test_a_fresh_init_writes_an_argon2id_recovery_slot(jp_fetch, vault_env):
+    await init(jp_fetch)
+    slot = json.loads(vault_file(vault_env))["slots"][0]
+    assert (slot["type"], slot["kdf"]) == ("recovery", "argon2id")
+    assert (slot["m"], slot["t"], slot["p"]) == (65536, 3, 1)
+    assert "n" not in slot and "r" not in slot
+
+
+async def test_a_recovery_unlock_upgrades_the_recovery_slot(jp_fetch, vault_env):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    downgrade_slot("recovery", PASS)
+    await call(jp_fetch, "lock")
+    assert (await call(jp_fetch, "unlock", {"recovery": PASS}))["unlocked"] is True
+    slot = [s for s in json.loads(vault_file(vault_env))["slots"] if s["type"] == "recovery"][0]
+    assert slot["kdf"] == "argon2id"
+    assert (slot["m"], slot["t"], slot["p"]) == (65536, 3, 1)
+    doc = json.loads(vault_file(vault_env))
+    root = store.unwrap_recovery(doc, PASS)
+    entries = store.read_entries(doc, store.open_data_key(doc, root))
+    assert [e["name"] for e in entries] == ["github/api"]
+    assert (await call(jp_fetch, "reveal", {"name": "github/api"}))["value"] == SECRET
+
+
+async def test_a_password_unlock_upgrades_the_password_slot(jp_fetch, vault_env, clock):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    await add_mfa(jp_fetch, clock)
+    old = downgrade_slot("password", UNLOCK)
+    await call(jp_fetch, "lock")
+    assert (await call(jp_fetch, "unlock", {"password": UNLOCK, "code": clock.code()}))["unlocked"] is True
+    slot = [s for s in json.loads(vault_file(vault_env))["slots"] if s["type"] == "password"][0]
+    assert slot["kdf"] == "argon2id" and slot["created"] == old["created"]
+    doc = json.loads(vault_file(vault_env))
+    root = store.unwrap_password(doc, UNLOCK)
+    entries = store.read_entries(doc, store.open_data_key(doc, root))
+    assert [e["name"] for e in entries] == ["github/api"]
+
+
+async def test_a_passkey_unlock_leaves_the_file_unchanged(jp_fetch, vault_env):
+    await init(jp_fetch)
+    await call(jp_fetch, "passkeys", {
+        "cred_id": "cred-1", "rp_id": "lab.example", "prf_salt": "c2FsdA", "prf": PRF,
+        "proof": {"current": PASS}})
+    downgrade_slot("recovery", PASS)
+    before = vault_file(vault_env)
+    await call(jp_fetch, "lock")
+    assert (await call(jp_fetch, "unlock", {"cred_id": "cred-1", "prf": PRF}))["unlocked"] is True
+    assert vault_file(vault_env) == before
+
+
+def test_a_failed_slot_upgrade_does_not_fail_the_unlock(vault_env, monkeypatch, caplog):
+    svc = handlers._service
+    svc.init(PASS)
+    svc.add("github/api", {"password": "s3cret"})
+    svc.lock()
+
+    def boom(*args, **kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(store, "upgrade_slot", boom)
+    caplog.set_level(logging.WARNING)
+    svc.unlock_recovery(PASS)
+    assert svc.read("github/api") == "s3cret"
+    assert "Argon2id" in caplog.text and PASS not in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# data-key rotation
+# --------------------------------------------------------------------------- #
+
+
+async def test_rotate_with_the_recovery_proof_changes_the_data_key(jp_fetch, vault_env):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    edit_vault_file(vault_env, lambda d: d["data_key"].update(created="2025-01-01T00:00:00Z"))
+    before = await call(jp_fetch, "status", method="GET")
+    assert before["rotation"]["created"] == "2025-01-01T00:00:00Z"
+    assert before["rotation"]["period_days"] == 365 and before["rotation"]["due"] is True
+    result = await call(jp_fetch, "rotate", {"proof": {"current": PASS}})
+    after = await call(jp_fetch, "status", method="GET")
+    assert result["rotation"] == after["rotation"]
+    assert after["rotation"]["created"] != before["rotation"]["created"]
+    assert after["rotation"]["age_days"] == 0 and after["rotation"]["due"] is False
+    assert (await call(jp_fetch, "reveal", {"name": "github/api"}))["value"] == SECRET
+
+
+async def test_rotate_needs_an_unlocked_vault(jp_fetch, vault_env):
+    await init(jp_fetch)
+    await call(jp_fetch, "lock")
+    assert await fails(jp_fetch, "rotate", {"proof": {"current": PASS}}) == (
+        423, "the vault is locked")
+
+
+async def test_rotate_needs_a_proof(jp_fetch, vault_env):
+    await init(jp_fetch)
+    assert await fails(jp_fetch, "rotate", {}) == (403, NEEDS_PROOF)
+    assert await fails(jp_fetch, "rotate", {"proof": None}) == (403, NEEDS_PROOF)
+
+
+async def test_a_code_alone_is_no_proof_for_rotation(jp_fetch, vault_env, clock):
+    await init(jp_fetch)
+    await add_mfa(jp_fetch, clock)
+    assert await fails(jp_fetch, "rotate", {"proof": {"code": clock.code()}}) == (
+        403, "a code of the authenticator app is no proof for this - use a passkey or "
+             "the recovery passphrase")
+
+
+async def test_an_unlock_rotates_a_data_key_past_its_period(jp_fetch, vault_env):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    edit_vault_file(vault_env, lambda d: d["data_key"].update(created="2025-01-01T00:00:00Z"))
+    await call(jp_fetch, "lock")
+    before = json.loads(vault_file(vault_env))["data_key"]["sealed"]
+    assert (await call(jp_fetch, "unlock", {"recovery": PASS}))["rotation"]["due"] is False
+    assert json.loads(vault_file(vault_env))["data_key"]["sealed"] != before
+    assert (await call(jp_fetch, "reveal", {"name": "github/api"}))["value"] == SECRET
+
+
+def test_a_version_one_fixture_is_migrated_on_unlock(vault_env):
+    path = vault_env / "vault" / "vault.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(os.path.join(os.path.dirname(__file__), "fixtures", "vault-1.1.55.json"),
+                    path)
+    svc = handlers._service
+    svc.unlock_recovery(PASS)
+    doc = store.load(path)
+    assert doc["version"] == 2
+    root = store.unwrap_recovery(doc, PASS)
+    held = svc.holder().get(svc._vault_id())
+    assert held[:32] == root and store.open_data_key(doc, root) == held[32:]
+    assert [e["name"] for e in store.read_entries(doc, held[32:])] == ["fixture-entry"]
+    assert [e["name"] for e in svc.list_entries()] == ["fixture-entry"]
+    with pytest.raises(store.VaultError, match="do not decrypt"):
+        store.read_entries(doc, root)
+
+
+def test_adding_mfa_to_an_unlocked_version_one_vault_rekeys_the_holder(vault_env, clock):
+    path = vault_env / "vault" / "vault.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(os.path.join(os.path.dirname(__file__), "fixtures", "vault-1.1.55.json"),
+                    path)
+    doc = store.load(path)
+    root = store.unwrap_recovery(doc, PASS)
+    svc = handlers._service
+    svc.holder().put(doc["id"], root, 600)
+    svc.add_mfa(UNLOCK, APP_KEY, clock.code(), {"current": PASS})
+    after = store.load(path)
+    assert after["version"] == 2
+    held = svc.holder().get(after["id"])
+    assert len(held) == 64 and held[:32] == root and held[32:] == store.open_data_key(after, root)
+    assert [e["name"] for e in svc.list_entries()] == ["fixture-entry"]
+    assert svc.read("fixture-entry") == "fixture-password"
+
+
+def test_an_adopt_that_cannot_be_written_keeps_a_version_one_file_readable(
+        vault_env, monkeypatch, caplog):
+    # A read-only vault: the unlock must still serve the file with the root key, and a
+    # later write must seal with the version-1 AAD, leaving the version at 1.
+    path = vault_env / "vault" / "vault.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(os.path.join(os.path.dirname(__file__), "fixtures", "vault-1.1.55.json"),
+                    path)
+    svc = handlers._service
+
+    def boom(*args, **kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(store, "adopt_data_key", boom)
+    caplog.set_level(logging.WARNING)
+    svc.unlock_recovery(PASS)
+    assert "could not give the vault a data key" in caplog.text
+    assert PASS not in caplog.text
+    svc.add("github/api", {"password": "s3cret"})
+    assert store.load(path)["version"] == 1
+    assert svc.read("github/api") == "s3cret"
 
 
 async def test_passkey_register_and_unlock(jp_fetch, vault_env):
@@ -266,7 +486,8 @@ def store_secret(vault_env):
     from jupyterlab_passkey_extension.vault import store
 
     svc = handlers._service
-    return store.authenticator_secret(store.load(store.vault_path()), svc.holder().get(svc._vault_id()))
+    held = svc.holder().get(svc._vault_id())
+    return store.authenticator_secret(store.load(store.vault_path()), held[32:])
 
 
 async def test_the_password_and_the_app_are_added_together_with_a_right_code_and_a_proof(
@@ -297,7 +518,7 @@ async def test_the_password_and_the_app_are_added_together_with_a_right_code_and
     doc = json.loads(vault_file(vault_env))
     assert [x["type"] for x in doc["slots"]] == ["recovery", "password"]
     recovery, slot = doc["slots"]
-    assert (slot["kdf"], slot["n"], slot["r"], slot["p"]) == tuple(recovery[k] for k in ("kdf", "n", "r", "p"))
+    assert (slot["kdf"], slot["m"], slot["t"], slot["p"]) == tuple(recovery[k] for k in ("kdf", "m", "t", "p"))
     # The file tells that an app was added and since when; its secret is sealed.
     app = doc["authenticator"]
     assert set(app) == {"created", "secret"}
@@ -307,7 +528,7 @@ async def test_the_password_and_the_app_are_added_together_with_a_right_code_and
     # Status shows both without a key.
     s = await call(jp_fetch, "status", method="GET")
     assert [x for x in s["slots"] if x["type"] == "password"] == [
-        {k: slot[k] for k in ("type", "kdf", "n", "r", "p", "created")}]
+        {k: slot[k] for k in ("type", "kdf", "m", "t", "p", "created")}]
     assert s["authenticator"] == {"created": app["created"]}
     # One pair at a time.
     clock.advance(1)
@@ -371,13 +592,17 @@ async def test_a_code_proves_on_an_unlocked_vault_and_the_password_alone_only_a_
     for action, body in [("passkeys", slot), ("recovery", {"recovery": "a new passphrase"})]:
         assert await fails(jp_fetch, action, {**body, "proof": {"password": UNLOCK}}) == NO_PROOF
         assert vault_file(vault_env) == before
-    # A code proves all three.
+    # A code proves a reveal, a new passkey and a recovery replacement on an unlocked
+    # vault: it checks the code, then hands the held root to the slot writer. It holds
+    # no key of its own, so a rotation still refuses it
+    # (test_a_code_alone_is_no_proof_for_rotation).
     assert (await call(jp_fetch, "reveal", {**reveal, "code": clock.code()}))["value"] == SECRET
     clock.advance(1)
     await call(jp_fetch, "passkeys", {**slot, "proof": {"code": clock.code()}})
     clock.advance(1)
     await call(jp_fetch, "recovery", {"recovery": "second passphrase", "proof": {"code": clock.code()}})
-    clock.advance(1)
+    s = await call(jp_fetch, "status", method="GET")
+    assert [x["cred_id"] for x in s["slots"] if x["type"] == "passkey"] == ["c1"]
     # Locked, neither half proves anything alone: only the pair opens the vault.
     await call(jp_fetch, "lock")
     locked = (423, "the vault is locked")
@@ -389,20 +614,14 @@ async def test_a_code_proves_on_an_unlocked_vault_and_the_password_alone_only_a_
     assert (await call(jp_fetch, "unlock", {"recovery": "second passphrase"}))["unlocked"]
 
 
-async def test_the_shortest_unlock_password_is_a_setting(jp_fetch, vault_env, clock):
+async def test_the_shortest_unlock_password_comes_from_the_server_config(
+        jp_fetch, vault_env, clock):
     await init(jp_fetch)
-    # The frontend sends both settings; one that sends the duration alone keeps the length.
-    await call(jp_fetch, "config", {"unlock_minutes": 30, "password_min_length": 16})
-    await call(jp_fetch, "config", {"unlock_minutes": 60})
-    s = await call(jp_fetch, "status", method="GET")
-    assert s["settings"] == {"unlock_minutes": 60, "password_min_length": 16, "reveal_seconds": 60}
+    write_config(vault_env, {"password_min_length": 16})
     pair = {"secret": APP_KEY, "code": clock.code(), "proof": {"current": PASS}}
     assert await fails(jp_fetch, "mfa", {**pair, "password": "x" * 15}) == (
         400, "an unlock password is at least 16 characters")
     await call(jp_fetch, "mfa", {**pair, "password": "x" * 16})
-    for bad in (7, 129, "12", True, 12.5):
-        code, error = await fails(jp_fetch, "config", {"unlock_minutes": 60, "password_min_length": bad})
-        assert code == 400 and error == "password_min_length must be a whole number from 8 to 128"
     assert (await call(jp_fetch, "status", method="GET"))["settings"]["password_min_length"] == 16
 
 
@@ -520,7 +739,8 @@ async def test_recovery_replacement_needs_a_proof_in_the_same_request(jp_fetch, 
 
 async def test_the_vault_locks_itself_at_expiry(jp_fetch, vault_env, monkeypatch):
     svc = handlers._service
-    monkeypatch.setattr(svc, "_hold", lambda dek: svc.holder().put(svc._vault_id(), dek, 1))
+    monkeypatch.setattr(svc, "_hold",
+                        lambda root, dek: svc.holder().put(svc._vault_id(), root + dek, 1))
     await init(jp_fetch)
     assert (await call(jp_fetch, "status", method="GET"))["unlocked"]
     time.sleep(1.5)
@@ -535,35 +755,42 @@ async def test_the_vault_locks_itself_at_expiry(jp_fetch, vault_env, monkeypatch
 
 
 async def test_the_unlock_duration_setting_reaches_the_holder(jp_fetch, vault_env):
-    await call(jp_fetch, "config", {"unlock_minutes": 1})
+    write_config(vault_env, {"unlock_minutes": 1})
     await init(jp_fetch)
     s = await call(jp_fetch, "status", method="GET")
-    assert s["settings"] == {"unlock_minutes": 1, "password_min_length": 12, "reveal_seconds": 60}
+    assert s["settings"] == {"unlock_minutes": 1, "password_min_length": 12,
+                             "reveal_seconds": 60, "rotate_days": 365}
     assert 55 <= s["remaining"] <= 60
 
 
-@pytest.mark.parametrize("bad", [0, 1441, "30", True, None, 2.5])
-async def test_the_unlock_duration_must_be_1_to_1440(jp_fetch, vault_env, bad):
-    code, error = await fails(jp_fetch, "config", {"unlock_minutes": bad})
-    assert code == 400 and "1 to 1440" in error
+async def test_the_config_file_values_reach_status(jp_fetch, vault_env):
+    write_config(vault_env, {"unlock_minutes": 45, "reveal_seconds": 120,
+                             "password_min_length": 20, "rotate_days": 30})
+    assert (await call(jp_fetch, "status", method="GET"))["settings"] == {
+        "unlock_minutes": 45, "password_min_length": 20, "reveal_seconds": 120,
+        "rotate_days": 30}
 
 
-async def test_the_reveal_window_is_a_setting(jp_fetch, vault_env):
-    # The default, a stored value, a value kept when the request does not send it, and
-    # 0 for every reveal asking a proof.
+async def test_an_absent_or_invalid_config_key_uses_its_default(jp_fetch, vault_env):
+    defaults = {"unlock_minutes": 30, "password_min_length": 12,
+                "reveal_seconds": 60, "rotate_days": 365}
+    assert (await call(jp_fetch, "status", method="GET"))["settings"] == defaults
+    write_config(vault_env, {"unlock_minutes": 0, "password_min_length": "20",
+                             "reveal_seconds": 3601, "rotate_days": True})
+    assert (await call(jp_fetch, "status", method="GET"))["settings"] == defaults
+
+
+async def test_the_reveal_window_comes_from_the_server_config(jp_fetch, vault_env):
     assert (await call(jp_fetch, "status", method="GET"))["settings"]["reveal_seconds"] == 60
-    await call(jp_fetch, "config", {"unlock_minutes": 30, "reveal_seconds": 300})
+    write_config(vault_env, {"reveal_seconds": 300})
     assert (await call(jp_fetch, "status", method="GET"))["settings"]["reveal_seconds"] == 300
-    await call(jp_fetch, "config", {"unlock_minutes": 45})
-    assert (await call(jp_fetch, "status", method="GET"))["settings"]["reveal_seconds"] == 300
-    await call(jp_fetch, "config", {"unlock_minutes": 45, "reveal_seconds": 0})
+    write_config(vault_env, {"reveal_seconds": 0})
     assert (await call(jp_fetch, "status", method="GET"))["settings"]["reveal_seconds"] == 0
 
 
-@pytest.mark.parametrize("bad", [-1, 3601, "60", True, 6.5])
-async def test_the_reveal_window_must_be_0_to_3600(jp_fetch, vault_env, bad):
-    code, error = await fails(jp_fetch, "config", {"unlock_minutes": 30, "reveal_seconds": bad})
-    assert code == 400 and error == "reveal_seconds must be a whole number from 0 to 3600"
+async def test_the_config_action_is_gone(jp_fetch, vault_env):
+    code, _ = await fails(jp_fetch, "config", {"unlock_minutes": 30})
+    assert code == 404
 
 
 # --------------------------------------------------------------------------- #
@@ -685,7 +912,7 @@ async def test_stage_refuses_a_code_too_long_to_show(jp_fetch, vault_env):
 
 @pytest.mark.parametrize("action,method", [
     ("status", "GET"), ("entries", "GET"), ("generate", "GET"), ("init", "POST"),
-    ("unlock", "POST"), ("lock", "POST"), ("reveal", "POST"), ("config", "POST"),
+    ("unlock", "POST"), ("lock", "POST"), ("rotate", "POST"), ("reveal", "POST"),
     ("passkeys", "POST"), ("entries", "PATCH"), ("mfa", "POST"), ("mfa-remove", "POST"),
 ])
 async def test_every_action_needs_the_token(http_server_client, jp_base_url, vault_env, action, method):
@@ -843,21 +1070,13 @@ async def test_a_body_that_is_not_an_object_is_400(jp_fetch, vault_env):
     assert exc.value.code == 400
 
 
-def test_the_settings_schema_declares_the_unlock_duration_and_sidebar():
+def test_the_settings_schema_declares_only_the_sidebar():
     import pathlib
 
     schema = json.loads(
         (pathlib.Path(__file__).parents[2] / "schema" / "vault.json").read_text()
     )
-    minutes = schema["properties"]["unlockMinutes"]
-    assert (minutes["type"], minutes["default"], minutes["minimum"], minutes["maximum"]) == (
-        "integer", 30, 1, vault_service.MAX_UNLOCK_MINUTES)
-    assert minutes["default"] == vault_service.DEFAULT_UNLOCK_MINUTES
-    length = schema["properties"]["passwordMinLength"]
-    assert (length["type"], length["default"], length["minimum"], length["maximum"]) == (
-        "integer", vault_service.DEFAULT_PASSWORD_MIN_LENGTH, *vault_service.PASSWORD_MIN_LENGTH_RANGE)
-    reveal = schema["properties"]["revealSeconds"]
-    assert (reveal["type"], reveal["default"], reveal["minimum"], reveal["maximum"]) == (
-        "integer", vault_service.DEFAULT_REVEAL_SECONDS, *vault_service.REVEAL_SECONDS_RANGE)
+    # The vault's policy lives in the server's configuration file, not the page.
+    assert set(schema["properties"]) == {"sidebar"}
     sidebar = schema["properties"]["sidebar"]
     assert sidebar["enum"] == ["right", "left"] and sidebar["default"] == "right"

@@ -825,6 +825,28 @@ def test_recovery_replacement(ready, monkeypatch):
     assert ready.status()["unlocked"]
 
 
+def test_rotate_replaces_the_data_key_with_the_recovery_proof(ready, monkeypatch, capsys):
+    before = ready.holder().get(ready._vault_id())
+    run(monkeypatch, "vault", "rotate", stdin=PASS + "\n")
+    out, err = capsys.readouterr()
+    assert "data key: created " in err and "period 365 days" in err and "not due" in err
+    assert ready.holder().get(ready._vault_id()) != before
+    assert ready.read("github/api") == SECRET
+
+
+def test_rotate_needs_an_unlocked_vault(ready, monkeypatch):
+    run(monkeypatch, "vault", "lock")
+    with pytest.raises(SystemExit, match="the vault is locked - run `jupyterlab-passkey vault unlock`"):
+        run(monkeypatch, "vault", "rotate", stdin=PASS + "\n")
+
+
+def test_rotate_refuses_a_wrong_recovery_proof(ready, monkeypatch):
+    before = ready.holder().get(ready._vault_id())
+    with pytest.raises(SystemExit, match="wrong recovery passphrase"):
+        run(monkeypatch, "vault", "rotate", stdin=PASS + "-wrong\n")
+    assert ready.holder().get(ready._vault_id()) == before
+
+
 # --------------------------------------------------------------------------- #
 # errors and the Python API
 # --------------------------------------------------------------------------- #
@@ -849,6 +871,8 @@ def test_python_api(ready):
     vault.lock()
     assert vault.status()["unlocked"] is False
     assert vault.unlock(recovery=PASS)["unlocked"] is True
+    rotation = vault.rotate({"current": PASS})["rotation"]
+    assert rotation["period_days"] == 365 and rotation["due"] is False
 
 
 def test_python_api_unlocks_on_demand(ready):

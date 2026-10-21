@@ -772,6 +772,19 @@ async function launchCodeDialog(
 }
 
 /**
+ * Ask for the code that unlocks the vault with the unlock password. Resolves to null
+ * when cancelled.
+ */
+export async function askUnlockCode(): Promise<string | null> {
+  const { button, code } = await launchCodeDialog(
+    'Enter the code the authenticator app shows',
+    'Unlock vault',
+    'Unlock'
+  );
+  return button.accept ? code : null;
+}
+
+/**
  * Ask for a code of the authenticator app. Resolves to the proof, to `passphrase`
  * when the user chose the recovery passphrase, or to null when cancelled.
  */
@@ -789,31 +802,21 @@ async function askCode(
 }
 
 /**
- * Ask for the code that unlocks the vault with the unlock password. Resolves to null
- * when cancelled.
- */
-export async function askUnlockCode(): Promise<string | null> {
-  const { button, code } = await launchCodeDialog(
-    'Enter the code the authenticator app shows',
-    'Unlock vault',
-    'Unlock'
-  );
-  return button.accept ? code : null;
-}
-
-/**
- * The proof the server asks before a recovery change or a new unlock method: a
- * passkey request when a passkey for this hostname exists.
- * With none - or when that request gets no answer, or the passkey gives no PRF - a
- * code of the authenticator app when the vault has one and is unlocked,
- * else, or when the user chooses it, the current recovery passphrase. Call it
- * straight from a click: the passkey request comes before any other await. Resolves
- * to null when a dialog is cancelled.
+ * The proof the server asks before a rotation, a recovery change or a new unlock
+ * method: a passkey request when a passkey for this hostname exists. With none - or
+ * when that request gets no answer, or the passkey gives no PRF - a code of the
+ * authenticator app when `code` is set, the vault has one and is unlocked; else, or
+ * when the user chooses it, the current recovery passphrase. A code holds no key of
+ * its own: the server takes it for a new passkey, a new unlock method and a recovery
+ * change, but not for a rotation, whose caller leaves `code` false. Call it straight
+ * from a click: the passkey request comes before any other await. Resolves to null
+ * when a dialog is cancelled.
  */
 export async function askProof(
   status: IStatus,
   host: string,
-  title: string
+  title: string,
+  code = false
 ): Promise<Proof | null> {
   let lead = '';
   if (matchingSlots(status.slots, host).length > 0) {
@@ -835,8 +838,9 @@ export async function askProof(
   }
   const prompt = (proof: string) =>
     lead ? `${lead}enter ${proof} instead` : `Enter ${proof}`;
-  // A code holds no key: it proves only while the vault is unlocked.
-  if (status.unlocked && status.authenticator) {
+  // A code holds no key: it proves only while the vault is unlocked, and only for
+  // the actions whose caller takes one.
+  if (code && status.unlocked && status.authenticator) {
     const answer = await askCode(
       prompt('a code of the authenticator app'),
       title

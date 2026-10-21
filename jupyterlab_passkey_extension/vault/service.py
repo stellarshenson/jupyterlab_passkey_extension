@@ -1,22 +1,26 @@
 """The vault agent inside the Jupyter server.
 
-Only this process opens the vault. It unwraps the data key at unlock, keeps it in the
-key holder for the configured duration, and does every read and write on behalf of the
-REST handlers - which the CLI, the Python API and the panel all call. No secret is ever
-put in an exception message, so a refusal can be reported and logged as it is.
+Only this process opens the vault. It unwraps the root key at unlock, opens the data
+key with it, keeps both in the key holder for the configured duration, and does every
+read and write on behalf of the REST handlers - which the CLI, the Python API and the
+panel all call. No secret is ever put in an exception message, so a refusal can be
+reported and logged as it is.
 """
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
 import string
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .. import relay
 from . import holders, store, totp
 from .store import VaultError
+
+log = logging.getLogger(__name__)
 
 DEFAULT_UNLOCK_MINUTES = 30
 # The shortest unlock password the vault accepts: the setting, and what it may be set
@@ -27,6 +31,10 @@ PASSWORD_MIN_LENGTH_RANGE = (8, 128)
 # the setting may be. 0 asks a proof at every reveal.
 DEFAULT_REVEAL_SECONDS = 60
 REVEAL_SECONDS_RANGE = (0, 3600)
+# How long a data key may serve before an unlock rotates it, in days, and what the
+# setting may be. 0 turns automatic rotation off.
+DEFAULT_ROTATE_DAYS = 365
+ROTATE_DAYS_RANGE = (0, 3650)
 # What a lock cannot reach, said when it finds no vault file, or a damaged one.
 _RESTART_CLAUSE = (
     "on keyctl or gpg-agent a key unlocked before a server restart can stay held until its "
@@ -95,6 +103,12 @@ def _shown(path):
     """The path as a user reads it: ~ for the home directory."""
     home = os.path.expanduser("~")
     return "~" + path[len(home):] if path.startswith(home + os.sep) else path
+
+
+def _age_days(stamp):
+    """Whole days from a vault date to now; 0 for today, and 0 for a clock behind."""
+    then = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return max(0, (datetime.now(timezone.utc) - then).days)
 
 
 def _check_name(name):
@@ -179,24 +193,8 @@ class VaultService:
     def reveal_seconds(self):
         return self._setting("reveal_seconds", *REVEAL_SECONDS_RANGE, DEFAULT_REVEAL_SECONDS)
 
-    def set_config(self, unlock_minutes, password_min_length=None, reveal_seconds=None):
-        """Store the settings the frontend sends. A value not sent keeps its value."""
-        if password_min_length is None:
-            password_min_length = self.password_min_length()
-        if reveal_seconds is None:
-            reveal_seconds = self.reveal_seconds()
-        for key, value, (low, high) in (
-                ("unlock_minutes", unlock_minutes, (1, MAX_UNLOCK_MINUTES)),
-                ("password_min_length", password_min_length, PASSWORD_MIN_LENGTH_RANGE),
-                ("reveal_seconds", reveal_seconds, REVEAL_SECONDS_RANGE)):
-            if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
-                raise VaultError(f"{key} must be a whole number from {low} to {high}")
-        path = _config_path()
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump({"unlock_minutes": unlock_minutes, "password_min_length": password_min_length,
-                       "reveal_seconds": reveal_seconds}, f)
+    def rotate_days(self):
+        return self._setting("rotate_days", *ROTATE_DAYS_RANGE, DEFAULT_ROTATE_DAYS)
 
     # -- holder and data key -------------------------------------------------
 
@@ -206,17 +204,73 @@ class VaultService:
     def _vault_id(self):
         return store.load(store.vault_path())["id"]
 
-    def _dek(self):
-        dek = self.holder().get(self._vault_id())
-        if dek is None:
+    def _held_key(self):
+        key = self.holder().get(self._vault_id())
+        if key is None:
             raise Locked("the vault is locked")
-        return dek
+        return key
 
-    def _hold(self, dek):
+    def _dek(self):
+        """The data half of the held pair. A 32-byte hold is a version-1 file's one key,
+        which serves both jobs."""
+        key = self._held_key()
+        return key[32:] if len(key) == 64 else key
+
+    def _root(self):
+        """The root half of the held pair. A 32-byte hold is a version-1 file's one key,
+        which serves both jobs."""
+        key = self._held_key()
+        return key[:32] if len(key) == 64 else key
+
+    def _hold(self, root, dek):
         vault_id = self._vault_id()
-        self.holder().put(vault_id, dek, self.unlock_minutes() * 60)
+        self.holder().put(vault_id, root + dek, self.unlock_minutes() * 60)
         self._held = vault_id
         self._wrong_codes = 0
+
+    def _upgrade_slot(self, path, root, kind, secret):
+        """Argon2id for the slot this unlock used. Best effort: an unlock that already
+        succeeded must not fail because the migration could not be written."""
+        try:
+            store.upgrade_slot(path, root, kind, secret)
+        except Exception as e:
+            log.warning("could not upgrade the %s slot to Argon2id: %s", kind, e)
+
+    def _finish_unlock(self, path, doc, root, kind, secret):
+        """The root and data key for an unlock that has just opened `root`: a version-1
+        file is given a data key, the slot this unlock used is upgraded, and a data key
+        past its period is rotated. A migration or rotation that cannot be written is a
+        warning, not a failed unlock; the key this unlock came with serves it."""
+        if doc["version"] == 1:
+            try:
+                dek, _ = store.adopt_data_key(path, root)
+            except Exception as e:
+                log.warning("could not give the vault a data key: %s", e)
+                dek = root
+            else:
+                doc = store.load(path)
+        else:
+            dek = store.open_data_key(doc, root)
+        if kind is not None:
+            self._upgrade_slot(path, root, kind, secret)
+        period = self.rotate_days()
+        created = store.data_key_created(doc)
+        if period > 0 and created is not None and _age_days(created) >= period:
+            try:
+                dek = store.rotate_data_key(path, root)
+            except Exception as e:
+                log.warning("could not rotate the vault's data key: %s", e)
+        return root, dek
+
+    def _rotation(self, doc):
+        """The data key's creation date, age, period and due state, for status."""
+        created = store.data_key_created(doc)
+        period = self.rotate_days()
+        if created is None:
+            return {"created": None, "age_days": None, "period_days": period, "due": False}
+        age = _age_days(created)
+        return {"created": created, "age_days": age, "period_days": period,
+                "due": period > 0 and age >= period}
 
     # -- state ---------------------------------------------------------------
 
@@ -231,13 +285,15 @@ class VaultService:
             "slots": [],
             "settings": {"unlock_minutes": self.unlock_minutes(),
                          "password_min_length": self.password_min_length(),
-                         "reveal_seconds": self.reveal_seconds()},
+                         "reveal_seconds": self.reveal_seconds(),
+                         "rotate_days": self.rotate_days()},
             "path": _shown(path),
         }
         if result["initialized"]:
             doc = store.load(path)
             result["slots"] = store.slot_metadata(doc)
             result["authenticator"] = store.authenticator_metadata(doc)
+            result["rotation"] = self._rotation(doc)
             # Changes whenever an entry does, from any client, so an open panel knows to
             # read the entries again. A hash of the ciphertext tells nothing about them.
             result["revision"] = hashlib.sha256(doc["entries"].encode()).hexdigest()[:16]
@@ -247,8 +303,11 @@ class VaultService:
         return result
 
     def init(self, recovery):
-        dek = store.create(store.vault_path(), recovery)
-        self._hold(dek)
+        path = store.vault_path()
+        dek = store.create(path, recovery)
+        # The holder keeps the root and the data key together, so the slots can still
+        # be written while the vault is open.
+        self._hold(store.unwrap_recovery(store.load(path), recovery), dek)
 
     def unlock_passkey(self, cred_id, prf):
         if not isinstance(cred_id, str) or not isinstance(prf, str):
@@ -257,27 +316,50 @@ class VaultService:
             prf_bytes = store.b64url_decode(prf)
         except ValueError:
             raise VaultError("the prf is not base64url")
-        self._hold(store.unwrap_passkey(store.load(store.vault_path()), cred_id, prf_bytes))
+        path = store.vault_path()
+        doc = store.load(path)
+        root = store.unwrap_passkey(doc, cred_id, prf_bytes)
+        self._hold(*self._finish_unlock(path, doc, root, None, None))
 
     def unlock_recovery(self, passphrase):
         if not isinstance(passphrase, str) or not passphrase:
             raise VaultError("a recovery unlock needs the passphrase")
-        self._hold(store.unwrap_recovery(store.load(store.vault_path()), passphrase))
+        path = store.vault_path()
+        doc = store.load(path)
+        root = store.unwrap_recovery(doc, passphrase)
+        self._hold(*self._finish_unlock(path, doc, root, "recovery", passphrase))
 
     def unlock_password(self, password, code=None):
         """Unlock with the unlock password and a code of the authenticator app: the two
-        are one unlock method. The password decrypts the data key, and the key is put
-        in the holder only for a right code. A vault written by 1.1.28 to 1.1.31 can
-        hold a password and no app; that password opens it alone."""
+        are one unlock method. The password decrypts the root key and the data key is
+        opened with it; the key is put in the holder only for a right code. A vault
+        written by 1.1.28 to 1.1.31 can hold a password and no app; that password opens
+        it alone."""
         if not isinstance(password, str) or not password:
             raise VaultError("a password unlock needs the unlock password")
-        doc = store.load(store.vault_path())
-        dek = store.unwrap_password(doc, password)
+        path = store.vault_path()
+        doc = store.load(path)
+        root = store.unwrap_password(doc, password)
         if store.authenticator_metadata(doc) is not None:
             if code is None:
                 raise Denied("a password unlock needs a code of the authenticator app")
-            self._check_code(doc, dek, code)
-        self._hold(dek)
+            self._check_code(doc, store.open_data_key(doc, root), code)
+        self._hold(*self._finish_unlock(path, doc, root, "password", password))
+
+    def rotate(self, proof):
+        """Rotate the data key now: the entries and the authenticator secret are
+        re-sealed under a new key, no slot changes, and an old copy of the data key
+        stops reading the vault. Needs an unlocked vault and a recovery or passkey
+        proof; a code alone holds no key and is no proof here."""
+        self._dek()
+        path = store.vault_path()
+        doc = store.load(path)
+        if isinstance(proof, dict) and "code" in proof:
+            raise Denied(f"{PROOFS['code']} is no proof for this - use a passkey or "
+                         "the recovery passphrase")
+        root = self._proven_root(doc, proof)
+        self._hold(root, store.rotate_data_key(path, root))
+        return {"rotation": self._rotation(store.load(path))}
 
     def lock(self):
         """Clear the key of the vault last unlocked here and of the one the file is now."""
@@ -348,18 +430,21 @@ class VaultService:
             raise VaultError(f"field must be one of {', '.join(READABLE)}")
         return self._find(self._entries(), _check_name(name)).get(field, "")
 
-    def _proven_dek(self, doc, proof, reveal=False):
-        """The data key, given only for a proof sent with this request: an unlocked vault
+    def _proven_root(self, doc, proof, reveal=False):
+        """The root key, given only for a proof sent with this request: an unlocked vault
         alone proves nothing about who is asking now. `PROOFS` names the kinds.
         {"current": the recovery passphrase} and {"cred_id", "prf": a passkey's PRF}
-        unwrap the key themselves. {"code": a code of the authenticator app} holds no
-        key, so it proves only on an unlocked vault, whose held key it returns.
-        {"password": the unlock password} unwraps the key too, but proves only a
-        `reveal`: alone it opens no vault and changes nothing."""
+        unwrap the root themselves. {"password": the unlock password} unwraps the root
+        too, but proves only a `reveal`: alone it opens no vault and changes nothing.
+        {"code": a code of the authenticator app} holds no key of its own; on an
+        unlocked vault it checks the code and returns the held root, so it proves a new
+        slot, a new unlock method and a recovery change - not a rotation."""
         if not isinstance(proof, dict) or not any(k in proof for k in PROOFS):
             raise Denied(f"this needs a proof: {FULL_PROOFS}")
         if "code" in proof:
-            return self._code_dek(doc, proof["code"])
+            # The code's own refusal first: no app, a wrong code, a used one.
+            self._code_dek(doc, proof["code"])
+            return self._root()
         if REVEAL_ONLY in proof:
             if not reveal:
                 raise Denied(f"{PROOFS[REVEAL_ONLY]} is no proof for this - use {FULL_PROOFS}")
@@ -399,14 +484,19 @@ class VaultService:
         self._wrong_codes, self._last_step = 0, step
 
     def reveal_proven(self, name, proof):
-        """The panel's reveal: the password, read with the key the proof gives. `read`
-        stays for the CLI, the Python API and the panel in the `reveal_seconds` window
-        that an accepted proof in its tab starts. A locked vault shows nothing, whatever
-        the proof: a secret that opens it must unlock it first, and the unlock password
-        opens it only with a code."""
+        """The panel's reveal: the password, read with the data key the proof gives. A
+        code proves on an unlocked vault through the held data key; a root-bearing
+        proof opens the file's data key itself. `read` stays for the CLI, the Python
+        API and the panel in the `reveal_seconds` window that an accepted proof in its
+        tab starts. A locked vault shows nothing, whatever the proof: a secret that
+        opens it must unlock it first, and the unlock password opens it only with a
+        code."""
         self._dek()
         doc = store.load(store.vault_path())
-        dek = self._proven_dek(doc, proof, reveal=True)
+        if isinstance(proof, dict) and "code" in proof:
+            dek = self._code_dek(doc, proof["code"])
+        else:
+            dek = store.open_data_key(doc, self._proven_root(doc, proof, reveal=True))
         return self._find(store.read_entries(doc, dek), _check_name(name)).get("password", "")
 
     def stage(self, name, field, kind):
@@ -457,7 +547,7 @@ class VaultService:
     # -- slots ---------------------------------------------------------------
 
     def add_passkey(self, cred_id, rp_id, prf_salt, prf, label, proof):
-        """A new passkey slot, allowed only with a proof (`_proven_dek`): a passkey opens
+        """A new passkey slot, allowed only with a proof (`_proven_root`): a passkey opens
         the vault and proves a recovery change, so an unlocked vault is not enough to
         add one."""
         for key, value in (("cred_id", cred_id), ("rp_id", rp_id), ("prf_salt", prf_salt), ("prf", prf)):
@@ -470,7 +560,7 @@ class VaultService:
         except ValueError:
             raise VaultError("the prf is not base64url")
         path = store.vault_path()
-        store.add_passkey(path, self._proven_dek(store.load(path), proof), cred_id, rp_id, prf_salt,
+        store.add_passkey(path, self._proven_root(store.load(path), proof), cred_id, rp_id, prf_salt,
                           prf_bytes, label or rp_id)
 
     def remove_passkey(self, cred_id):
@@ -498,7 +588,17 @@ class VaultService:
         if store.authenticator_metadata(doc) is not None or any(
                 slot.get("type") == "password" for slot in doc["slots"]):
             raise Conflict("the vault already has a password and authenticator app - remove them first")
-        store.set_mfa(path, self._proven_dek(doc, proof), password, secret)
+        root = self._proven_root(doc, proof)
+        held = self.holder().get(doc["id"])
+        if doc["version"] == 1:
+            # A version-1 file has one key for both jobs; give it a data key before
+            # writing the app's secret, which this build seals under the data key.
+            dek, _ = store.adopt_data_key(path, root)
+        else:
+            dek = store.open_data_key(doc, root)
+        store.set_mfa(path, root, dek, password, secret)
+        if held is not None:
+            self._hold(root, dek)
         # The code that added the app is used: it proves nothing after this.
         self._wrong_codes, self._last_step = 0, step
 
@@ -507,6 +607,6 @@ class VaultService:
         store.remove_mfa(store.vault_path())
 
     def replace_recovery(self, passphrase, proof):
-        """A new recovery passphrase, allowed only with a proof: see `_proven_dek`."""
+        """A new recovery passphrase, allowed only with a proof: see `_proven_root`."""
         path = store.vault_path()
-        store.replace_recovery(path, self._proven_dek(store.load(path), proof), passphrase)
+        store.replace_recovery(path, self._proven_root(store.load(path), proof), passphrase)

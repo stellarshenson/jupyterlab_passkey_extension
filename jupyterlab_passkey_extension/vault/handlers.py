@@ -53,11 +53,10 @@ _GET = {
 }
 
 _POST = {
-    "config": lambda s, b: s.set_config(b.get("unlock_minutes"), b.get("password_min_length"),
-                                        b.get("reveal_seconds")),
     "init": lambda s, b: s.init(b.get("recovery")),
     "unlock": _unlock,
     "lock": lambda s, b: s.lock(),
+    "rotate": lambda s, b: s.rotate(b.get("proof")),
     "entries": lambda s, b: s.add(b.get("name"), b.get("fields") or {}),
     "delete": lambda s, b: s.delete(b.get("name")),
     "reveal": _reveal,

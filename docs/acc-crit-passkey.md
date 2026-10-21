@@ -720,6 +720,7 @@ The encrypted vault file, its keyslots and how it is written
   - log: 2026-09-27T10:18:17Z @kj edited text "the vault is one JSON file, mode 0600, at `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` or `JLAB_PASSKEY_VAULT`; all entries, names included, are one AES-256-GCM ciphertext under the data key" -> "the vault is one JSON file, mode 0600, at `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` or `JLAB_PASSKEY_VAULT`, whose leading ~ is the home directory and which is made absolute; all entries, names included, are one AES-256-GCM ciphertext under the data key"; test "create a vault with one entry, assert mode 0600 and that the entry name is absent from the file bytes" -> "create a vault with one entry, assert mode 0600 and that the entry name is absent from the file bytes; a set path with ~ or a relative one resolves to the absolute file"
   - log: 2026-09-28T00:23:20Z @kj closed
 - [x] `ACC-STORE-95` **Keyslots** - CRITICAL; the data key is wrapped once per slot: recovery with `Scrypt(passphrase)`, each passkey with `HKDF(PRF)`; any one slot opens the vault
+  - overridden-by: ACC-STORE-245-ARGON2ID
   - evidence: test_vault_store.py test_any_slot_opens_the_same_vault; test_vault_routes.py test_passkey_register_and_unlock, test_recovery_unlock; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: create with recovery, add a passkey slot, open with each, assert the same entries
   - test-tags: UNIT
@@ -756,11 +757,58 @@ The encrypted vault file, its keyslots and how it is written
   - log: 2026-09-26T15:31:58Z @kj added
   - log: 2026-09-28T00:23:20Z @kj closed
 - [x] `ACC-STORE-101` **KDF parameters stored** - MEDIUM; each slot stores its own KDF parameters (Scrypt n=2^17, r=8, p=1 today), so a later version can raise them without breaking old slots
+  - overridden-by: ACC-STORE-245-ARGON2ID
   - evidence: test_vault_store.py test_each_slot_keeps_its_own_kdf_parameters; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: open a slot written with smaller test parameters, assert it opens
   - test-tags: UNIT
   - log: 2026-09-26T15:31:58Z @kj added
   - log: 2026-09-28T00:23:20Z @kj closed
+- [x] `ACC-STORE-245-ARGON2ID` **Argon2id slots** - HIGH; the recovery and unlock-password slots use Argon2id (m=65536 KiB, t=3, p=1) with a 16-byte salt; each recovery or password unlock rewrites the slot it used under Argon2id, best effort; an older scrypt slot still opens and upgrades on that unlock; passkey slots keep HKDF over the PRF
+  - evidence: test_vault_store.py and test_vault_routes.py argon2id cases green; pytest 494/494, jest 261/261 10 suites, lint 0 errors (27 warnings) 2026-10-21
+  - overrides: ACC-STORE-95
+  - overrides: ACC-STORE-101
+  - overrides: ACC-UNLOCK-202
+  - test: pytest: argon2id round trip; an old scrypt slot opens; upgrade rewrites only the used slot once; tampered m and unknown kdf refused; recovery and password unlocks upgrade their slot; a failed upgrade leaves the unlock standing; a passkey unlock writes nothing; init writes argon2id
+  - test-tags: UNIT, INTEGRATION
+  - log: 2026-10-21T12:50:23Z @kj added
+  - log: 2026-10-21T12:50:38Z @kj closed
+- [x] `ACC-STORE-246-ROTATE` **Data key rotation** - HIGH; a rotate action re-encrypts entries and the authenticator secret under a new 32-byte data key, sealed under the root key
+  - evidence: test_rotate_data_key_replaces_the_key_and_keeps_every_slot; test_rotate_with_the_recovery_proof_changes_the_data_key; pytest 521 passed, Jest 270 passed, Galata 42/42, review round 2 SHIP 2026-10-21
+  - test: rotate a vault, decrypt entries and the authenticator with the new data key, assert the old data key fails
+  - test-tags: UNIT
+  - log: 2026-10-21T17:11:31Z @kj added
+  - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
+- [x] `ACC-STORE-247-SLOTS` **Slots survive rotation** - HIGH; every recovery, password and passkey slot still opens the vault and reads the entries after a rotation
+  - evidence: test_rotate_data_key_replaces_the_key_and_keeps_every_slot re-opens recovery, password and passkey slots; Galata 'the data key is rotated with the recovery passphrase as the proof'; pytest 521, Galata 42/42 2026-10-21
+  - test: create recovery, password and passkey slots, rotate, unlock with each secret and read an entry
+  - test-tags: UNIT, E2E
+  - log: 2026-10-21T17:11:31Z @kj added
+  - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
+- [x] `ACC-STORE-248-MIGRATE` **Version-1 vaults migrate** - HIGH; a version-1 vault opens, is written as version 2 with the root key and data key separated, and no slot is rewrapped
+  - evidence: test_adopt_data_key_migrates_the_1_1_55_fixture asserts version 2, unchanged slot wrapped bytes and readable entries; test_a_version_one_fixture_is_migrated_on_unlock; pytest 521 passed 2026-10-21
+  - test: open the 1.1.55 fixture with the recovery passphrase, assert version 2 and unchanged slot wrapped bytes
+  - test-tags: UNIT
+  - log: 2026-10-21T17:11:31Z @kj added
+  - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
+- [x] `ACC-STORE-249-PERIOD` **Cryptoperiod rotation** - MEDIUM; the data key rotates on unlock when older than the configured period, default 365 days, 0 disables
+  - evidence: route tests backdate the data key, unlock and assert a new data key, then assert it unchanged on the next unlock; pytest 521 passed 2026-10-21
+  - test: backdate the data key created stamp past the period, unlock, assert a new data key; unlock again, assert unchanged
+  - test-tags: UNIT, INTEGRATION
+  - log: 2026-10-21T17:11:31Z @kj added
+  - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
+- [x] `ACC-STORE-250-PROOF` **Rotation needs a proof** - HIGH; a locked vault refuses rotation and an unlocked vault requires a full proof
+  - evidence: route tests assert 423 while locked, 403 without a proof, 403 for a code alone and 200 with the recovery passphrase; pytest 521 passed 2026-10-21
+  - test: call rotate while locked, assert 423; without a proof, assert 403; with a code-only proof, assert 403; with the recovery passphrase, assert 200
+  - test-tags: UNIT
+  - log: 2026-10-21T17:11:31Z @kj added
+  - log: 2026-10-21T17:12:38Z @kj edited test "call rotate while locked, assert 403; without a proof, assert 400; with a valid proof, assert 200" -> "call rotate while locked, assert 423; without a proof, assert 403; with a code-only proof, assert 403; with the recovery passphrase, assert 200"
+  - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
+- [x] `ACC-STORE-251-STATUS` **Rotation status** - MEDIUM; status reports the data key creation date, age in days, period in days and whether rotation is due
+  - evidence: status reports created, age_days, period_days and due; Jest renders Created, Age, Period and Rotation due; pytest 521, Jest 270 passed 2026-10-21
+  - test: backdate the data key, call status, assert the rotation fields
+  - test-tags: UNIT
+  - log: 2026-10-21T17:11:31Z @kj added
+  - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
 
 ## Vault unlock and lock `UNLOCK`
 
@@ -822,6 +870,7 @@ Opening the vault with a passkey or the recovery passphrase, and closing it
   - log: 2026-09-28T00:23:21Z @kj closed
 - [x] `ACC-UNLOCK-202` **Unlock password slot** - HIGH; the vault holds at most one unlock password: a slot of type `password` that wraps the data key under scrypt of the password, at the recovery slot's cost; POST vault/unlock with `password` opens the vault, a wrong one answers 400; nothing of it is logged
   - overridden-by: ACC-UNLOCK-215
+  - overridden-by: ACC-STORE-245-ARGON2ID
   - evidence: pytest test_an_unlock_password_is_set_with_a_proof_and_opens_the_vault: the slot is stored and the password unlocks; pytest 456/456, build 1.1.27
   - test: pytest: set a password, lock, unlock with it; a wrong one 400 and still locked; the file has one `password` slot and not the password; caplog holds none
   - test-tags: UNIT
@@ -1675,16 +1724,18 @@ The vault sidebar panel in JupyterLab
 
 ## Vault settings `CONFIG`
 
-Vault settings in the JupyterLab Settings Editor
+Vault policy in the server config file; the Settings Editor carries only the sidebar choice
 
 - [x] `ACC-CONFIG-142` **Unlock duration setting** - HIGH; `unlockMinutes` in the Settings Editor sets how long the vault stays unlocked: default 240, range 1 to 1440
   - overridden-by: ACC-CONFIG-243-SESSION-DEFAULT
+  - overridden-by: ACC-CONFIG-253-READONLY
   - evidence: test_vault_routes.py test_the_settings_schema_declares_the_unlock_duration_and_sidebar, test_the_unlock_duration_must_be_1_to_1440; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: read the schema, assert default and bounds
   - test-tags: UNIT
   - log: 2026-09-26T15:32:11Z @kj added
   - log: 2026-09-28T00:23:26Z @kj closed
 - [x] `ACC-CONFIG-143` **Setting reaches the server** - HIGH; the frontend sends the unlock duration to the server on load and on change; CLI unlocks use the same value
+  - overridden-by: ACC-CONFIG-252-POLICY
   - evidence: test_vault_routes.py test_the_unlock_duration_setting_reaches_the_holder; jest vault.spec.ts 'sends the unlock duration and docks the panel, now and on every change'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: post the setting over REST, init, assert status shows it and the key's remaining time; jest: connectSettings sends it on load and on change
   - test-tags: UNIT
@@ -1698,6 +1749,7 @@ Vault settings in the JupyterLab Settings Editor
   - log: 2026-09-26T15:32:11Z @kj added
   - log: 2026-09-28T00:23:26Z @kj closed
 - [x] `ACC-CONFIG-205` **Minimum length of the unlock password** - MEDIUM; `passwordMinLength` in the Settings Editor sets the shortest unlock password the vault accepts: default 12, range 8 to 128; the frontend sends it to the server on load and on change, with the unlock duration
+  - overridden-by: ACC-CONFIG-252-POLICY
   - evidence: pytest test_the_shortest_unlock_password_is_a_setting; jest 'sends the unlock duration and the shortest unlock password, and docks the panel, now and on every change', 'names the fields a password, and keeps Submit off until both agree and are long enough'; build 1.1.27
   - test: pytest: default 12; config with 16 refuses a 15-character password and accepts 16; 7 and 129 refused; jest: connectSettings sends both values; the schema declares default 12, minimum 8, maximum 128
   - test-tags: UNIT
@@ -1706,17 +1758,47 @@ Vault settings in the JupyterLab Settings Editor
 - [x] `ACC-CONFIG-243-SESSION-DEFAULT` **Unlock duration default** - HIGH; The unlock duration default is 30 minutes, the NIST SP 800-63B AAL2 idle limit; the range stays 1 to 1,440 minutes and a stored value keeps its value.
   - evidence: pytest 477 passed, including test_the_settings_schema_declares_the_unlock_duration_and_sidebar, test_status_before_init and test_init_unlocks_for_the_configured_duration; jlpm run lint:check 0 errors 2026-10-21 v1.1.54
   - overrides: ACC-CONFIG-142
-  - test: pytest: the schema declares default 30; status before init reports 30; init holds the key for 1,800 s
+  - test: pytest: an absent unlock_minutes reports 30; status before init reports 30; init holds the key for 1,800 s
   - test-tags: UNIT
   - log: 2026-10-21T08:31:54Z @kj added
   - log: 2026-10-21T08:31:58Z @kj closed
+  - log: 2026-10-21T17:18:10Z @kj edited test "pytest: the schema declares default 30; status before init reports 30; init holds the key for 1,800 s" -> "pytest: an absent unlock_minutes reports 30; status before init reports 30; init holds the key for 1,800 s"
 - [x] `ACC-CONFIG-244-REVEAL-WINDOW` **Reveal window setting** - HIGH; `revealSeconds` sets the no-proof reveal window: default 60 seconds, range 0 to 3,600; 0 asks a proof at every reveal; only an accepted proof in the tab starts it, never an unlock; the server stores it and reports it in status
   - evidence: pytest 483 passed; Jest 261 passed; Galata vault suite 14 passed on port 8911 against the working tree; lint 0 errors
   - overrides: ACC-PANEL-229
+  - overridden-by: ACC-CONFIG-252-POLICY
   - test: pytest: default 60, range 0 to 3,600, an absent value keeps the stored one; jest: an unlock leaves proven false, a proof starts the window, the configured value expires it, 0 is never proven; Galata: the eye asks a proof after an unlock
   - test-tags: UNIT, E2E
   - log: 2026-10-21T08:45:51Z @kj added
   - log: 2026-10-21T08:57:46Z @kj closed
+- [x] `ACC-CONFIG-252-POLICY` **Policy comes from the config file** - HIGH; unlock_minutes, reveal_seconds, password_min_length and rotate_days come only from the server config file; an absent or invalid value uses its default
+  - evidence: config tests read unlock_minutes 45, reveal_seconds 120, password_min_length 20 and rotate_days 30 from the file, fall back to defaults when absent, and answer 404 for POST config; pytest 521 passed 2026-10-21
+  - overrides: ACC-CONFIG-143
+  - overrides: ACC-CONFIG-205
+  - overrides: ACC-CONFIG-244-REVEAL-WINDOW
+  - test: write unlock_minutes 45, reveal_seconds 120, password_min_length 20 and rotate_days 30 in the config file, read status, assert the four values; remove a key, assert its default
+  - test-tags: UNIT
+  - log: 2026-10-21T17:18:09Z @kj added
+  - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
+- [x] `ACC-CONFIG-253-READONLY` **Effective values are read-only** - HIGH; the panel shows the effective values read-only and the Settings Editor declares only the sidebar choice
+  - evidence: schema/vault.json declares only sidebar; Jest asserts no request posts config and the panel shows the four values read-only; pytest 521, Jest 270, Galata 42/42 2026-10-21
+  - overrides: ACC-CONFIG-142
+  - test: jest: the settings view shows the four values with no input; the schema has no unlockMinutes, revealSeconds, passwordMinLength or rotateDays; pytest: a POST config answers 404
+  - test-tags: UNIT, E2E
+  - log: 2026-10-21T17:18:09Z @kj added
+  - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
+- [x] `ACC-CONFIG-254-KDF` **Key encryption algorithm** - HIGH; the Settings section shows the key encryption algorithm: Argon2id, with scrypt named while a slot written by 1.1.55 or earlier still uses it
+  - evidence: slot metadata reports kdf argon2id and scrypt; Jest asserts the Key encryption row, Argon2id and the scrypt count; pytest 521, Jest 270 passed 2026-10-21
+  - test: jest: the settings view shows the algorithm from the slot metadata; pytest: status slot metadata carries kdf argon2id and scrypt
+  - test-tags: UNIT, E2E
+  - log: 2026-10-21T17:24:15Z @kj added
+  - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
+- [x] `ACC-CONFIG-255-ROTATION-DAYS` **Rotation period shown** - HIGH; the Settings section shows the number of days between data-key rotations
+  - evidence: status reports period_days 365 by default and 30 from a config file; Jest asserts the Key rotation row in days; pytest 521, Jest 270 passed 2026-10-21
+  - test: jest: the settings view shows the rotation period in days from status; pytest: status reports period_days 365 by default
+  - test-tags: UNIT, E2E
+  - log: 2026-10-21T17:24:15Z @kj added
+  - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
 
 ## Vault documentation `VDOCS`
 
@@ -1911,4 +1993,6 @@ What the lint check asks of the frontend: described commands, labels read throug
   - test-tags: MANUAL
   - log: 2026-10-03T20:48:21Z @kj added
   - log: 2026-10-03T20:54:44Z @kj closed
+
+
 

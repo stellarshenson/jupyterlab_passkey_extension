@@ -395,6 +395,26 @@ def cmd_recovery(a, vault):
     return 0
 
 
+def _say_rotation(rotation):
+    """The data key's creation date, age, period and due state, as one line."""
+    period = f"{rotation['period_days']} days" if rotation["period_days"] else "off"
+    due = "due" if rotation["due"] else "not due"
+    return (f"data key: created {rotation['created']}, {rotation['age_days']} days old, "
+            f"period {period}, {due}")
+
+
+def cmd_rotate(a, vault):
+    s = vault.status()
+    if not s["initialized"]:
+        raise SystemExit(_say_status(s))
+    if not s["unlocked"]:
+        raise SystemExit("the vault is locked - run `jupyterlab-passkey vault unlock`")
+    # The proof is the current recovery passphrase, as `vault recovery` asks it.
+    proof = {"current": _read_secret(a, "Recovery passphrase", twice=False)}
+    _cli._say(_say_rotation(vault.rotate(proof)["rotation"]))
+    return 0
+
+
 def run(a):
     vault = Vault(timeout=a.timeout)
     try:
@@ -478,7 +498,8 @@ notification and waits for the click (--timeout, default 600 s).
     p = add("unlock", "unlock with the passkey, the unlock password and a code, or the recovery passphrase",
             cmd_unlock,
             description="""
-unlock the vault for the unlockMinutes setting (default 30 minutes), for every client:
+unlock the vault for the unlock_minutes setting of the server's configuration file
+(default 30 minutes), for every client:
 this CLI, the Python Vault class and the panel. With a passkey: a notification to click,
 then the passkey prompt in the tab. A passkey works only in a tab opened at the hostname it
 was added at, or a subdomain of it; a tab at an IP address cannot use one. --password
@@ -681,4 +702,16 @@ replace the recovery passphrase: the current one, then the new one twice. Needs 
 terminal or --in-browser, because it reads two secrets. Store the new one offline.
 """,
             examples=("jupyterlab-passkey vault recovery --in-browser",))
+    in_browser(p)
+
+    p = add("rotate", "rotate the data key: the recovery passphrase is the proof", cmd_rotate,
+            description="""
+re-seal every entry and the authenticator secret under a new random data key. No slot
+changes, and a copy of the old data key stops reading the vault. The vault must be
+unlocked; the proof is the current recovery passphrase. Prints the data key's creation
+date, age, period and whether rotation is due. An unlock rotates automatically once the
+period (default 365 days) has passed; 0 turns automatic rotation off.
+""",
+            examples=("jupyterlab-passkey vault rotate",
+                      "jupyterlab-passkey vault rotate --in-browser"))
     in_browser(p)
