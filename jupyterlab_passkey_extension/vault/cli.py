@@ -478,7 +478,7 @@ notification and waits for the click (--timeout, default 600 s).
     p = add("unlock", "unlock with the passkey, the unlock password and a code, or the recovery passphrase",
             cmd_unlock,
             description="""
-unlock the vault for the unlockMinutes setting (default 240 minutes), for every client:
+unlock the vault for the unlockMinutes setting (default 30 minutes), for every client:
 this CLI, the Python Vault class and the panel. With a passkey: a notification to click,
 then the passkey prompt in the tab. A passkey works only in a tab opened at the hostname it
 was added at, or a subdomain of it; a tab at an IP address cannot use one. --password

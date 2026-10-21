@@ -9,7 +9,7 @@
       "type": "integer",
       "title": "Unlock duration (minutes)",
       "description": "How long the vault stays unlocked after an unlock, for every client: the panel, the CLI and the Python API",
-      "default": 240,
+      "default": 30,
       "minimum": 1,
       "maximum": 1440
     },

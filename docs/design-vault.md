@@ -32,7 +32,7 @@ This section states what the vault is and which parts take part in it. The vault
 - **One owner of the file** - only the Jupyter server process reads and writes the vault file; every client calls its REST API
 - **Three clients** - the `jupyterlab-passkey vault` CLI, the Python `Vault` class and the sidebar panel
 - **Three ways in** - a passkey added for the hostname of the browser tab, the unlock password together with a code of the authenticator app, or the recovery passphrase
-- **One unlock for all clients** - an unlock keeps the data key for the unlock duration (default 240 minutes), and the CLI, the Python class and the panel all use that one unlock
+- **One unlock for all clients** - an unlock keeps the data key for the unlock duration (default 30 minutes), and the CLI, the Python class and the panel all use that one unlock
 - **Passkey steps run in the tab** - WebAuthn runs only in a browser tab after a click, so the CLI and the Python class raise a notification, and its button starts the passkey step in the tab. The notification starts with the name of the project that asked (`Asked by <name>:`, see the [CLI reference](cli-reference.md)); the name is the caller's statement, not a proof
 
 ```mermaid
@@ -241,7 +241,7 @@ The server keeps the data key in the first key holder that works on the host, tr
 
 This subsection covers how long a key stays and what removes it earlier.
 
-- **Duration** - the `unlockMinutes` setting, 1 to 1,440 minutes, default 240
+- **Duration** - the `unlockMinutes` setting, 1 to 1,440 minutes, default 30
 - **Storage** - the panel sends the setting to `POST vault/config`, together with `passwordMinLength`, and the server stores both in `$XDG_STATE_HOME/jupyterlab-passkey/vault-config.json`
 - **When it applies** - at the next unlock from any client; a key already held keeps its expiry
 - **Lock** - `vault lock`, `Vault.lock()` or the panel's Lock button removes the key from the holder
@@ -419,6 +419,6 @@ This section lists the settings and environment variables of the vault. The serv
 | `JLAB_PASSKEY_VAULT`        | `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` | path of the vault file                                  |
 | `JLAB_PASSKEY_VAULT_HOLDER` | `auto`                                         | pins the key holder                                     |
 | `XDG_STATE_HOME`            | `~/.local/state`                               | parent of the gpg-agent home and of `vault-config.json` |
-| `unlockMinutes`             | 240                                            | unlock duration in minutes, 1 to 1,440                  |
+| `unlockMinutes`             | 30                                             | unlock duration in minutes, 1 to 1,440                  |
 | `passwordMinLength`         | 12                                             | fewest characters of an unlock password, 8 to 128       |
 | `sidebar`                   | `right`                                        | sidebar that holds the panel                            |

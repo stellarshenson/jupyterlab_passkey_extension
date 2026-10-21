@@ -1677,6 +1677,7 @@ The vault sidebar panel in JupyterLab
 Vault settings in the JupyterLab Settings Editor
 
 - [x] `ACC-CONFIG-142` **Unlock duration setting** - HIGH; `unlockMinutes` in the Settings Editor sets how long the vault stays unlocked: default 240, range 1 to 1440
+  - overridden-by: ACC-CONFIG-243-SESSION-DEFAULT
   - evidence: test_vault_routes.py test_the_settings_schema_declares_the_unlock_duration_and_sidebar, test_the_unlock_duration_must_be_1_to_1440; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: read the schema, assert default and bounds
   - test-tags: UNIT
@@ -1701,6 +1702,13 @@ Vault settings in the JupyterLab Settings Editor
   - test-tags: UNIT
   - log: 2026-10-02T14:25:27Z @kj added
   - log: 2026-10-02T21:24:31Z @kj closed
+- [x] `ACC-CONFIG-243-SESSION-DEFAULT` **Unlock duration default** - HIGH; The unlock duration default is 30 minutes, the NIST SP 800-63B AAL2 idle limit; the range stays 1 to 1,440 minutes and a stored value keeps its value.
+  - evidence: pytest 477 passed, including test_the_settings_schema_declares_the_unlock_duration_and_sidebar, test_status_before_init and test_init_unlocks_for_the_configured_duration; jlpm run lint:check 0 errors 2026-10-21 v1.1.54
+  - overrides: ACC-CONFIG-142
+  - test: pytest: the schema declares default 30; status before init reports 30; init holds the key for 1,800 s
+  - test-tags: UNIT
+  - log: 2026-10-21T08:31:54Z @kj added
+  - log: 2026-10-21T08:31:58Z @kj closed
 
 ## Vault documentation `VDOCS`
 

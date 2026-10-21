@@ -18,7 +18,7 @@ from .. import relay
 from . import holders, store, totp
 from .store import VaultError
 
-DEFAULT_UNLOCK_MINUTES = 240
+DEFAULT_UNLOCK_MINUTES = 30
 # The shortest unlock password the vault accepts: the setting, and what it may be set
 # to. A copied vault file can be attacked through this slot, so short is not offered.
 DEFAULT_PASSWORD_MIN_LENGTH = 12

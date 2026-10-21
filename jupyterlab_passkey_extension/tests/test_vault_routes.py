@@ -95,7 +95,7 @@ def vault_file(vault_env):
 async def test_status_before_init(jp_fetch, vault_env):
     s = await call(jp_fetch, "status", method="GET")
     assert s["initialized"] is False and s["unlocked"] is False
-    assert s["settings"] == {"unlock_minutes": 240, "password_min_length": 12}
+    assert s["settings"] == {"unlock_minutes": 30, "password_min_length": 12}
     assert s["holder"]["name"].startswith("memory/")
     assert set(s["holder"]["capabilities"]) == {
         "locked_memory", "no_core_dump", "holder_ttl", "locks_on_restart", "container_isolated"}
@@ -113,7 +113,7 @@ async def test_init_unlocks_for_the_configured_duration(jp_fetch, vault_env):
     await init(jp_fetch)
     s = await call(jp_fetch, "status", method="GET")
     assert s["initialized"] and s["unlocked"]
-    assert 240 * 60 - 5 <= s["remaining"] <= 240 * 60
+    assert 30 * 60 - 5 <= s["remaining"] <= 30 * 60
     assert [slot["type"] for slot in s["slots"]] == ["recovery"]
 
 
@@ -833,7 +833,7 @@ def test_the_settings_schema_declares_the_unlock_duration_and_sidebar():
     )
     minutes = schema["properties"]["unlockMinutes"]
     assert (minutes["type"], minutes["default"], minutes["minimum"], minutes["maximum"]) == (
-        "integer", 240, 1, vault_service.MAX_UNLOCK_MINUTES)
+        "integer", 30, 1, vault_service.MAX_UNLOCK_MINUTES)
     assert minutes["default"] == vault_service.DEFAULT_UNLOCK_MINUTES
     length = schema["properties"]["passwordMinLength"]
     assert (length["type"], length["default"], length["minimum"], length["maximum"]) == (

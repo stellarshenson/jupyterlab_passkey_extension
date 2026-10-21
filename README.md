@@ -187,9 +187,19 @@ The extension also keeps a password vault. The Jupyter server holds it: the entr
 - **Encryption** - every entry, names included, is one AES-256-GCM ciphertext under a random 32-byte data key. The data key is wrapped once per keyslot: each passkey slot with `HKDF(PRF)`, the recovery slot and the unlock password slot with `Scrypt` of their secret (n=2^17, r=8, p=1). Any one slot decrypts the data key; the recovery slot is mandatory. The server keeps a key the unlock password slot gave only for a right code of the authenticator app: the code is a check by the server and takes no part in the encryption, so a person with a copy of the file and the unlock password decrypts it without a code
 - **File** - `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` (`~/.local/share/...` by default), mode `0600`, every change written to a temp file and renamed over it under a file lock; `JLAB_PASSKEY_VAULT` in the Jupyter server's environment moves it (a leading `~` is the home directory)
 - **Passkeys are per hostname** - a passkey opens the vault only from the hostname it was added at, or a subdomain of it. Add one per hostname you open JupyterLab under, or unlock with the unlock password and a code, or with the recovery passphrase
-- **Unlock duration** - `unlockMinutes` under Passkey Vault in the Settings Editor, default 240, range 1 to 1440; it applies to every client
+- **Unlock duration** - `unlockMinutes` under Passkey Vault in the Settings Editor, default 30, range 1 to 1440; it applies to every client. The default is the NIST SP 800-63B AAL2 idle limit of 30 minutes
 
 The vault's design - file format, encryption, key holders, passkey hostnames, proofs and the REST API - is in [docs/design-vault.md](docs/design-vault.md).
+
+### Standards
+
+- **AES-256-GCM** - follows NIST SP 800-38D and the AEAD interface of RFC 5116
+- **scrypt** - follows RFC 7914, with N=2^17, r=8, p=1, one of the recommended parameter sets in the OWASP Password Storage Cheat Sheet
+- **HKDF-SHA256** - follows RFC 5869
+- **TOTP** - follows RFC 6238
+- **Passkeys** - use the PRF extension of W3C WebAuthn Level 3
+- **Unlock duration** - the default follows the NIST SP 800-63B AAL2 idle limit of 30 minutes; the setting allows 1 to 1,440 minutes, which the owner chose to keep
+- **Key rotation** - the data key is not rotated today; NIST SP 800-57 covers key management, and rotation is not implemented
 
 ### Panel
 

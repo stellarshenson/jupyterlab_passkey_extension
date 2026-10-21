@@ -204,7 +204,7 @@ def test_status_names_a_password_or_an_app_an_earlier_build_left_alone():
 def test_status_prints_state_holder_and_capabilities(ready, monkeypatch, capsys):
     run(monkeypatch, "vault", "status")
     out = capsys.readouterr().out
-    assert "state: unlocked, 3h 59m left" in out or "state: unlocked, 4h 0m left" in out
+    assert "state: unlocked, 29m 59s left" in out or "state: unlocked, 30m 0s left" in out
     assert "holder: memory/" in out and "this extension's own code" in out
     assert "protection: " in out
     # The detail the panel keeps in tooltips: one line per capability, explained.
@@ -213,7 +213,7 @@ def test_status_prints_state_holder_and_capabilities(ready, monkeypatch, capsys)
     assert len(rows) == len(holders.CAPABILITY_TEXT)
     assert "passkeys: 1" in out and "@ lab.example" in out
     assert "password and authenticator app: none" in out
-    assert "unlock duration: 4h" in out
+    assert "unlock duration: 30m" in out
 
 
 def test_the_unlock_duration_reads_in_hours_and_minutes():
