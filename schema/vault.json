@@ -21,6 +21,14 @@
       "minimum": 8,
       "maximum": 128
     },
+    "revealSeconds": {
+      "type": "integer",
+      "title": "Reveal window (seconds)",
+      "description": "After a proof in this tab the eye shows a password without another proof for this long. 0 asks for a proof at every reveal. An unlock does not start the window",
+      "default": 60,
+      "minimum": 0,
+      "maximum": 3600
+    },
     "sidebar": {
       "type": "string",
       "title": "Sidebar",

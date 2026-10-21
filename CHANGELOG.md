@@ -2,6 +2,26 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.55] - 2026-10-21
+
+Makes the password reveal window a setting that an unlock never starts, lowers the unlock default to the 30-minute NIST idle limit, and rewrites the README.
+
+### Added
+
+- `revealSeconds`: the time after an accepted proof in a tab during which the eye shows a password without another proof; default 60 seconds, range 0 to 3,600, and 0 asks for a proof at every reveal
+- A table at the top of the README naming the standards the vault follows: six met, and key rotation not met
+
+### Changed
+
+- An unlock no longer starts the reveal window; only an accepted proof in the tab does
+- The unlock duration default is 30 minutes, the NIST SP 800-63B AAL2 idle limit; a stored value keeps its value and the range stays 1 to 1,440 minutes
+- The README prose is one-fact bullets with lists of at most seven items, and the deep developer detail links to `docs/`
+
+### Fixed
+
+- Both README Mermaid diagrams render with their subgraphs and all twelve edges
+- The README skill link creates `~/.agents/skills` before linking, and the caller, reveal-window and holder statements match the code
+
 ## [1.1.54] - 2026-10-21
 
 No functional change since 1.1.52. This release records the closed root-match criterion and the review that closed it.

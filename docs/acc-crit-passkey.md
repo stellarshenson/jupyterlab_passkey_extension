@@ -1652,6 +1652,7 @@ The vault sidebar panel in JupyterLab
 - [x] `ACC-PANEL-229` **No second proof for a minute** - HIGH; for 60 s after the tab unlocked the vault or had a proof accepted, the eye shows a password and asks no proof; ends after 60 s, at a lock in the tab, at a page reload; adding an unlock method and changing the recovery passphrase still ask a proof
   - evidence: jest vault-api.spec 'the minute after an unlock or a proof' (14 tests) and EntryView 'asks no proof while this tab has just unlocked or proven'; Galata 'a code, the unlock password or the recovery passphrase shows a password at a hostname with no passkey'; build 1.1.38, jest 252, Galata 40
   - overrides: ACC-PANEL-161, ACC-PANEL-200
+  - overridden-by: ACC-CONFIG-244-REVEAL-WINDOW
   - test: jest vault-api.spec 'the minute after an unlock or a proof' and EntryView 'asks no proof while this tab has just unlocked or proven'; Galata: unlock with password and code, press the eye, assert the request carries no proof
   - test-tags: UNIT, E2E
   - mechanism: 2026-10-03T18:50:51Z @kj the tab keeps the time of its last unlock or accepted proof (VaultApi.proven, PROVEN_MS); in the minute the eye sends the plain read that vault get sends; the server keeps no count
@@ -1709,6 +1710,13 @@ Vault settings in the JupyterLab Settings Editor
   - test-tags: UNIT
   - log: 2026-10-21T08:31:54Z @kj added
   - log: 2026-10-21T08:31:58Z @kj closed
+- [x] `ACC-CONFIG-244-REVEAL-WINDOW` **Reveal window setting** - HIGH; `revealSeconds` sets the no-proof reveal window: default 60 seconds, range 0 to 3,600; 0 asks a proof at every reveal; only an accepted proof in the tab starts it, never an unlock; the server stores it and reports it in status
+  - evidence: pytest 483 passed; Jest 261 passed; Galata vault suite 14 passed on port 8911 against the working tree; lint 0 errors
+  - overrides: ACC-PANEL-229
+  - test: pytest: default 60, range 0 to 3,600, an absent value keeps the stored one; jest: an unlock leaves proven false, a proof starts the window, the configured value expires it, 0 is never proven; Galata: the eye asks a proof after an unlock
+  - test-tags: UNIT, E2E
+  - log: 2026-10-21T08:45:51Z @kj added
+  - log: 2026-10-21T08:57:46Z @kj closed
 
 ## Vault documentation `VDOCS`
 

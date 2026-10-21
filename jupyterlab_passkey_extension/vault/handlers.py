@@ -31,7 +31,7 @@ def _unlock(s, body):
 
 def _reveal(s, body):
     # With a proof, the panel's proven reveal. Without, the plain read: the CLI's
-    # `vault get`, and the panel's eye in the minute after an unlock or a proof.
+    # `vault get`, and the panel's eye in the reveal window after a proof in the tab.
     if any(k in body for k in PROOFS):
         proof = {k: body[k] for k in ("cred_id", *PROOFS) if k in body}
         return {"value": s.reveal_proven(body.get("name"), proof)}
@@ -53,7 +53,8 @@ _GET = {
 }
 
 _POST = {
-    "config": lambda s, b: s.set_config(b.get("unlock_minutes"), b.get("password_min_length")),
+    "config": lambda s, b: s.set_config(b.get("unlock_minutes"), b.get("password_min_length"),
+                                        b.get("reveal_seconds")),
     "init": lambda s, b: s.init(b.get("recovery")),
     "unlock": _unlock,
     "lock": lambda s, b: s.lock(),

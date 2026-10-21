@@ -75,7 +75,11 @@ function vaultStatus(): any {
         created: '2026-09-26T10:00:00Z'
       }
     ],
-    settings: { unlock_minutes: 240, password_min_length: 12 },
+    settings: {
+      unlock_minutes: 240,
+      password_min_length: 12,
+      reveal_seconds: 60
+    },
     path: '~/.local/share/jupyterlab-passkey/vault.json'
   };
 }

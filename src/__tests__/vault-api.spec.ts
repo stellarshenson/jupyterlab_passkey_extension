@@ -1,8 +1,8 @@
 /**
  * The vault's REST wrapper (src/vault/api) against answers that are not the vault's:
  * JupyterHub's for a stopped server, the Jupyter server's Forbidden after a hub
- * logout or its 404 without the vault, and an answer that breaks off; and the minute
- * after an unlock or a proof in which the eye asks no proof.
+ * logout or its 404 without the vault, and an answer that breaks off; and the reveal
+ * window after a proof, in which the eye asks no proof.
  * ServerConnection is stubbed.
  */
 
@@ -15,7 +15,7 @@ jest.mock('@jupyterlab/services', () => ({
   ServerConnection: { makeRequest: mockMakeRequest }
 }));
 
-import { NoAnswer, PROVEN_MS, VaultApi, VaultError } from '../vault/api';
+import { NoAnswer, VaultApi, VaultError } from '../vault/api';
 
 beforeEach(() => mockMakeRequest.mockReset());
 
@@ -112,7 +112,7 @@ it('says to restart the server when it runs without the vault', async () => {
   );
 });
 
-describe('the minute after an unlock or a proof', () => {
+describe('the reveal window after a proof', () => {
   const PROOF = { current: 'the passphrase' };
   const SLOT = {
     cred_id: 'AAEC',
@@ -126,12 +126,25 @@ describe('the minute after an unlock or a proof', () => {
     status,
     text: async () => JSON.stringify(body)
   });
+  /** A status answer carrying `reveal` as the reveal window. */
+  const status = (reveal: number) =>
+    answer(200, {
+      initialized: true,
+      unlocked: true,
+      remaining: 60,
+      settings: {
+        unlock_minutes: 30,
+        password_min_length: 12,
+        reveal_seconds: reveal
+      },
+      path: '~/.local/share/jupyterlab-passkey/vault.json'
+    });
   const vault = () => new VaultApi({ baseUrl: 'http://host/' } as any);
   const sent = () => JSON.parse(mockMakeRequest.mock.calls[0][1].body);
 
   afterEach(() => jest.restoreAllMocks());
 
-  it('asks a proof before any unlock or proof in this tab', () => {
+  it('asks a proof before any proof in this tab', () => {
     expect(vault().proven).toBe(false);
   });
 
@@ -139,47 +152,77 @@ describe('the minute after an unlock or a proof', () => {
     ['a new vault', api => api.init('the passphrase')],
     ['a recovery unlock', api => api.unlockRecovery('the passphrase')],
     ['a password unlock', api => api.unlockPassword('a password', '123456')],
-    ['a passkey unlock', api => api.unlockPasskey('AAEC', 'CQkJ')],
+    ['a passkey unlock', api => api.unlockPasskey('AAEC', 'CQkJ')]
+  ])('is not started by %s', async (_what, request) => {
+    mockMakeRequest.mockResolvedValue(status(60));
+    const api = vault();
+    await request(api);
+    expect(api.proven).toBe(false);
+  });
+
+  it.each<[string, (api: VaultApi) => Promise<unknown>]>([
     ['a password shown for a proof', api => api.revealPassword('nas', PROOF)],
     ['a new passkey', api => api.addPasskey(SLOT, PROOF)],
     ['a new pair', api => api.addMfa('a password', 'KEY', '123456', PROOF)],
     ['a new recovery passphrase', api => api.replaceRecovery('new', PROOF)]
-  ])('asks none after %s', async (_what, request) => {
+  ])('starts with %s', async (_what, request) => {
     mockMakeRequest.mockResolvedValue(answer(200, { value: 's3cret' }));
     const api = vault();
     await request(api);
     expect(api.proven).toBe(true);
   });
 
-  it('asks a proof again once the minute is over', async () => {
-    mockMakeRequest.mockResolvedValue(answer(200, {}));
+  it('ends after the reveal window the status reports', async () => {
     const api = vault();
+    mockMakeRequest.mockResolvedValueOnce(status(120));
+    await api.status();
+    mockMakeRequest.mockResolvedValue(answer(200, { value: 's3cret' }));
     const start = Date.now();
     const now = jest.spyOn(Date, 'now').mockReturnValue(start);
-    await api.unlockRecovery('the passphrase');
-    now.mockReturnValue(start + PROVEN_MS - 1);
+    await api.revealPassword('nas', PROOF);
+    now.mockReturnValue(start + 120000 - 1);
     expect(api.proven).toBe(true);
-    now.mockReturnValue(start + PROVEN_MS);
+    now.mockReturnValue(start + 120000);
     expect(api.proven).toBe(false);
-    // A system clock set back does not keep the minute open until it catches up.
+    // A system clock set back does not keep the window open until it catches up.
     now.mockReturnValue(start - 1);
     expect(api.proven).toBe(false);
   });
 
-  it('asks a proof again after a lock in this tab', async () => {
-    mockMakeRequest.mockResolvedValue(answer(200, {}));
+  it('takes the window from the status an unlock answers', async () => {
     const api = vault();
+    mockMakeRequest.mockResolvedValue(status(5));
+    const start = Date.now();
+    const now = jest.spyOn(Date, 'now').mockReturnValue(start);
     await api.unlockRecovery('the passphrase');
+    mockMakeRequest.mockResolvedValue(answer(200, { value: 's3cret' }));
+    await api.revealPassword('nas', PROOF);
+    now.mockReturnValue(start + 5000 - 1);
+    expect(api.proven).toBe(true);
+    now.mockReturnValue(start + 5000);
+    expect(api.proven).toBe(false);
+  });
+
+  it('is never open when the status reports 0', async () => {
+    const api = vault();
+    mockMakeRequest.mockResolvedValueOnce(status(0));
+    await api.status();
+    mockMakeRequest.mockResolvedValue(answer(200, { value: 's3cret' }));
+    await api.revealPassword('nas', PROOF);
+    expect(api.proven).toBe(false);
+  });
+
+  it('ends with a lock in this tab', async () => {
+    mockMakeRequest.mockResolvedValue(answer(200, { value: 's3cret' }));
+    const api = vault();
+    await api.revealPassword('nas', PROOF);
     await api.lock();
     expect(api.proven).toBe(false);
   });
 
-  it('is not started by a refused unlock or proof', async () => {
+  it('is not started by a refused proof', async () => {
     mockMakeRequest.mockResolvedValue(answer(403, { error: 'wrong code' }));
     const api = vault();
-    await expect(api.unlockPassword('a password', '000000')).rejects.toThrow(
-      'wrong code'
-    );
     await expect(api.revealPassword('nas', { code: '000000' })).rejects.toThrow(
       'wrong code'
     );

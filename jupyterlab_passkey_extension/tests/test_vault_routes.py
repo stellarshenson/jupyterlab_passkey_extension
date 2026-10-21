@@ -95,7 +95,7 @@ def vault_file(vault_env):
 async def test_status_before_init(jp_fetch, vault_env):
     s = await call(jp_fetch, "status", method="GET")
     assert s["initialized"] is False and s["unlocked"] is False
-    assert s["settings"] == {"unlock_minutes": 30, "password_min_length": 12}
+    assert s["settings"] == {"unlock_minutes": 30, "password_min_length": 12, "reveal_seconds": 60}
     assert s["holder"]["name"].startswith("memory/")
     assert set(s["holder"]["capabilities"]) == {
         "locked_memory", "no_core_dump", "holder_ttl", "locks_on_restart", "container_isolated"}
@@ -395,7 +395,7 @@ async def test_the_shortest_unlock_password_is_a_setting(jp_fetch, vault_env, cl
     await call(jp_fetch, "config", {"unlock_minutes": 30, "password_min_length": 16})
     await call(jp_fetch, "config", {"unlock_minutes": 60})
     s = await call(jp_fetch, "status", method="GET")
-    assert s["settings"] == {"unlock_minutes": 60, "password_min_length": 16}
+    assert s["settings"] == {"unlock_minutes": 60, "password_min_length": 16, "reveal_seconds": 60}
     pair = {"secret": APP_KEY, "code": clock.code(), "proof": {"current": PASS}}
     assert await fails(jp_fetch, "mfa", {**pair, "password": "x" * 15}) == (
         400, "an unlock password is at least 16 characters")
@@ -538,7 +538,7 @@ async def test_the_unlock_duration_setting_reaches_the_holder(jp_fetch, vault_en
     await call(jp_fetch, "config", {"unlock_minutes": 1})
     await init(jp_fetch)
     s = await call(jp_fetch, "status", method="GET")
-    assert s["settings"] == {"unlock_minutes": 1, "password_min_length": 12}
+    assert s["settings"] == {"unlock_minutes": 1, "password_min_length": 12, "reveal_seconds": 60}
     assert 55 <= s["remaining"] <= 60
 
 
@@ -546,6 +546,24 @@ async def test_the_unlock_duration_setting_reaches_the_holder(jp_fetch, vault_en
 async def test_the_unlock_duration_must_be_1_to_1440(jp_fetch, vault_env, bad):
     code, error = await fails(jp_fetch, "config", {"unlock_minutes": bad})
     assert code == 400 and "1 to 1440" in error
+
+
+async def test_the_reveal_window_is_a_setting(jp_fetch, vault_env):
+    # The default, a stored value, a value kept when the request does not send it, and
+    # 0 for every reveal asking a proof.
+    assert (await call(jp_fetch, "status", method="GET"))["settings"]["reveal_seconds"] == 60
+    await call(jp_fetch, "config", {"unlock_minutes": 30, "reveal_seconds": 300})
+    assert (await call(jp_fetch, "status", method="GET"))["settings"]["reveal_seconds"] == 300
+    await call(jp_fetch, "config", {"unlock_minutes": 45})
+    assert (await call(jp_fetch, "status", method="GET"))["settings"]["reveal_seconds"] == 300
+    await call(jp_fetch, "config", {"unlock_minutes": 45, "reveal_seconds": 0})
+    assert (await call(jp_fetch, "status", method="GET"))["settings"]["reveal_seconds"] == 0
+
+
+@pytest.mark.parametrize("bad", [-1, 3601, "60", True, 6.5])
+async def test_the_reveal_window_must_be_0_to_3600(jp_fetch, vault_env, bad):
+    code, error = await fails(jp_fetch, "config", {"unlock_minutes": 30, "reveal_seconds": bad})
+    assert code == 400 and error == "reveal_seconds must be a whole number from 0 to 3600"
 
 
 # --------------------------------------------------------------------------- #
@@ -838,5 +856,8 @@ def test_the_settings_schema_declares_the_unlock_duration_and_sidebar():
     length = schema["properties"]["passwordMinLength"]
     assert (length["type"], length["default"], length["minimum"], length["maximum"]) == (
         "integer", vault_service.DEFAULT_PASSWORD_MIN_LENGTH, *vault_service.PASSWORD_MIN_LENGTH_RANGE)
+    reveal = schema["properties"]["revealSeconds"]
+    assert (reveal["type"], reveal["default"], reveal["minimum"], reveal["maximum"]) == (
+        "integer", vault_service.DEFAULT_REVEAL_SECONDS, *vault_service.REVEAL_SECONDS_RANGE)
     sidebar = schema["properties"]["sidebar"]
     assert sidebar["enum"] == ["right", "left"] and sidebar["default"] == "right"

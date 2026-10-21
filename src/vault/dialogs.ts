@@ -315,7 +315,7 @@ const TYPED: Record<
 
 /** How the entry popup gets the password. */
 export interface IReveal {
-  /** True while the eye asks no proof: this tab has just unlocked or proven. */
+  /** True while the eye asks no proof: this tab has had a proof accepted. */
   proven: () => boolean;
   /** The proof of a passkey request for this hostname. */
   passkey: () => Promise<Proof>;
@@ -332,8 +332,8 @@ export interface IReveal {
 /**
  * An entry, read-only, laid out like the edit form. The password is not in the page
  * until a reveal returns it: the eye asks for it once, then only hides and shows it.
- * For a minute after an unlock or a proof in this tab the eye asks no proof. After
- * that it asks a passkey first. With none for this hostname, or no answer, a row
+ * In the reveal window after a proof in this tab the eye asks no proof. After that it
+ * asks a passkey first. With none for this hostname, or no answer, a row
  * under the field asks a proof to type: a code of the authenticator app, the unlock
  * password or the recovery passphrase, whichever of them the vault has.
  */

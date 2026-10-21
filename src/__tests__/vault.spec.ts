@@ -167,7 +167,11 @@ function status(over: Partial<IStatus> = {}): IStatus {
         created: '2026-09-26T10:00:00Z'
       }
     ],
-    settings: { unlock_minutes: 240, password_min_length: 12 },
+    settings: {
+      unlock_minutes: 240,
+      password_min_length: 12,
+      reveal_seconds: 60
+    },
     path: '~/.local/share/jupyterlab-passkey/vault.json',
     ...over
   };
@@ -3740,7 +3744,11 @@ describe('the password and authenticator app', () => {
       status: jest.fn().mockResolvedValue(
         status({
           authenticator: null,
-          settings: { unlock_minutes: 240, password_min_length: 16 }
+          settings: {
+            unlock_minutes: 240,
+            password_min_length: 16,
+            reveal_seconds: 60
+          }
         })
       )
     });
@@ -4519,10 +4527,11 @@ describe('EntryView', () => {
 });
 
 describe('connectSettings', () => {
-  it('sends the unlock duration and the shortest unlock password, and docks the panel, now and on every change', () => {
+  it('sends the unlock duration, the shortest unlock password and the reveal window, and docks the panel, now and on every change', () => {
     const values: Record<string, unknown> = {
       unlockMinutes: 30,
       passwordMinLength: 12,
+      revealSeconds: 60,
       sidebar: 'right'
     };
     const listeners: Array<() => void> = [];
@@ -4533,13 +4542,14 @@ describe('connectSettings', () => {
     const api = fakeApi();
     const dock = jest.fn();
     connectSettings(settings, api, dock);
-    expect(api.setConfig).toHaveBeenLastCalledWith(30, 12);
+    expect(api.setConfig).toHaveBeenLastCalledWith(30, 12, 60);
     expect(dock).toHaveBeenLastCalledWith('right');
     values.unlockMinutes = 90;
     values.passwordMinLength = 16;
+    values.revealSeconds = 0;
     values.sidebar = 'left';
     listeners.forEach(fn => fn());
-    expect(api.setConfig).toHaveBeenLastCalledWith(90, 16);
+    expect(api.setConfig).toHaveBeenLastCalledWith(90, 16, 0);
     expect(dock).toHaveBeenLastCalledWith('left');
     // A change to anything else leaves the panel where it is: docking again
     // collapses it.

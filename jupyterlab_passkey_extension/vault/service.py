@@ -23,6 +23,10 @@ DEFAULT_UNLOCK_MINUTES = 30
 # to. A copied vault file can be attacked through this slot, so short is not offered.
 DEFAULT_PASSWORD_MIN_LENGTH = 12
 PASSWORD_MIN_LENGTH_RANGE = (8, 128)
+# How long an accepted proof in a tab shows a password without another proof, and what
+# the setting may be. 0 asks a proof at every reveal.
+DEFAULT_REVEAL_SECONDS = 60
+REVEAL_SECONDS_RANGE = (0, 3600)
 # What a lock cannot reach, said when it finds no vault file, or a damaged one.
 _RESTART_CLAUSE = (
     "on keyctl or gpg-agent a key unlocked before a server restart can stay held until its "
@@ -172,20 +176,27 @@ class VaultService:
         return self._setting("password_min_length", *PASSWORD_MIN_LENGTH_RANGE,
                              DEFAULT_PASSWORD_MIN_LENGTH)
 
-    def set_config(self, unlock_minutes, password_min_length=None):
-        """Store the settings the frontend sends. A length not sent keeps its value."""
+    def reveal_seconds(self):
+        return self._setting("reveal_seconds", *REVEAL_SECONDS_RANGE, DEFAULT_REVEAL_SECONDS)
+
+    def set_config(self, unlock_minutes, password_min_length=None, reveal_seconds=None):
+        """Store the settings the frontend sends. A value not sent keeps its value."""
         if password_min_length is None:
             password_min_length = self.password_min_length()
+        if reveal_seconds is None:
+            reveal_seconds = self.reveal_seconds()
         for key, value, (low, high) in (
                 ("unlock_minutes", unlock_minutes, (1, MAX_UNLOCK_MINUTES)),
-                ("password_min_length", password_min_length, PASSWORD_MIN_LENGTH_RANGE)):
+                ("password_min_length", password_min_length, PASSWORD_MIN_LENGTH_RANGE),
+                ("reveal_seconds", reveal_seconds, REVEAL_SECONDS_RANGE)):
             if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
                 raise VaultError(f"{key} must be a whole number from {low} to {high}")
         path = _config_path()
         os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump({"unlock_minutes": unlock_minutes, "password_min_length": password_min_length}, f)
+            json.dump({"unlock_minutes": unlock_minutes, "password_min_length": password_min_length,
+                       "reveal_seconds": reveal_seconds}, f)
 
     # -- holder and data key -------------------------------------------------
 
@@ -219,7 +230,8 @@ class VaultService:
             "holder": {**holders.describe(holder), "debug": holders.debug_report()},
             "slots": [],
             "settings": {"unlock_minutes": self.unlock_minutes(),
-                         "password_min_length": self.password_min_length()},
+                         "password_min_length": self.password_min_length(),
+                         "reveal_seconds": self.reveal_seconds()},
             "path": _shown(path),
         }
         if result["initialized"]:
@@ -388,10 +400,10 @@ class VaultService:
 
     def reveal_proven(self, name, proof):
         """The panel's reveal: the password, read with the key the proof gives. `read`
-        stays for the CLI, the Python API and the panel in the minute after an unlock or
-        a proof in its tab. A locked vault shows nothing, whatever the proof: a secret
-        that opens it must unlock it first, and the unlock password opens it only with
-        a code."""
+        stays for the CLI, the Python API and the panel in the `reveal_seconds` window
+        that an accepted proof in its tab starts. A locked vault shows nothing, whatever
+        the proof: a secret that opens it must unlock it first, and the unlock password
+        opens it only with a code."""
         self._dek()
         doc = store.load(store.vault_path())
         dek = self._proven_dek(doc, proof, reveal=True)

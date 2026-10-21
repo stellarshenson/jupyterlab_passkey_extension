@@ -33,9 +33,10 @@ const PANEL_RANK = 900;
 export type Side = 'left' | 'right';
 
 /**
- * Apply the vault settings now and on every change: send the unlock duration to
- * the server - it is the server that holds the key for that long, whichever client
- * unlocked - and move the panel to the chosen sidebar.
+ * Apply the vault settings now and on every change: send the unlock duration, the
+ * shortest unlock password and the reveal window to the server - it is the server
+ * that holds the key for that long, whichever client unlocked - and move the panel to
+ * the chosen sidebar.
  */
 export function connectSettings(
   settings: ISettingRegistry.ISettings,
@@ -46,6 +47,7 @@ export function connectSettings(
   const apply = (): void => {
     const minutes = settings.get('unlockMinutes').composite as number;
     const shortest = settings.get('passwordMinLength').composite as number;
+    const reveal = settings.get('revealSeconds').composite as number;
     const side =
       settings.get('sidebar').composite === 'left' ? 'left' : 'right';
     // Only on a change of side: docking again collapses the open panel.
@@ -53,7 +55,7 @@ export function connectSettings(
       docked = side;
       dock(side);
     }
-    api.setConfig(minutes, shortest).catch(e => {
+    api.setConfig(minutes, shortest, reveal).catch(e => {
       console.warn(
         `vault: could not send the settings - ${describeFailure(e)}`
       );

@@ -138,7 +138,7 @@ async function removeMethod(page: any, row: any) {
 }
 
 /**
- * The minute after an unlock or a proof ends for the page: the eye asks a proof again.
+ * The reveal window after a proof ends for the page: the eye asks a proof again.
  * The panel reads the time with Date.now, which answers 61 s later from here on.
  */
 async function endProvenMinute(page: any): Promise<void> {
@@ -420,8 +420,8 @@ test('an entry opens read-only in a popup, and its password shows only after a p
             .backgroundColor
       )
   ).toBe(true);
-  // Create vault unlocked it: for a minute the eye would show the password at once.
-  // Here that minute is over, so the eye asks a proof.
+  // Create vault added its first passkey with a proof, which starts the reveal window;
+  // here that window is over, so the eye asks a proof.
   await endProvenMinute(page);
   await row.click();
   await expect(dialog.locator('.jp-Dialog-header')).toHaveText('github/api');
@@ -911,8 +911,8 @@ test('a code, the unlock password or the recovery passphrase shows a password at
   await expect(dialog).toHaveCount(0);
   await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
 
-  // Unlock with the password and a code. For a minute the eye then shows the password
-  // at once: it asks no second proof, so the code that unlocked is not asked again.
+  // Unlock with the password and a code. An unlock starts no reveal window, so the eye
+  // asks a proof at once: the app's next code, since a code is accepted once.
   await openCog(page);
   await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
   await expect(state(page)).toHaveText('Locked');
@@ -933,7 +933,7 @@ test('a code, the unlock password or the recovery passphrase shows a password at
   const proof = dialog.locator('.jp-PasskeyVaultForm-proof input');
   const show = dialog.getByRole('button', { name: 'Show', exact: true });
   const eye = dialog.getByRole('button', { name: 'Show password' });
-  /** Press the eye in the minute: the request carries no proof and the popup asks none. */
+  /** Press the eye in the window: the request carries no proof and the popup asks none. */
   const showsAtOnce = async () => {
     await row.click();
     const [request] = await Promise.all([
@@ -946,9 +946,31 @@ test('a code, the unlock password or the recovery passphrase shows a password at
     await dialog.getByRole('button', { name: 'Close' }).click();
     await expect(dialog).toHaveCount(0);
   };
+  // The unlock opened the vault but started no window: the eye asks a proof.
+  await row.click();
+  await expect(proof).toHaveCount(0);
+  await eye.click();
+  await expect(
+    dialog.getByText(
+      'Enter a code of the authenticator app to show the password.'
+    )
+  ).toBeVisible();
+  // The unlock password proves, so the app's codes are left for the steps below: a
+  // code is accepted once, and only the previous, current and next step are taken.
+  await dialog.getByRole('button', { name: 'Use the unlock password' }).click();
+  await expect(
+    dialog.getByText('Enter the unlock password to show the password.')
+  ).toBeVisible();
+  await proof.fill(UNLOCK_PASSWORD);
+  await show.click();
+  await expect(password).toHaveValue(SECRET);
+  await expect(proof).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+  // That proof starts the reveal window.
   await showsAtOnce();
 
-  // After the minute the eye asks the proof in a row of the popup: the app's code first.
+  // After the window the eye asks the proof in a row of the popup: the app's code first.
   await endProvenMinute(page);
   await row.click();
   // Until the eye is pressed the popup has nothing to type in.
@@ -967,7 +989,7 @@ test('a code, the unlock password or the recovery passphrase shows a password at
   await expect(proof).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Close' }).click();
   await expect(dialog).toHaveCount(0);
-  // That proof starts a minute of its own.
+  // That proof starts a reveal window of its own.
   await showsAtOnce();
 
   // The unlock password alone on request, while the vault is unlocked.

@@ -41,7 +41,12 @@ export interface IStatus {
   slots: ISlot[];
   /** The registered authenticator app; null with none, absent with no vault. */
   authenticator?: { created: string } | null;
-  settings: { unlock_minutes: number; password_min_length: number };
+  settings: {
+    unlock_minutes: number;
+    password_min_length: number;
+    /** How long a proof in this tab shows a password without another proof. */
+    reveal_seconds: number;
+  };
   path: string;
   /** Changes whenever the entries do; absent with no vault. */
   revision?: string;
@@ -101,9 +106,6 @@ export class VaultError extends Error {
   }
 }
 
-/** How long after an unlock or an accepted proof in this tab the eye asks no proof. */
-export const PROVEN_MS = 60000;
-
 /** No answer came: the request may or may not have reached the server. */
 export class NoAnswer extends VaultError {
   constructor() {
@@ -116,35 +118,41 @@ export class VaultApi {
   constructor(private readonly _settings: ServerConnection.ISettings) {}
 
   /**
-   * True for `PROVEN_MS` after this tab unlocked the vault or had a proof accepted:
-   * the person at the screen has just proven, so the entry popup's eye asks no second
-   * proof. Kept by the tab, as the eye's proof is asked by the tab: the server reads a
-   * password for any request on an unlocked vault (`vault get`). A lock in this tab
-   * and a reload of the page end it. While the system clock reads earlier than that
-   * unlock or proof, it is false.
+   * True for the reveal window after this tab had a proof accepted: the person at the
+   * screen has just proven, so the entry popup's eye asks no second proof. The window
+   * is the `revealSeconds` setting, read from the server's status; 0 means every
+   * reveal asks for a proof. An unlock does not start it. Kept by the tab, as the
+   * eye's proof is asked by the tab: the server reads a password for any request on
+   * an unlocked vault (`vault get`). A lock in this tab and a reload of the page end
+   * it. While the system clock reads earlier than that proof, it is false.
    */
   get proven(): boolean {
     const since = Date.now() - this._provenAt;
-    return since >= 0 && since < PROVEN_MS;
+    return since >= 0 && since < this._revealMs;
   }
 
   status(): Promise<IStatus> {
-    return this._call<IStatus>('status', 'GET');
+    return this._status(this._call<IStatus>('status', 'GET'));
   }
 
-  setConfig(unlockMinutes: number, passwordMinLength: number): Promise<void> {
+  setConfig(
+    unlockMinutes: number,
+    passwordMinLength: number,
+    revealSeconds: number
+  ): Promise<void> {
     return this._call('config', 'POST', {
       unlock_minutes: unlockMinutes,
-      password_min_length: passwordMinLength
+      password_min_length: passwordMinLength,
+      reveal_seconds: revealSeconds
     });
   }
 
   init(recovery: string): Promise<void> {
-    return this._proving(this._call('init', 'POST', { recovery }));
+    return this._call('init', 'POST', { recovery });
   }
 
   unlockRecovery(recovery: string): Promise<IStatus> {
-    return this._proving(this._call<IStatus>('unlock', 'POST', { recovery }));
+    return this._status(this._call<IStatus>('unlock', 'POST', { recovery }));
   }
 
   /**
@@ -153,13 +161,13 @@ export class VaultApi {
    * takes no code.
    */
   unlockPassword(password: string, code?: string): Promise<IStatus> {
-    return this._proving(
+    return this._status(
       this._call<IStatus>('unlock', 'POST', { password, code })
     );
   }
 
   unlockPasskey(credId: string, prf: string): Promise<IStatus> {
-    return this._proving(
+    return this._status(
       this._call<IStatus>('unlock', 'POST', { cred_id: credId, prf })
     );
   }
@@ -237,10 +245,20 @@ export class VaultApi {
     return this._proving(this._call('recovery', 'POST', { recovery, proof }));
   }
 
-  /** When this tab last unlocked the vault or had a proof accepted. */
+  /** When this tab last had a proof accepted; 0 before the first and after a lock. */
   private _provenAt = 0;
 
-  /** `request`, whose success is an unlock or an accepted proof of this tab. */
+  /** The reveal window, from the `revealSeconds` setting; the server default until read. */
+  private _revealMs = 60000;
+
+  /** `request`, whose answer is the state: its settings set the reveal window. */
+  private async _status<T extends IStatus>(request: Promise<T>): Promise<T> {
+    const result = await request;
+    this._revealMs = result.settings.reveal_seconds * 1000;
+    return result;
+  }
+
+  /** `request`, whose success is an accepted proof of this tab. */
   private async _proving<T>(request: Promise<T>): Promise<T> {
     const result = await request;
     this._provenAt = Date.now();
