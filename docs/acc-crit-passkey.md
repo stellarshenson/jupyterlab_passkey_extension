@@ -1862,12 +1862,14 @@ The notification that the CLI and the Python Vault class raise in the JupyterLab
   - mechanism: 2026-10-19T15:08:26Z @kj _pick_server takes the first set variable and returns only a record matching it, else SystemExit; with none set, the single token-carrying record; _base_url refuses the port 8888 guess when no variable is set; the Vault client turns the SystemExit into VaultClientError
   - log: 2026-10-19T15:08:26Z @kj added
   - log: 2026-10-19T15:11:17Z @kj closed
-- [ ] `ACC-NOTIFY-242-SERVER-ROOT` **A terminal's lab must also match its root** - HIGH; when JUPYTER_SERVER_URL names the lab and JUPYTER_SERVER_ROOT is set, the CLI uses only a record whose root_dir equals it, else stops listing the running servers; a plain lab that moved off 8888 while a Galata server held it no longer posts to that Galata server
+- [x] `ACC-NOTIFY-242-SERVER-ROOT` **A terminal's lab must also match its root** - HIGH; when JUPYTER_SERVER_URL names the lab and JUPYTER_SERVER_ROOT is set, the CLI uses only a record whose root_dir equals it, else stops listing the running servers; a plain lab that moved off 8888 while a Galata server held it no longer posts to that Galata server
+  - evidence: test_jupyter_server_url_stops_when_the_root_differs and test_jupyter_server_url_picks_the_record_with_the_terminal_root pass, pytest 477 green; released in 1.1.52 (beafb61); review architect, bug-hunter, ux-designer last round SHIP
   - related: ACC-NOTIFY-240-SERVER-NAMED
   - test: pytest: JUPYTER_SERVER_URL port 8888, JUPYTER_SERVER_ROOT /lab, a Galata record on 8888 with root galata-test- -> SystemExit; same root -> lab record
   - test-tags: UNIT
   - mechanism: 2026-10-20T21:21:29Z @kj _pick_server filters the JUPYTER_SERVER_URL matches by root_dir == abspath(JUPYTER_SERVER_ROOT); jupyter_server_terminals sets both variables from the same serverapp, and the record's root_dir is abspath(root_dir)
   - log: 2026-10-20T21:21:29Z @kj added
+  - log: 2026-10-20T21:46:25Z @kj closed
 
 ## Lint `LINT`
 

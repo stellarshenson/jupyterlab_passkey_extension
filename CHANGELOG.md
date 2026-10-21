@@ -2,6 +2,14 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.54] - 2026-10-21
+
+No functional change since 1.1.52. This release records the closed root-match criterion and the review that closed it.
+
+### Changed
+
+- The acceptance criteria tracker records `ACC-NOTIFY-242-SERVER-ROOT` as closed, with the two pytest cases that cover it as evidence, and the journal records the review that confirmed the change
+
 ## [1.1.52] - 2026-10-20
 
 Lets the categories of the vault panel collapse, and makes the CLI also check the lab's root folder, so a lab that moved to another port is not mistaken for a test server.
