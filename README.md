@@ -167,7 +167,28 @@ The Jupyter server holds one encrypted file that the panel, the CLI and Python u
 - **Authenticator code** - the code is a server check that takes no part in encryption, so the file and the unlock password alone decrypt
 - **File** - `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` (`~/.local/share/...`), mode `0600`, path set by `JLAB_PASSKEY_VAULT`
 - **Hostnames** - a passkey opens the vault only from its hostname or a subdomain; on another host unlock with the unlock password and an authenticator code, or the recovery passphrase
-- **Configuration** - `unlock_minutes` (default 30, 1 to 1440, the NIST SP 800-63B AAL2 idle limit), `password_min_length` (default 12, 8 to 128), `reveal_seconds` (default 60, 0 to 3600) and `rotate_days` (default 365, 0 to 3650) live in `$XDG_STATE_HOME/jupyterlab-passkey/vault-config.json` (`~/.local/state/...` by default, `XDG_STATE_HOME` honoured); an absent or invalid key uses its default, and the Settings Editor no longer carries them
+
+### Configuration
+
+The four vault policy keys are organisation-controlled: the server administrator sets them in a JSON file, and the Settings Editor does not carry them. The file is `$XDG_STATE_HOME/jupyterlab-passkey/vault-config.json`, which is `~/.local/state/jupyterlab-passkey/vault-config.json` by default. The server reads the file on each call, so a change applies to the next call with no server restart. A key that is absent, not a whole number, or outside its range uses its default.
+
+```json
+{
+  "unlock_minutes": 30,
+  "password_min_length": 12,
+  "reveal_seconds": 60,
+  "rotate_days": 365
+}
+```
+
+| Setting               | Default | Range     | Effect                                                                                                      |
+| --------------------- | ------- | --------- | ----------------------------------------------------------------------------------------------------------- |
+| `unlock_minutes`      | 30      | 1 to 1440 | minutes the server holds the key after an unlock; 30 is the NIST SP 800-63B AAL2 idle limit                 |
+| `password_min_length` | 12      | 8 to 128  | fewest characters of an unlock password                                                                     |
+| `reveal_seconds`      | 60      | 0 to 3600 | seconds a tab skips the proof after a proof; 0 asks at every reveal and an unlock does not start the window |
+| `rotate_days`         | 365     | 0 to 3650 | days a data key serves before an unlock rotates it; 0 turns automatic rotation off                          |
+
+Only the `sidebar` setting remains in the Settings Editor.
 
 ### Panel
 
