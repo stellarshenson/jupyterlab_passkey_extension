@@ -2,6 +2,14 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.57] - 2026-10-22
+
+Documents the four organisation-controlled vault policy keys in the README.
+
+### Changed
+
+- The README documents the vault config file: its path, the per-call reload with no restart, the default fallback for an absent or invalid key, and a table of the four keys with defaults, ranges and effects
+
 ## [1.1.56] - 2026-10-21
 
 Rotates the vault data key under a root key, migrates version-1 vaults on unlock, and moves vault policy from the Settings Editor into the server config file.
