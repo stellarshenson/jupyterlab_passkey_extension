@@ -172,7 +172,7 @@ The dialog's image has empty `alt` text on purpose: the code must not re-enter t
 
 ## `vault`
 
-The password vault the Jupyter server keeps - see the [README](../README.md#vault) for the file, the encryption and where the unlocked key is held. Every vault subcommand calls the server's authenticated API. The two passkey steps - a passkey unlock and a new passkey - raise a notification whose click runs the step in the tab, and the page sends the PRF straight to the server; only `ok` or the error comes back to the CLI.
+The password vault the Jupyter server keeps - see the [usage notes](usage.md#vault) for the file, the encryption and where the unlocked key is held. Every vault subcommand calls the server's authenticated API. The two passkey steps - a passkey unlock and a new passkey - raise a notification whose click runs the step in the tab, and the page sends the PRF straight to the server; only `ok` or the error comes back to the CLI.
 
 | Subcommand                                                                                               | Does                                                                                                                    |
 | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |

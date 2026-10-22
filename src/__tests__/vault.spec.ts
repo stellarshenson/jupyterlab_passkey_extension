@@ -157,7 +157,7 @@ function status(over: Partial<IStatus> = {}): IStatus {
       notice: null
     },
     slots: [
-      { type: 'recovery' },
+      { type: 'recovery', kdf: 'argon2id' },
       {
         type: 'passkey',
         cred_id: 'AAEC',
@@ -1187,15 +1187,15 @@ describe('VaultPanel', () => {
     expect(toggle.style.visibility).toBe('hidden');
   });
 
-  it('shows each entry as its name and username only, with no buttons', async () => {
+  it('shows each entry as its name, username and last-used age, with no buttons', async () => {
     const panel = await panelWith(fakeApi());
     const rows = Array.from(
       panel.node.querySelectorAll('.jp-PasskeyVaultPanel-rowLine')
     );
     expect(rows.map(r => r.textContent)).toEqual([
-      'nas/ugoskonrad',
-      'github/apime',
-      'gitlab/apikj'
+      'nas/ugoskonradnever',
+      'github/apimenever',
+      'gitlab/apikjnever'
     ]);
     expect(rows.every(r => r.tagName === 'BUTTON')).toBe(true);
     expect(rows.every(r => r.querySelector('button') === null)).toBe(true);
@@ -1204,6 +1204,34 @@ describe('VaultPanel', () => {
       b => b.textContent
     );
     expect(labels.filter(l => /Copy|Show/.test(l ?? ''))).toEqual([]);
+  });
+
+  it('shows how long ago each entry was used, bright when recent and dim when stale', async () => {
+    const ago = (ms: number): string => new Date(Date.now() - ms).toISOString();
+    const entries = [
+      { ...ENTRIES[0], name: 'recent', used: ago(30_000) },
+      { ...ENTRIES[1], name: 'minutes', used: ago(5 * 60_000) },
+      { ...ENTRIES[2], name: 'stale', used: ago(8 * 86_400_000) },
+      { ...ENTRIES[0], name: 'unused', used: '' }
+    ];
+    const panel = await panelWith(
+      fakeApi({ entries: jest.fn().mockResolvedValue(entries) })
+    );
+    const row = (name: string): HTMLElement =>
+      Array.from(
+        panel.node.querySelectorAll<HTMLElement>(
+          '.jp-PasskeyVaultPanel-rowLine'
+        )
+      ).find(r => r.dataset.focusKey === `row:${name}`) as HTMLElement;
+    expect(text(panel)).toContain('now');
+    expect(text(panel)).toContain('5m ago');
+    expect(text(panel)).toContain('8d ago');
+    expect(text(panel)).toContain('never');
+    expect(row('recent').classList.contains('jp-mod-recentlyActive')).toBe(
+      true
+    );
+    expect(row('stale').classList.contains('jp-mod-stale')).toBe(true);
+    expect(row('minutes').className).toBe('jp-PasskeyVaultPanel-rowLine');
   });
 
   it('keeps the not-confirmed line when the server returns with the vault locked by its restart, whichever read comes first', async () => {
@@ -2950,7 +2978,7 @@ describe('VaultPanel', () => {
       expect(text(panel)).toContain('Unlock duration4h');
       expect(text(panel)).toContain('Reveal window60s');
       expect(text(panel)).toContain('Shortest unlock password12 characters');
-      expect(text(panel)).toContain('Key encryptionArgon2id');
+      expect(text(panel)).toContain('Key encryptionArgon2id (1), scrypt (0)');
       expect(text(panel)).toContain('Key rotation365 days');
       // The data key: its creation date, its age, its period and whether it is due.
       expect(text(panel)).toContain('Created2026-10-11 10:00 UTC');
@@ -3010,9 +3038,7 @@ describe('VaultPanel', () => {
           )
         })
       );
-      expect(text(panel)).toContain(
-        'Key encryptionArgon2id, scrypt for 1 older slot'
-      );
+      expect(text(panel)).toContain('Key encryptionArgon2id (1), scrypt (1)');
       expect(text(panel)).toContain('Key rotationoff');
     });
 

@@ -78,6 +78,20 @@ async def add_mfa(jp_fetch, clock):
     clock.advance(1)
 
 
+@pytest.fixture
+def entry_clock(monkeypatch):
+    """The clock entry dates are written from, stopped: a test sets the stamp."""
+    class Clock:
+        stamp = "2026-01-02T03:04:05Z"
+
+        def __call__(self):
+            return self.stamp
+
+    stopped = Clock()
+    monkeypatch.setattr(store, "_now", stopped)
+    return stopped
+
+
 def edit_vault_file(vault_env, change):
     path = vault_env / "vault" / "vault.json"
     doc = json.loads(path.read_text())
@@ -262,6 +276,27 @@ def test_a_failed_slot_upgrade_does_not_fail_the_unlock(vault_env, monkeypatch, 
     svc.unlock_recovery(PASS)
     assert svc.read("github/api") == "s3cret"
     assert "Argon2id" in caplog.text and PASS not in caplog.text
+
+
+@pytest.mark.parametrize("error", [
+    OSError("read-only file system"),
+    store.VaultError("no entry named 'github/api'"),
+])
+def test_a_failed_used_stamp_does_not_fail_a_read(vault_env, monkeypatch, caplog, error):
+    svc = handlers._service
+    svc.init(PASS)
+    svc.add("github/api", {"password": SECRET})
+
+    def boom(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(store, "update_entries", boom)
+    caplog.set_level(logging.WARNING)
+    assert svc.read("github/api") == SECRET
+    assert svc.reveal_proven("github/api", {"current": PASS}) == SECRET
+    assert "could not record the entry's last use" in caplog.text
+    assert "github/api" not in caplog.text
+    assert str(error) not in caplog.text
 
 
 # --------------------------------------------------------------------------- #
@@ -829,6 +864,59 @@ async def test_add_refuses_a_duplicate_and_edit_changes_only_given_fields(jp_fet
     after = (await call(jp_fetch, "entries", method="GET"))["entries"][0]
     assert after["url"] == "https://x" and after["updated"] > before["updated"]
     assert (await call(jp_fetch, "reveal", {"name": "github/api"}))["value"] == SECRET
+
+
+async def test_a_new_entry_has_no_used_stamp(jp_fetch, vault_env, entry_clock):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    [entry] = (await call(jp_fetch, "entries", method="GET"))["entries"]
+    assert entry["used"] == ""
+
+
+async def test_a_reveal_stamps_used_and_leaves_created_and_updated(jp_fetch, vault_env, entry_clock):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    [entry] = (await call(jp_fetch, "entries", method="GET"))["entries"]
+    created, updated = entry["created"], entry["updated"]
+    entry_clock.stamp = "2026-01-02T03:05:06Z"
+    assert (await call(jp_fetch, "reveal", {"name": "github/api", "current": PASS}))["value"] == SECRET
+    [entry] = (await call(jp_fetch, "entries", method="GET"))["entries"]
+    assert entry["used"] == "2026-01-02T03:05:06Z"
+    assert entry["created"] == created and entry["updated"] == updated
+    entry_clock.stamp = "2026-01-02T03:06:07Z"
+    assert (await call(jp_fetch, "reveal", {"name": "github/api"}))["value"] == SECRET
+    [entry] = (await call(jp_fetch, "entries", method="GET"))["entries"]
+    assert entry["used"] == "2026-01-02T03:06:07Z"
+    assert entry["created"] == created and entry["updated"] == updated
+
+
+async def test_an_edit_stamps_used_and_updated(jp_fetch, vault_env, entry_clock):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    entry_clock.stamp = "2026-01-02T03:05:06Z"
+    await call(jp_fetch, "entries", {"name": "github/api", "fields": {"url": "https://x"}}, method="PATCH")
+    [entry] = (await call(jp_fetch, "entries", method="GET"))["entries"]
+    assert entry["updated"] == "2026-01-02T03:05:06Z" and entry["used"] == "2026-01-02T03:05:06Z"
+
+
+async def test_the_used_stamp_survives_a_lock_and_unlock(jp_fetch, vault_env, entry_clock):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    entry_clock.stamp = "2026-01-02T03:05:06Z"
+    await call(jp_fetch, "reveal", {"name": "github/api"})
+    await call(jp_fetch, "lock")
+    await call(jp_fetch, "unlock", {"recovery": PASS})
+    [entry] = (await call(jp_fetch, "entries", method="GET"))["entries"]
+    assert entry["used"] == "2026-01-02T03:05:06Z"
+
+
+async def test_the_used_stamp_is_sealed_in_the_vault_file(jp_fetch, vault_env, entry_clock):
+    await init(jp_fetch)
+    await add(jp_fetch, name="github/raw-check")
+    entry_clock.stamp = "2026-01-02T03:05:06Z"
+    await call(jp_fetch, "reveal", {"name": "github/raw-check"})
+    text = vault_file(vault_env)
+    assert "github/raw-check" not in text and "2026-01-02T03:05:06Z" not in text
 
 
 async def test_delete_and_missing_names(jp_fetch, vault_env):

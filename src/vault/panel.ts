@@ -101,14 +101,13 @@ function mfaAdded(s: IStatus): string | undefined {
 }
 
 /**
- * The key derivation the vault's typed slots were written with: Argon2id, and scrypt
- * while a vault written before it still holds such a slot.
+ * How many of the vault's typed slots use each key derivation. Passkey slots carry
+ * no KDF and count in neither.
  */
 function encryptionOf(slots: ISlot[]): string {
+  const modern = slots.filter(x => x.kdf === 'argon2id').length;
   const legacy = slots.filter(x => x.kdf === 'scrypt').length;
-  return legacy === 0
-    ? 'Argon2id'
-    : `Argon2id, scrypt for ${legacy} older slot${legacy === 1 ? '' : 's'}`;
+  return `Argon2id (${modern}), scrypt (${legacy})`;
 }
 
 export function formatRemaining(seconds: number): string {
@@ -119,6 +118,34 @@ export function formatRemaining(seconds: number): string {
   const minutes = Math.ceil(seconds / 60);
   const h = Math.floor(minutes / 60);
   return h > 0 ? `${h}h ${minutes % 60}m` : `${minutes}m`;
+}
+
+/**
+ * How long ago `stamp` was, with the thresholds and labels of the AI sessions
+ * panel; "never" when the entry carries no usable stamp.
+ */
+export function formatAgo(stamp?: string): string {
+  const at = stamp ? Date.parse(stamp) : NaN;
+  if (!Number.isFinite(at)) {
+    return 'never';
+  }
+  const age = Date.now() - at;
+  if (age < 60_000) {
+    return 'now';
+  }
+  if (age < 3_600_000) {
+    return `${Math.floor(age / 60_000)}m ago`;
+  }
+  if (age < 86_400_000) {
+    return `${Math.floor(age / 3_600_000)}h ago`;
+  }
+  if (age < 30 * 86_400_000) {
+    return `${Math.floor(age / 86_400_000)}d ago`;
+  }
+  if (age < 365 * 86_400_000) {
+    return `${Math.floor(age / (30 * 86_400_000))}mo ago`;
+  }
+  return `${Math.floor(age / (365 * 86_400_000))}y ago`;
 }
 
 /** An unlock duration in hours and minutes, a zero part left out: 4h, 1h 30m, 45m. */
@@ -1177,18 +1204,28 @@ export class VaultPanel extends Widget {
     }
   }
 
-  /** A row is the entry's name and username; a click or Enter opens its popup. */
+  /** A row is the entry's name, username and last-used age; a click or Enter opens its popup. */
   private _row(e: IEntry): HTMLElement {
     const line = el('button', `${C}-rowLine`);
     line.type = 'button';
     line.dataset.focusKey = `row:${e.name}`;
     const label = e.username ? `${e.name}, ${e.username}` : e.name;
+    const ageText = e.used ? `last used ${formatAgo(e.used)}` : 'never used';
     line.title = label;
-    line.setAttribute('aria-label', label);
+    line.setAttribute('aria-label', `${label}, ${ageText}`);
     line.setAttribute('aria-haspopup', 'dialog');
+    const age = e.used ? Date.now() - Date.parse(e.used) : NaN;
+    if (Number.isFinite(age)) {
+      if (age < 60_000) {
+        line.classList.add('jp-mod-recentlyActive');
+      } else if (age > 7 * 86_400_000) {
+        line.classList.add('jp-mod-stale');
+      }
+    }
     line.append(
       el('span', `${C}-rowName`, e.name),
-      el('span', `${C}-rowUser`, e.username)
+      el('span', `${C}-rowUser`, e.username),
+      el('span', `${C}-rowAge`, formatAgo(e.used))
     );
     line.addEventListener('click', () => void this._open(e));
     return line;

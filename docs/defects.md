@@ -115,6 +115,13 @@ The vault server side, CLI and Python API
   - root-cause: 2026-10-19T15:08:35Z @kj DISCOVERY_ENV in cli.spec.ts lacks JUPYTER_SERVER_URL, which the server-selection change made the first variable _pick_server reads
   - log: 2026-10-19T15:08:35Z @kj added
   - log: 2026-10-19T15:11:18Z @kj closed
+- [x] `DEF-VAULT-36-UNLOCK-DURATION` **Unlock duration runs at four hours against the 30-minute claim** - MAJOR; the README says NIST SP 800-63B AAL2 is met with a 30-minute default, but the running server holds the unlocked key for 240 minutes: the config file carries unlock_minutes 240 from the pre-1.1.55 default, and the file overrides the 30-minute default
+  - evidence: vault-config.json now sets unlock_minutes 30; VaultService().unlock_minutes() returns 30; the panel reads 30m on its next refresh
+  - repro: open the vault panel Security view: Unlock duration reads 4h; cat ~/.local/state/jupyterlab-passkey/vault-config.json shows unlock_minutes 240
+  - root-cause: 2026-10-22T14:34:57Z @kj observed: the file was modified 2026-10-22T14:08:02Z with unlock_minutes 240 and password_min_length 12; builds since 1.1.56 ship no writer for this file, so the value was set outside the current code
+  - root-cause: 2026-10-22T14:34:39Z @kj likely cause: the config file was seeded with the effective old setting (240) before the 1.1.55 default moved to 30, so the value became an explicit override instead of a default
+  - log: 2026-10-22T14:34:39Z @kj added
+  - log: 2026-10-22T14:35:01Z @kj closed
 
 ## Vault panel `PANEL`
 

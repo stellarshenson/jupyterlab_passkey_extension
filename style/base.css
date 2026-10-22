@@ -397,6 +397,32 @@ button.jp-PasskeyVaultPanel-sectionHeader:focus-visible {
   white-space: nowrap;
 }
 
+/* The age of an entry's last use, at the right end of its row. The 4.5em
+   minimum and tabular figures keep the age column aligned as in the AI
+   sessions panel. */
+.jp-PasskeyVaultPanel-rowAge {
+  flex: 0 0 auto;
+  min-width: 4.5em;
+  color: var(--jp-ui-font-color2);
+  font-size: var(--jp-ui-font-size0);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Age emphasis, as in the AI sessions panel: used within the last minute reads
+   bright, idle over a week dims; both decay or promote on the next refresh. */
+.jp-PasskeyVaultPanel-rowLine.jp-mod-recentlyActive
+  .jp-PasskeyVaultPanel-rowName,
+.jp-PasskeyVaultPanel-rowLine.jp-mod-recentlyActive
+  .jp-PasskeyVaultPanel-rowAge {
+  color: var(--jp-brand-color1);
+}
+
+.jp-PasskeyVaultPanel-rowLine.jp-mod-stale .jp-PasskeyVaultPanel-rowName {
+  opacity: 0.65;
+}
+
 /* Under the name of an unlock method. The line wraps between its parts: the minute
    is what tells two same-day passkeys apart. */
 .jp-PasskeyVaultPanel-methodText .jp-PasskeyVaultPanel-rowUser {

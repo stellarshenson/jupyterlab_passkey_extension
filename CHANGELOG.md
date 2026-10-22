@@ -2,6 +2,24 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.58] - 2026-10-22
+
+Shows how long ago each vault key was last used, counts the key-encryption slots, and moves the README reference into docs/usage.md.
+
+### Added
+
+- The entry list shows how long ago each key was last used, in the brand colour under a minute and dimmed after a week, with the age in the accessible name
+- The vault records a used stamp when a password is read from the panel, the CLI or Python, or when an entry is updated; the stamp stays inside the encrypted entries blob and a new entry reads never
+
+### Changed
+
+- The Key encryption row counts the slots of each key derivation: Argon2id (N), scrypt (M)
+- The vault, panel, API and security reference moved from the README to docs/usage.md, and the README links it; the Development install section is removed
+
+### Fixed
+
+- A used-stamp write that fails no longer fails the read it decorates; a read on a store that cannot be written still returns its value
+
 ## [1.1.57] - 2026-10-22
 
 Documents the four organisation-controlled vault policy keys in the README.

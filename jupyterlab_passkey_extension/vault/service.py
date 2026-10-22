@@ -385,7 +385,7 @@ class VaultService:
 
     def list_entries(self):
         return [
-            {k: e.get(k, "") for k in ("name", "username", "url", "category", "notes", "created", "updated")}
+            {k: e.get(k, "") for k in ("name", "username", "url", "category", "notes", "created", "updated", "used")}
             for e in sorted(self._entries(), key=lambda e: e["name"].lower())
         ]
 
@@ -394,6 +394,16 @@ class VaultService:
             if e["name"] == name:
                 return e
         raise NotFound(f"no entry named {name!r}")
+
+    def _mark_used(self, name):
+        """Record the entry's last use. The stamp is auxiliary: it must not fail a read."""
+        def change(entries):
+            self._find(entries, name)["used"] = store._now()
+
+        try:
+            store.update_entries(store.vault_path(), self._dek(), change)
+        except Exception as e:
+            log.warning("could not record the entry's last use: %s", type(e).__name__)
 
     def add(self, name, fields):
         name, fields = _check_name(name), _check_fields(fields)
@@ -413,7 +423,9 @@ class VaultService:
         def change(entries):
             entry = self._find(entries, name)
             entry.update(fields)
-            entry["updated"] = store._now()
+            now = store._now()
+            entry["updated"] = now
+            entry["used"] = now
 
         store.update_entries(store.vault_path(), self._dek(), change)
 
@@ -428,7 +440,10 @@ class VaultService:
     def read(self, name, field="password"):
         if field not in READABLE:
             raise VaultError(f"field must be one of {', '.join(READABLE)}")
-        return self._find(self._entries(), _check_name(name)).get(field, "")
+        name = _check_name(name)
+        value = self._find(self._entries(), name).get(field, "")
+        self._mark_used(name)
+        return value
 
     def _proven_root(self, doc, proof, reveal=False):
         """The root key, given only for a proof sent with this request: an unlocked vault
@@ -492,12 +507,15 @@ class VaultService:
         opens it must unlock it first, and the unlock password opens it only with a
         code."""
         self._dek()
+        name = _check_name(name)
         doc = store.load(store.vault_path())
         if isinstance(proof, dict) and "code" in proof:
             dek = self._code_dek(doc, proof["code"])
         else:
             dek = store.open_data_key(doc, self._proven_root(doc, proof, reveal=True))
-        return self._find(store.read_entries(doc, dek), _check_name(name)).get("password", "")
+        value = self._find(store.read_entries(doc, dek), name).get("password", "")
+        self._mark_used(name)
+        return value
 
     def stage(self, name, field, kind):
         """Put a value in a one-shot relay for the existing copy or show flow."""

@@ -77,6 +77,7 @@ export interface IEntry {
   notes: string;
   created: string;
   updated: string;
+  used?: string;
 }
 
 export interface IEntryFields {

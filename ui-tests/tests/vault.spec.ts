@@ -144,6 +144,8 @@ async function removeMethod(page: any, row: any) {
 async function endProvenMinute(page: any): Promise<void> {
   await page.evaluate(() => {
     const now = Date.now;
+    // Kept so a later read of a server-written stamp can use the same clock.
+    (window as any).passkeyRealNow = now;
     Date.now = () => now() + 61000;
   });
 }
@@ -260,10 +262,14 @@ test('the panel has the geometry of the AI assistants panels', async ({
     await style(`${C}-header`, 'background-color')
   );
   expect(await style(`${C}-rowName`, 'font-weight')).toBe('400');
-  // The username: small and dim, at the right end of the row.
-  const [user] = await measure([`${C}-rowUser`]);
-  expect(user[1]).toBe(4);
+  // The age is small and dim at the right end of the row; the username before it.
+  const [user, used] = await measure([`${C}-rowUser`, `${C}-rowAge`]);
+  expect(used[1]).toBe(4);
+  expect(user[1]).toBeGreaterThan(used[1]);
   expect(await style(`${C}-rowUser`, 'font-size')).toBe(
+    await style(`${C}-headerTitle`, 'font-size')
+  );
+  expect(await style(`${C}-rowAge`, 'font-size')).toBe(
     await style(`${C}-headerTitle`, 'font-size')
   );
 
@@ -406,7 +412,7 @@ test('an entry opens read-only in a popup, and its password shows only after a p
   const row = panel(page).locator('.jp-PasskeyVaultPanel-rowLine', {
     hasText: 'github/api'
   });
-  await expect(row).toHaveText('github/apime');
+  await expect(row).toHaveText('github/apimenever');
   // The filter box is filled with the panel's background, as the search field of
   // the AI assistants panel, not with the colour of a dialog input.
   await panel(page).getByRole('button', { name: 'Filter entries' }).click();
@@ -513,6 +519,15 @@ test('an entry opens read-only in a popup, and its password shows only after a p
   await dialog.getByRole('button', { name: 'Close' }).click();
   await expect(dialog).toHaveCount(0);
   expect(await inPage(page, SECRET)).toBe(false);
+
+  // The reveal marked the entry used. The server writes that stamp with its own
+  // clock, so undo endProvenMinute's 61 s shift before reading the age back.
+  await page.evaluate(() => {
+    Date.now = (window as any).passkeyRealNow;
+  });
+  await panel(page).getByRole('button', { name: 'Refresh' }).click();
+  await expect(row.locator('.jp-PasskeyVaultPanel-rowAge')).toHaveText('now');
+  await expect(row).toHaveClass(/jp-mod-recentlyActive/);
 
   // Opened from the keyboard, the focused eye fills its box: focus without a rim.
   await row.focus();

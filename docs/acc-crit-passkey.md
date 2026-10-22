@@ -809,6 +809,13 @@ The encrypted vault file, its keyslots and how it is written
   - test-tags: UNIT
   - log: 2026-10-21T17:11:31Z @kj added
   - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
+- [x] `ACC-STORE-257-USED-STAMP` **Used stamp on read and update** - HIGH; reading an entry's password (the panel reveal, the CLI or Python get) or updating the entry sets its used stamp to the current time; the stamp lives inside the encrypted entries blob, follows the entry through lock and unlock, and add leaves it empty
+  - evidence: pytest 526 passed: reveal, read and edit set used; add leaves it empty; used survives lock and unlock; the raw file carries neither the name nor the stamp
+  - test: pytest: reveal, read and edit set used; list_entries returns it; add leaves it empty; the vault file text carries no name or stamp
+  - test-tags: UNIT
+  - mechanism: 2026-10-22T14:33:22Z @kj service.read and reveal_proven mark the entry used through store.update_entries; edit sets it in the same write; list_entries returns it
+  - log: 2026-10-22T14:33:22Z @kj added
+  - log: 2026-10-22T15:13:40Z @kj closed
 
 ## Vault unlock and lock `UNLOCK`
 
@@ -1721,6 +1728,13 @@ The vault sidebar panel in JupyterLab
   - mechanism: 2026-10-20T20:12:15Z @kj _fillList renders each header as a button; the collapsed set is loaded from and saved to localStorage key jupyterlab_passkey_extension:vault:collapsed
   - log: 2026-10-20T20:12:15Z @kj added
   - log: 2026-10-20T20:12:23Z @kj closed
+- [x] `ACC-PANEL-256-USED-AGE` **Used age in the entry list** - HIGH; the entry list shows how long ago each key was last used; under one minute the name and age read in the brand colour, over seven days the name dims to 65% opacity; labels read now, 5m ago, 3h ago, 4d ago, 2mo ago, 1y ago; never read says never
+  - evidence: Jest shows now, 5m ago, 8d ago and never with jp-mod-recentlyActive and jp-mod-stale; Galata 42/42, the popup test sees the row age now after a reveal; lint 0 errors
+  - test: jest: the entry row shows the relative age and the recent and stale classes from the used stamp
+  - test-tags: UNIT, E2E
+  - mechanism: 2026-10-22T14:33:19Z @kj used is an ISO stamp in the encrypted entry; the panel formats it with the same thresholds and labels as the AI sessions panel
+  - log: 2026-10-22T14:33:19Z @kj added
+  - log: 2026-10-22T15:13:40Z @kj closed
 
 ## Vault settings `CONFIG`
 
@@ -1787,12 +1801,13 @@ Vault policy in the server config file; the Settings Editor carries only the sid
   - test-tags: UNIT, E2E
   - log: 2026-10-21T17:18:09Z @kj added
   - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
-- [x] `ACC-CONFIG-254-KDF` **Key encryption algorithm** - HIGH; the Settings section shows the key encryption algorithm: Argon2id, with scrypt named while a slot written by 1.1.55 or earlier still uses it
+- [x] `ACC-CONFIG-254-KDF` **Key encryption algorithm** - HIGH; the Settings section shows the key encryption slot counts: Argon2id (N) and scrypt (M); scrypt shows 0 once no older slot remains
   - evidence: slot metadata reports kdf argon2id and scrypt; Jest asserts the Key encryption row, Argon2id and the scrypt count; pytest 521, Jest 270 passed 2026-10-21
   - test: jest: the settings view shows the algorithm from the slot metadata; pytest: status slot metadata carries kdf argon2id and scrypt
   - test-tags: UNIT, E2E
   - log: 2026-10-21T17:24:15Z @kj added
   - log: 2026-10-21T18:57:22Z @kj closed: verified with the rotation work
+  - log: 2026-10-22T14:28:01Z @kj amended text "the Settings section shows the key encryption algorithm: Argon2id, with scrypt named while a slot written by 1.1.55 or earlier still uses it" -> "the Settings section shows the key encryption slot counts: Argon2id (N) and scrypt (M); scrypt shows 0 once no older slot remains"
 - [x] `ACC-CONFIG-255-ROTATION-DAYS` **Rotation period shown** - HIGH; the Settings section shows the number of days between data-key rotations
   - evidence: status reports period_days 365 by default and 30 from a config file; Jest asserts the Key rotation row in days; pytest 521, Jest 270 passed 2026-10-21
   - test: jest: the settings view shows the rotation period in days from status; pytest: status reports period_days 365 by default
