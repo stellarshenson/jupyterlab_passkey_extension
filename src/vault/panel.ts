@@ -213,6 +213,8 @@ const C = 'jp-PasskeyVaultPanel';
  * The sidebar tab icon while a vault exists: the lock of `lockIcon` in the colour
  * class of the other sidebar icons. `lockIcon` is one shade dimmer (`jp-icon4`),
  * which reads as inactive, and stays the tab icon while there is no vault.
+ * It is also the Settings Editor icon, which schema/vault.json names, so the two
+ * names stay equal.
  */
 const vaultIcon = new LabIcon({
   name: 'jupyterlab-passkey-extension:vault',

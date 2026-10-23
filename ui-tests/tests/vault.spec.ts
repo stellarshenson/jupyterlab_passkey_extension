@@ -175,6 +175,40 @@ test('the vault panel docks in the right sidebar', async ({ page }) => {
   expect(await page.sidebar.getTabPosition(PANEL_ID)).toBe('right');
 });
 
+test('the Settings Editor shows the vault icon in the enabled colour', async ({
+  page
+}) => {
+  await page.goto();
+  await page.evaluate(() =>
+    (window as any).jupyterapp.commands.execute('settingeditor:open')
+  );
+  const list = page.locator('.jp-PluginList');
+  const icon = list
+    .locator(
+      '.jp-PluginList-entry[data-id="jupyterlab_passkey_extension:vault"]'
+    )
+    .locator('svg path')
+    .first();
+  await expect(icon).toBeVisible({ timeout: 20000 });
+  const fill = await icon.evaluate(
+    (path: Element) => getComputedStyle(path).fill
+  );
+  // The colour of class jp-icon3 in the same list, read from a temporary path.
+  const enabled = await list.evaluate((root: HTMLElement) => {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    const path = document.createElementNS(ns, 'path');
+    path.setAttribute('class', 'jp-icon3');
+    path.setAttribute('fill', '#616161');
+    svg.appendChild(path);
+    root.appendChild(svg);
+    const value = getComputedStyle(path).fill;
+    svg.remove();
+    return value;
+  });
+  expect(fill).toBe(enabled);
+});
+
 test('the panel has the geometry of the AI assistants panels', async ({
   page
 }) => {

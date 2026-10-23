@@ -307,4 +307,11 @@ The vault sidebar panel, its dialogs and styles
   - root-cause: 2026-10-03T18:50:24Z @kj the proof is checked with the last request, after the app took the setup key; registerMfa passed the refusal on unchanged
   - log: 2026-10-03T18:50:24Z @kj added
   - log: 2026-10-03T19:00:30Z @kj closed
+- [x] `DEF-PANEL-37-SETTINGS-ICON` **Settings icon looks disabled** - MINOR; the Settings Editor list paints the Passkey Vault icon one shade dimmer than the other entries, so the entry looks disabled
+  - evidence: schema/vault.json names jupyterlab-passkey-extension:vault, the jp-icon3 lock; Galata 'the Settings Editor shows the vault icon in the enabled colour' failed on 1.1.58 and passes on 1.1.59; Galata 43 of 43
+  - repro: open the Settings Editor and compare the Passkey Vault icon with the icons of the other entries
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-10-23T06:05:50Z @kj schema/vault.json setting-icon names ui-components:lock, the stock lockIcon painted jp-icon4; the other entries paint jp-icon3
+  - log: 2026-10-23T06:05:50Z @kj added
+  - log: 2026-10-23T06:18:05Z @kj closed
 

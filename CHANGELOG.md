@@ -2,6 +2,14 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.60] - 2026-10-23
+
+Shows the vault icon in the Settings Editor in the enabled colour.
+
+### Fixed
+
+- The Passkey Vault entry in the Settings Editor shows the extension's own lock in the colour of the other entries; it showed the stock lock icon, one shade dimmer, which looked disabled
+
 ## [1.1.58] - 2026-10-22
 
 Shows how long ago each vault key was last used, counts the key-encryption slots, and moves the README reference into docs/usage.md.
