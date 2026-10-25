@@ -1280,7 +1280,7 @@ export class VaultPanel extends Widget {
   private _paintAge(e: IEntry, line: HTMLElement): void {
     const ago = formatAgo(e.used);
     const age = e.used ? Date.now() - Date.parse(e.used) : NaN;
-    line.classList.toggle('jp-mod-recentlyActive', age < 60_000);
+    line.classList.toggle('jp-mod-recentlyActive', age < 86_400_000);
     line.classList.toggle('jp-mod-stale', age > 7 * 86_400_000);
     const label = e.username ? `${e.name}, ${e.username}` : e.name;
     const ageText = e.used ? `last used ${ago}` : 'never used';

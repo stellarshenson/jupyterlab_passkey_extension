@@ -329,4 +329,20 @@ The vault sidebar panel, its dialogs and styles
   - root-cause: 2026-10-25T03:43:01Z @kj the 15 s tick draws the status and the banner only; rows redraw in _render, reached on a revision change, a show, or an action
   - log: 2026-10-25T03:43:01Z @kj added
   - log: 2026-10-25T05:16:39Z @kj closed: fixed: the 15 s tick repaints the row ages in place, and the busy tick does too
+- [x] `DEF-PANEL-40-NEVER-DIM` **Never-used entries look as bright as recently used ones** - MEDIUM; In the list a never-used entry renders the same as one used minutes ago, so 32 of 34 rows read alike. Recent use must stand out.
+  - evidence: panel.ts:1283 marks a row recentlyActive under a day; Jest 277 and Galata 45/45 show a used row carries the class and a never-used row does not; lint 0 problems
+  - repro: Open the panel with one entry used minutes ago and the rest never used; both names render #a5a5a5
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-10-25T09:14:38Z @kj the bright band was 60 seconds while the age labels run to days, so a use five minutes old rendered like one never used; the band now covers a day
+  - root-cause: 2026-10-25T08:06:12Z @kj _paintAge sets age to NaN when used is empty, so both threshold comparisons are false and the row takes neither class
+  - log: 2026-10-25T08:06:12Z @kj added
+  - log: 2026-10-25T08:20:38Z @kj closed
+  - log: 2026-10-25T08:47:23Z @kj amended text "In the list a never-used entry renders at the same brightness as one used minutes ago, so 32 of 34 rows read as live. A never-used entry must take the stale dimming." -> "In the list a never-used entry renders the same as one used minutes ago, so 32 of 34 rows read alike. Recent use must stand out."
+  - log: 2026-10-25T08:47:27Z @kj regressed as DEF-PANEL-40-NEVER-DIM-1
+  - log: 2026-10-25T08:47:35Z @kj rejected: closure evidence superseded: the fix moved from the stale dim to the brand colour under a day; evidence retired: panel.ts stale toggle is now !e.used || age > 7 * 86_400_000; Jest 277 passed with the unused row asserted stale; Galata 45/45 asserts the never-used name at opacity 0.65 and 1 after its reveal; lint 0 problems
+  - log: 2026-10-25T08:47:35Z @kj reopened
+  - log: 2026-10-25T08:47:35Z @kj closed
+- [-] `DEF-PANEL-40-NEVER-DIM-1` **Never-used entries look as bright as recently used ones** - MEDIUM; In the list a never-used entry renders the same as one used minutes ago, so 32 of 34 rows read alike. Recent use must stand out.
+  - log: 2026-10-25T08:47:27Z @kj regression of DEF-PANEL-40-NEVER-DIM
+  - log: 2026-10-25T08:47:35Z @kj rejected: filed in error: the reopen followed a reject that failed for a missing author; no regression occurred
 

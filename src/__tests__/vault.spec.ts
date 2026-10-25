@@ -1232,7 +1232,10 @@ describe('VaultPanel', () => {
       true
     );
     expect(row('stale').classList.contains('jp-mod-stale')).toBe(true);
-    expect(row('minutes').className).toBe('jp-PasskeyVaultPanel-rowLine');
+    expect(row('unused').classList.contains('jp-mod-stale')).toBe(false);
+    expect(row('minutes').classList.contains('jp-mod-recentlyActive')).toBe(
+      true
+    );
   });
 
   it('keeps the not-confirmed line when the server returns with the vault locked by its restart, whichever read comes first', async () => {
@@ -2261,13 +2264,13 @@ describe('VaultPanel', () => {
       expect(age.textContent).toBe('now');
       expect(line.classList.contains('jp-mod-recentlyActive')).toBe(true);
       // The clock moves on as in the Galata test; the poll carries the new age.
-      jest.setSystemTime(Date.now() + 60_000);
+      jest.setSystemTime(Date.now() + 86_400_000);
       await jest.advanceTimersByTimeAsync(2 * REFRESH_MS);
       // The same line, redrawn in place: the list was not rebuilt or re-read.
       expect(panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine')).toBe(
         line
       );
-      expect(age.textContent).toBe('2m ago');
+      expect(age.textContent).toBe('1d ago');
       expect(line.classList.contains('jp-mod-recentlyActive')).toBe(false);
       expect(api.entries).toHaveBeenCalledTimes(1);
       panel.dispose();

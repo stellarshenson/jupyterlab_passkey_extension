@@ -2,6 +2,19 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.73] - 2026-10-25
+
+Marks a key used today so it no longer looks like one never used, and lifts the recent colour above the contrast floor.
+
+### Changed
+
+- The entry list marks a key used within the last day in the theme's link colour, instead of only the last minute and in the brand colour
+
+### Fixed
+
+- A key used minutes ago no longer renders like one never used: the recent band was 60 seconds while the age labels run to days
+- The recent colour meets the 4.5:1 contrast floor on both Steel themes (5.36:1 dark, 6.56:1 light; it was 3.80:1 and 3.60:1)
+
 ## [1.1.72] - 2026-10-25
 
 Clears the extension's lint warnings without changing behaviour, and steadies the last-used browser test.

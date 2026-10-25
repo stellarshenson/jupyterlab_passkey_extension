@@ -410,13 +410,13 @@ button.jp-PasskeyVaultPanel-sectionHeader:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
-/* Age emphasis, as in the AI sessions panel: used within the last minute reads
+/* Age emphasis: used within the last day reads
    bright, idle over a week dims; both decay or promote on the next refresh. */
 .jp-PasskeyVaultPanel-rowLine.jp-mod-recentlyActive
   .jp-PasskeyVaultPanel-rowName,
 .jp-PasskeyVaultPanel-rowLine.jp-mod-recentlyActive
   .jp-PasskeyVaultPanel-rowAge {
-  color: var(--jp-brand-color1);
+  color: var(--jp-content-link-color);
 }
 
 .jp-PasskeyVaultPanel-rowLine.jp-mod-stale .jp-PasskeyVaultPanel-rowName {
