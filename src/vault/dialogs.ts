@@ -73,7 +73,7 @@ export class EntryForm extends Widget {
     this.generate = document.createElement('button');
     this.generate.type = 'button';
     this.generate.className = 'jp-mod-styled jp-PasskeyVaultForm-generate';
-    this.generate.textContent = 'Generate';
+    this.generate.textContent = trans.__('Generate');
     this.generate.addEventListener('click', () => {
       this._generate().then(
         value => {
@@ -105,7 +105,7 @@ export class EntryForm extends Widget {
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'jp-PasskeyVaultForm-categoryToggle';
-    toggle.setAttribute('aria-label', 'Existing categories');
+    toggle.setAttribute('aria-label', trans.__('Existing categories'));
     toggle.setAttribute('aria-haspopup', 'menu');
     toggle.setAttribute('aria-expanded', 'false');
     toggle.append(arrow());
@@ -123,6 +123,7 @@ export class EntryForm extends Widget {
       const command = `passkey-vault:category-${category}`;
       menu.commands.addCommand(command, {
         label: category,
+        describedBy: { args: {} },
         execute: () => {
           this.category.value = category;
           this.category.dispatchEvent(new Event('input', { bubbles: true }));
@@ -175,7 +176,7 @@ export class EntryForm extends Widget {
     this._passwordHelp.textContent = !this._editing
       ? ''
       : this.password.value
-        ? 'Save replaces the current password'
+        ? trans.__('Save replaces the current password')
         : KEEP_HELP;
   }
 
@@ -366,7 +367,7 @@ export async function editEntry(
 ): Promise<IEntryFormValue | null> {
   const body = new EntryForm(generate, entry, taken, categories);
   const dialog = new Dialog({
-    title: entry ? 'Edit entry' : 'Add entry',
+    title: entry ? trans.__('Edit entry') : trans.__('Add entry'),
     body,
     // Dialog focuses its default button after the body attaches; this names the
     // first field to type in instead - Name in Add, Username in Edit.
@@ -417,17 +418,17 @@ const TYPED: Record<
 > = {
   code: {
     ask: 'a code of the authenticator app',
-    label: 'Code of the authenticator app',
+    label: trans.__('Code of the authenticator app'),
     proof: code => ({ code })
   },
   password: {
     ask: 'the unlock password',
-    label: 'Unlock password',
+    label: trans.__('Unlock password'),
     proof: password => ({ password })
   },
   passphrase: {
     ask: 'the recovery passphrase',
-    label: 'Recovery passphrase',
+    label: trans.__('Recovery passphrase'),
     proof: current => ({ current })
   }
 };
@@ -507,7 +508,7 @@ export class EntryView extends Widget {
     this.prove = document.createElement('button');
     this.prove.type = 'button';
     this.prove.className = 'jp-mod-styled jp-PasskeyVaultForm-prove';
-    this.prove.textContent = 'Show';
+    this.prove.textContent = trans.__('Show');
     this.prove.addEventListener('click', () => void this._prove());
     this._proofRow = document.createElement('div');
     this._proofRow.className = 'jp-PasskeyVaultForm-row';
@@ -658,7 +659,7 @@ export class EntryView extends Widget {
       this._show(true);
       this._help.textContent = this.password.value
         ? ''
-        : 'This entry has no password';
+        : trans.__('This entry has no password');
       this.eye.focus();
     } catch (e) {
       this._show(false);
@@ -770,8 +771,9 @@ class PasskeyNameForm extends Widget {
     this.input.value = suggested;
     const help = document.createElement('div');
     help.className = 'jp-PasskeyVaultForm-help';
-    help.textContent =
-      'Tells this passkey apart from others in the list, for example "Work laptop"';
+    help.textContent = trans.__(
+      'Tells this passkey apart from others in the list, for example "Work laptop"'
+    );
     this.node.append(text, field('Name', this.input, help));
   }
 
@@ -985,11 +987,11 @@ export type UnlockMethod = 'passkey' | 'mfa';
 /** Each method as the dialog that offers them names it, with one line on what it is. */
 const METHODS: Record<UnlockMethod, { label: string; about: string }> = {
   passkey: {
-    label: 'Passkey',
+    label: trans.__('Passkey'),
     about: 'Fingerprint, face, PIN or security key.'
   },
   mfa: {
-    label: 'Password and authenticator app',
+    label: trans.__('Password and authenticator app'),
     about: 'A password, then a 6-digit code from your phone.'
   }
 };
@@ -1078,8 +1080,9 @@ class AuthenticatorForm extends Widget {
     super();
     this.addClass('jp-PasskeyVaultForm');
     const text = document.createElement('p');
-    text.textContent =
-      'Scan the QR code with the authenticator app, or type the setup key into the app. Then enter the code the app shows.';
+    text.textContent = trans.__(
+      'Scan the QR code with the authenticator app, or type the setup key into the app. Then enter the code the app shows.'
+    );
     const qr = document.createElement('div');
     qr.className = 'jp-PasskeyVaultForm-qr';
     const picture = qrSvg(otpauthUri(setupKey, host));

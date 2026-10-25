@@ -13,17 +13,8 @@ import { setTranslator, trans } from '../trans';
 
 import { VaultApi, VaultError } from './api';
 
-import { askProof, registerWithProof } from './dialogs';
-
+// eslint-disable-next-line jupyter/prefer-lazy-imports -- activate() needs the panel class at once
 import { VaultPanel } from './panel';
-
-import {
-  describeFailure,
-  ipAddressAdvice,
-  isIpAddress,
-  matchingSlots,
-  unlockWithPasskey
-} from './webauthn';
 
 const VAULT_PLUGIN_ID = 'jupyterlab_passkey_extension:vault';
 const UNLOCK_COMMAND = 'passkey:vault-unlock';
@@ -67,6 +58,7 @@ async function answerCli(
   step: () => Promise<unknown>,
   panel: VaultPanel
 ): Promise<void> {
+  const { describeFailure } = await import('./webauthn');
   let body: Record<string, unknown>;
   try {
     await step();
@@ -95,6 +87,9 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
     settingRegistry: ISettingRegistry | null,
     translator: ITranslator | null
   ) => {
+    const { askProof, registerWithProof } = await import('./dialogs');
+    const { ipAddressAdvice, isIpAddress, matchingSlots, unlockWithPasskey } =
+      await import('./webauthn');
     setTranslator(translator);
     const api = new VaultApi(app.serviceManager.serverSettings);
     const panel = new VaultPanel({

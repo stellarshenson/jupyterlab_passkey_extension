@@ -325,7 +325,7 @@ export class VaultPanel extends Widget {
 
     this._filter = el('input', `${C}-filterInput`);
     this._filter.type = 'search';
-    this._filter.placeholder = 'Filter entries...';
+    this._filter.placeholder = trans.__('Filter entries...');
     this._filter.setAttribute(
       'aria-label',
       trans.__('Filter by name, username or URL')

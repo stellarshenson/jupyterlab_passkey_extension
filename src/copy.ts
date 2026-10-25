@@ -4,6 +4,8 @@ import { ServerConnection } from '@jupyterlab/services';
 
 import { requestAPI } from './request';
 
+import { trans } from './trans';
+
 export interface ICopyArgs {
   nonce: string;
   label?: string;
@@ -143,7 +145,7 @@ function offerRecovery(value: string, label?: string): void {
     autoClose: false,
     actions: [
       {
-        label: 'Copy to clipboard',
+        label: trans.__('Copy to clipboard'),
         displayType: 'accent',
         callback: () => {
           // Native Notification actions do NOT auto-dismiss their toast. Left

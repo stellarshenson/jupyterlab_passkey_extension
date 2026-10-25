@@ -9,7 +9,10 @@
       "type": "string",
       "title": "Sidebar",
       "description": "Which sidebar holds the vault panel",
-      "enum": ["right", "left"],
+      "oneOf": [
+        { "const": "right", "title": "Right" },
+        { "const": "left", "title": "Left" }
+      ],
       "default": "right"
     }
   },

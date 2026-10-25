@@ -1167,4 +1167,8 @@ def test_the_settings_schema_declares_only_the_sidebar():
     # The vault's policy lives in the server's configuration file, not the page.
     assert set(schema["properties"]) == {"sidebar"}
     sidebar = schema["properties"]["sidebar"]
-    assert sidebar["enum"] == ["right", "left"] and sidebar["default"] == "right"
+    assert sidebar["type"] == "string" and sidebar["default"] == "right"
+    assert [(option["const"], option["title"]) for option in sidebar["oneOf"]] == [
+        ("right", "Right"),
+        ("left", "Left"),
+    ]

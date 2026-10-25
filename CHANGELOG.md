@@ -2,6 +2,20 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.72] - 2026-10-25
+
+Clears the extension's lint warnings without changing behaviour, and steadies the last-used browser test.
+
+### Changed
+
+- The Sidebar setting in the Settings Editor is offered as two labelled choices, Right and Left, instead of a bare list
+- The passphrase, show, entry-dialog and passkey helper modules load on first use instead of at application startup
+
+### Fixed
+
+- All 29 pre-existing lint warnings are gone: user-facing strings go through the translator, the category menu command carries a description, and the panel import keeps its single justified exemption
+- The last-used browser test waits for the panel to finish its post-save read before the next add, so a dropped click can no longer fail it
+
 ## [1.1.71] - 2026-10-25
 
 Keeps the vault panel's last-used ages true while it stays open.

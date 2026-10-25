@@ -1242,6 +1242,11 @@ test('a revealed or externally read entry shows its use without a manual refresh
     await form.getByLabel('Password', { exact: true }).fill(SECRET);
     await form.getByRole('button', { name: 'Save' }).click();
     await expect(form).toHaveCount(0);
+    // The panel drops clicks while _busy, which outlasts the dialog close.
+    await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+    await expect(
+      panel(page).locator('.jp-PasskeyVaultPanel-rowLine', { hasText: name })
+    ).toHaveCount(1);
   };
   await add('reveal/one');
   await add('agent/two');

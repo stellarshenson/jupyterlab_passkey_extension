@@ -9,11 +9,11 @@ import { ITranslator } from '@jupyterlab/translation';
 
 import { runPasskey, IPasskeyArgs, PasskeyOp } from './passkey';
 
-import { runPassphrase, IPassphraseArgs } from './passphrase';
+import type { IPassphraseArgs } from './passphrase';
 
 import { runCopy, ICopyArgs } from './copy';
 
-import { runShow, IShowArgs } from './show';
+import type { IShowArgs } from './show';
 
 import { setTranslator, trans } from './trans';
 
@@ -111,7 +111,8 @@ const plugin: JupyterFrontEndPlugin<void> = {
           required: ['nonce']
         }
       },
-      execute: args => {
+      execute: async args => {
+        const { runPassphrase } = await import('./passphrase');
         const passphraseArgs = args as unknown as IPassphraseArgs;
         return runPassphrase(passphraseArgs, app.serviceManager.serverSettings);
       }
@@ -154,17 +155,27 @@ const plugin: JupyterFrontEndPlugin<void> = {
           required: ['nonce']
         }
       },
-      execute: args => {
+      execute: async args => {
+        const { runShow } = await import('./show');
         const showArgs = args as unknown as IShowArgs;
         return runShow(showArgs, app.serviceManager.serverSettings);
       }
     });
 
     if (palette) {
-      palette.addItem({ command: COMMAND_ID, category: 'Passkey' });
-      palette.addItem({ command: PASSPHRASE_COMMAND_ID, category: 'Passkey' });
-      palette.addItem({ command: COPY_COMMAND_ID, category: 'Passkey' });
-      palette.addItem({ command: SHOW_COMMAND_ID, category: 'Passkey' });
+      palette.addItem({ command: COMMAND_ID, category: trans.__('Passkey') });
+      palette.addItem({
+        command: PASSPHRASE_COMMAND_ID,
+        category: trans.__('Passkey')
+      });
+      palette.addItem({
+        command: COPY_COMMAND_ID,
+        category: trans.__('Passkey')
+      });
+      palette.addItem({
+        command: SHOW_COMMAND_ID,
+        category: trans.__('Passkey')
+      });
     }
   }
 };

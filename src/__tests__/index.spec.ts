@@ -128,7 +128,7 @@ describe('plugin activation', () => {
     });
   });
 
-  it('registers passkey:show, forwarding the nonce and adding a palette item', () => {
+  it('registers passkey:show, forwarding the nonce and adding a palette item', async () => {
     const { app, addCommand, serverSettings } = fakeApp();
     const palette = { addItem: jest.fn() } as any;
 
@@ -136,7 +136,10 @@ describe('plugin activation', () => {
 
     const call = addCommand.mock.calls.find(c => c[0] === 'passkey:show');
     expect(call).toBeDefined();
-    call![1].execute({ nonce: 'unit_nonce_0123456789', label: 'Auth code' });
+    await call![1].execute({
+      nonce: 'unit_nonce_0123456789',
+      label: 'Auth code'
+    });
 
     expect(mockShow).toHaveBeenCalledWith(
       { nonce: 'unit_nonce_0123456789', label: 'Auth code' },

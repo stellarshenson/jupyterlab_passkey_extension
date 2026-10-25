@@ -324,7 +324,7 @@ export async function askSecret(
   // Built directly rather than via showDialog (which is exactly this) so the
   // instance can be passed to launchWithEscape.
   const dialog = new Dialog({
-    title: title ?? (once ? 'Secret' : 'Passphrase'),
+    title: title ?? (once ? trans.__('Secret') : trans.__('Passphrase')),
     body,
     // hasClose:true would add a close button AND dismiss on any click outside the
     // dialog - and a passphrase prompt that vanishes on a stray click leaves the
