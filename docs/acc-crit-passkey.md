@@ -1735,6 +1735,18 @@ The vault sidebar panel in JupyterLab
   - mechanism: 2026-10-22T14:33:19Z @kj used is an ISO stamp in the encrypted entry; the panel formats it with the same thresholds and labels as the AI sessions panel
   - log: 2026-10-22T14:33:19Z @kj added
   - log: 2026-10-22T15:13:40Z @kj closed
+- [x] `ACC-PANEL-258-ROW-TOOLTIP` **Entry tooltip describes the entry** - MEDIUM; hovering an entry row shows a tooltip: the name, then Username, URL, Category, Last used, Updated and Created, one per line and only when set; Last used always shows and reads never for an unused entry; times show the age, as on the row; the password is never in it
+  - evidence: jest 'describes an entry in its row tooltip, one line per field and time that is set' gives every line in order and Last used: never for a bare entry; jest 272/272, Galata vault 16/16, lint 0 errors, build 1.1.61
+  - test: entryTooltip unit test in src/__tests__
+  - test-tags: UNIT
+  - log: 2026-10-24T17:48:03Z @kj added
+  - log: 2026-10-24T17:51:25Z @kj closed
+- [x] `ACC-PANEL-259-CATEGORY-COMBO` **Category field suggests existing categories** - MEDIUM; in the add and edit entry dialog, the Category field is a text field with an arrow button; the button opens a menu of the categories the vault already uses, each once and sorted; a choice writes into the field, which stays editable; any other typed category is saved as typed
+  - evidence: jest 'offers each category in use once and sorted, and returns a typed one as typed' and Galata 'the Category field lists the categories in use, and a choice fills the field' pass; jest 273/273 in src, Galata 44/44, pytest 528 passed, lint 0 errors, build 1.1.63
+  - test: EntryForm combo unit test and a Galata test
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-10-24T18:17:13Z @kj added; reason: the owner's wording names the field, the menu, the choice and the free-text rule
+  - log: 2026-10-24T18:35:02Z @kj closed
 
 ## Vault settings `CONFIG`
 

@@ -45,7 +45,7 @@ function state(page: any) {
 /** A lab with no vault, a virtual authenticator, and the vault panel open. */
 async function openVault(page: any): Promise<void> {
   fs.rmSync(VAULT_DIR, { recursive: true, force: true });
-  await page.goto();
+  await page.goto('?reset');
   await addAuthenticator(page);
   await page.sidebar.openTab(PANEL_ID);
   // The first read can queue behind the lab's own start-up requests - seconds in a
@@ -93,10 +93,13 @@ async function createVault(page: any): Promise<void> {
   await panel(page).getByRole('button', { name: 'Create vault' }).click();
   await submitSecret(page, RECOVERY, true);
   await nameAndConfirmPasskey(page);
+  // The panel is busy from the Create click until the action ends; the state text
+  // changes only when the passkeys request returns, which can take longer than an
+  // expect's default wait.
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true', {
+    timeout: 20000
+  });
   await expect(state(page)).toContainText('Unlocked');
-  // A status refresh can show Unlocked while Create still waits on the last passkey
-  // request, and the panel ignores a click while an action runs.
-  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
 }
 
 async function openCog(page: any) {
@@ -613,6 +616,57 @@ test('the entry dialog is wide with a tall Notes, and Edit shows the same fields
   await expect(name).toHaveValue('github/api');
   await expect(name).not.toBeEditable();
   await expect(dialog.getByLabel('Username')).toBeFocused();
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+});
+
+test('the Category field lists the categories in use, and a choice fills the field', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  const dialog = page.locator('.jp-Dialog');
+  for (const [name, category] of [
+    ['work/one', 'work'],
+    ['home/one', 'home']
+  ]) {
+    await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+    await dialog.getByLabel('Name', { exact: true }).fill(name);
+    await dialog.getByLabel('Category', { exact: true }).fill(category);
+    await dialog.getByRole('button', { name: 'Save' }).click();
+    await expect(dialog).toHaveCount(0);
+  }
+
+  await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+  const field = dialog.getByLabel('Category', { exact: true });
+  await dialog.getByRole('button', { name: 'Existing categories' }).click();
+  const menu = page.locator('.jp-PasskeyVaultForm-categoryMenu');
+  await expect(menu.locator('.lm-Menu-itemLabel')).toHaveText(['home', 'work']);
+  await menu.getByRole('menuitem', { name: 'work' }).click();
+  await expect(menu).toHaveCount(0);
+  await expect(field).toHaveValue('work');
+  await expect(field).toBeEditable();
+
+  // From the keyboard: the keys reach the open list, not the dialog.
+  const name = dialog.getByLabel('Name', { exact: true });
+  await name.fill('keys/one');
+  const toggle = dialog.getByRole('button', { name: 'Existing categories' });
+  await toggle.focus();
+  await page.keyboard.press('Space');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await expect(field).toHaveValue('home');
+  await expect(dialog).toHaveCount(1);
+  await toggle.focus();
+  await page.keyboard.press('Space');
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(dialog).toHaveCount(1);
+  await expect(name).toHaveValue('keys/one');
+  // Enter on the arrow opens the list, as Space does.
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(menu).toBeVisible();
+  await expect(dialog).toHaveCount(1);
   await dialog.getByRole('button', { name: 'Cancel' }).click();
 });
 

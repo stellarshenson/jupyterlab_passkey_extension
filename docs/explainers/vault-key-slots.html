@@ -1,0 +1,926 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Vault Key Slots</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@500;700;800&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a key-ceremony worksheet. Prose column for the reasoning, a key-hierarchy diagram,
+   then a three-desk lab (you · server · attacker) where every byte shown is real WebCrypto output. */
+:root{
+  --bg:#edf0f2; --surface:#ffffff; --sunk:#f5f7f8; --ink:#16212b; --muted:#59656f; --rule:#d2d8dd;
+  --master:#3a3f9f;   /* master / recovery password */
+  --unlock:#a35d00;   /* unlock password + TOTP */
+  --passkey:#0b766c;  /* passkey (PRF) */
+  --vk:#16212b;       /* vault key */
+  --bad:#bd2840; --good:#2b7a3a;
+  --f-display:"Schibsted Grotesk",ui-sans-serif,system-ui,sans-serif;
+  --f-body:"Source Sans 3",ui-sans-serif,system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1418; --surface:#172027; --sunk:#121a20; --ink:#e3e8ec; --muted:#95a2ad; --rule:#2a353e;
+  --master:#9ea3ff; --unlock:#f0a640; --passkey:#3cc6b6; --vk:#e3e8ec; --bad:#ff6f86; --good:#6bcf7c; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1418; --surface:#172027; --sunk:#121a20; --ink:#e3e8ec; --muted:#95a2ad; --rule:#2a353e;
+  --master:#9ea3ff; --unlock:#f0a640; --passkey:#3cc6b6; --vk:#e3e8ec; --bad:#ff6f86; --good:#6bcf7c; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:17px;line-height:1.55;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 64px}
+.wrap{max-width:1180px;margin:0 auto}
+.prose{max-width:70ch}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;line-height:1.08;margin:0}
+h1{font-size:clamp(2.3rem,5.6vw,3.9rem);font-weight:800;letter-spacing:-.025em}
+h2{font-size:clamp(1.45rem,3vw,1.95rem);font-weight:700;letter-spacing:-.01em}
+h3{font-size:1.05rem;font-weight:700}
+p{margin:0}
+code,.mono{font-family:var(--f-mono);font-size:.86em}
+.eyebrow{font-family:var(--f-mono);font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+section{display:grid;gap:18px;padding-block:44px 8px;border-top:1px solid var(--rule)}
+a{color:var(--master)}
+:focus-visible{outline:2px solid var(--master);outline-offset:2px}
+.c-m{color:var(--master);font-weight:700} .c-u{color:var(--unlock);font-weight:700} .c-p{color:var(--passkey);font-weight:700} .c-bad{color:var(--bad);font-weight:700}
+
+/* hero */
+header{display:grid;gap:22px;padding-block:48px 36px}
+.lede{font-size:1.2rem;max-width:62ch}
+.answer{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:14px}
+.answer > div{background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:14px 16px;display:grid;gap:6px;align-content:start}
+.answer .k{font-family:var(--f-mono);font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.answer p{font-size:.97rem}
+
+/* diagram */
+.fig{background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:16px;overflow-x:auto;margin:0}
+.fig svg{display:block;width:100%;min-width:700px;height:auto}
+figcaption{font-size:.9rem;color:var(--muted);margin-top:10px;max-width:78ch}
+.s-box{fill:var(--surface);stroke-width:1.6}
+.s-ink{fill:var(--ink)} .s-muted{fill:var(--muted)}
+.s-t{font-family:var(--f-body);font-size:14px;font-weight:700}
+.s-s{font-family:var(--f-mono);font-size:11px}
+.s-ln{fill:none;stroke-width:1.6}
+
+/* derivation tables */
+.cols3{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:16px}
+.method{background:var(--surface);border:1px solid var(--rule);border-radius:10px;overflow:hidden;display:grid;align-content:start;min-width:0}
+.method > header{padding:12px 16px;display:grid;gap:2px;border-bottom:1px solid var(--rule);border-top:4px solid var(--c)}
+.method > header h3{color:var(--c)}
+.method > header span{font-size:.85rem;color:var(--muted)}
+.method ol{list-style:none;margin:0;padding:0;counter-reset:st}
+.method li{counter-increment:st;display:grid;grid-template-columns:1.6em 1fr;gap:4px 8px;padding:10px 16px;border-bottom:1px solid var(--rule)}
+.method li:last-child{border-bottom:none}
+.method li::before{content:counter(st);font-family:var(--f-mono);font-size:.75rem;color:var(--muted);padding-top:3px}
+.method .f{font-family:var(--f-mono);font-size:.8rem;background:var(--sunk);border-radius:5px;padding:4px 7px;overflow-x:auto;white-space:nowrap;display:block}
+.method .w{grid-column:2;font-size:.9rem;color:var(--muted)}
+.method li > div{min-width:0;display:grid;gap:4px}
+.callout{border-left:3px solid var(--unlock);padding:6px 0 6px 16px;display:grid;gap:6px;max-width:78ch}
+
+/* lab */
+.story{background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:14px 18px;display:grid;gap:8px}
+.story ol{margin:0;padding-left:1.4em;display:grid;gap:4px;font-size:.95rem}
+.story li.done{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--rule)}
+.desks{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr) minmax(0,1fr);gap:14px;align-items:start}
+@media (max-width:980px){.desks{grid-template-columns:1fr}}
+.desk{background:var(--surface);border:1px solid var(--rule);border-radius:10px;display:grid;align-content:start;min-width:0}
+.desk > h3{padding:12px 14px;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+.desk > h3 small{font-family:var(--f-mono);font-size:.7rem;font-weight:400;color:var(--muted)}
+.desk.att{border-color:var(--bad)} .desk.att > h3{color:var(--bad)}
+.blk{padding:12px 14px;border-bottom:1px solid var(--rule);display:grid;gap:8px}
+.blk:last-child{border-bottom:none}
+.blk .lbl{font-family:var(--f-mono);font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.field{display:grid;gap:3px}
+.field label{font-size:.8rem;color:var(--muted)}
+input[type=text]{font:500 .88rem var(--f-mono);padding:7px 9px;border-radius:6px;border:1px solid var(--rule);background:var(--sunk);color:var(--ink);width:100%}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.row > input{flex:1 1 140px;width:auto}
+button{font:600 .86rem var(--f-body);padding:7px 12px;border-radius:7px;border:1px solid var(--ink);background:var(--ink);color:var(--surface);cursor:pointer;line-height:1.2}
+button.ghost{background:transparent;color:var(--ink);border-color:var(--rule)}
+button.u{background:var(--unlock);border-color:var(--unlock);color:var(--surface)}
+button.p{background:var(--passkey);border-color:var(--passkey);color:var(--surface)}
+button.m{background:var(--master);border-color:var(--master);color:var(--surface)}
+button.bad{background:var(--bad);border-color:var(--bad);color:var(--surface)}
+button.mini{padding:3px 8px;font-size:.76rem}
+button:disabled{opacity:.45;cursor:progress}
+button:hover:not(:disabled){filter:brightness(1.08)}
+.totp{display:flex;align-items:baseline;gap:10px;font-family:var(--f-mono)}
+.totp b{font-size:1.5rem;letter-spacing:.12em;font-weight:500;color:var(--unlock)}
+.totp span{font-size:.75rem;color:var(--muted)}
+.dev{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:.9rem}
+.dev s{color:var(--muted)}
+.items{display:grid;gap:4px;font-size:.88rem}
+.items div{display:flex;justify-content:space-between;gap:8px;border-bottom:1px dashed var(--rule);padding-bottom:3px}
+.items div span:last-child{font-family:var(--f-mono);font-size:.8rem;color:var(--muted)}
+.muted{color:var(--muted);font-size:.86rem}
+.vkline{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+.vkline b{font-family:var(--f-mono);font-size:1rem}
+.slot{border:1px solid var(--rule);border-left:4px solid var(--c);border-radius:8px;padding:9px 10px;display:grid;gap:5px;background:var(--sunk)}
+.slot.flash{animation:flash 1.2s ease-out}
+@keyframes flash{from{background:color-mix(in srgb,var(--c) 25%,var(--sunk))}to{background:var(--sunk)}}
+.slot-h{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.slot-h strong{color:var(--c);font-size:.92rem}
+.slot-h code{color:var(--muted)}
+.kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:1px 10px;font-size:.74rem}
+.kv dt{color:var(--muted)} .kv dd{margin:0;font-family:var(--f-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ct{font-family:var(--f-mono);font-size:.74rem;display:grid;gap:2px;color:var(--muted)}
+.ct div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.has{display:grid;gap:4px;font-size:.88rem}
+.has div{display:flex;gap:8px;align-items:baseline}
+.has code{color:var(--bad)}
+.toggle{display:flex;gap:8px;align-items:center;font-size:.88rem}
+.toggle input{accent-color:var(--bad);width:16px;height:16px}
+.copy{border:1px solid var(--rule);border-radius:8px;padding:8px 10px;display:grid;gap:3px;font-size:.86rem}
+.copy.read{border-color:var(--bad)}
+.copy.safe{border-color:var(--good)}
+.copy b.st-r{color:var(--bad)} .copy b.st-s{color:var(--good)}
+.log{background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:10px 14px;max-height:260px;overflow:auto;display:grid;gap:0;font-size:.88rem}
+.log div{display:grid;grid-template-columns:7.2em 6.4em minmax(0,1fr);gap:8px;padding:5px 0;border-bottom:1px solid var(--rule)}
+.log div:last-child{border-bottom:none}
+.log time{font-family:var(--f-mono);font-size:.74rem;color:var(--muted);padding-top:2px}
+.log .who{font-family:var(--f-mono);font-size:.74rem;text-transform:uppercase;letter-spacing:.05em;padding-top:2px}
+.log .who.you{color:var(--master)} .log .who.server{color:var(--muted)} .log .who.attacker{color:var(--bad)}
+.log .ok{color:var(--good)} .log .no{color:var(--bad)}
+
+/* tables & cards */
+.tablewrap{overflow-x:auto;background:var(--surface);border:1px solid var(--rule);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:.93rem;min-width:760px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+tr:last-child td{border-bottom:none}
+th{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+td:first-child{font-weight:600;width:24%}
+.pill{display:inline-block;font-family:var(--f-mono);font-size:.7rem;padding:1px 7px;border-radius:999px;border:1px solid currentColor;margin-right:4px;white-space:nowrap}
+.pill.y{color:var(--good)} .pill.n{color:var(--bad)} .pill.p{color:var(--unlock)}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:24px;align-items:start}
+.two > *{min-width:0}
+ul.rules{margin:0;padding:0;list-style:none;display:grid;gap:10px}
+ul.rules li{border-left:3px solid var(--master);padding:2px 0 2px 14px}
+ul.rules li b{display:block}
+ul.rules li span{color:var(--muted);font-size:.93rem}
+pre{margin:0;background:var(--sunk);border:1px solid var(--rule);border-radius:8px;padding:14px 16px;overflow-x:auto;font:12.5px/1.6 var(--f-mono);color:var(--ink)}
+pre .c{color:var(--muted)}
+.refs{display:grid;gap:8px;font-size:.93rem;padding-left:1.2em;margin:0}
+@media (prefers-reduced-motion:reduce){.slot.flash{animation:none}}
+</style>
+
+<div class="wrap">
+
+<header>
+  <span class="eyebrow">Password-manager cryptography · key slots, passkeys, revocation</span>
+  <h1>Vault Key Slots</h1>
+  <p class="lede">Your vault is encrypted with one random <b>vault key</b>. Your master password, your unlock password and your passkey do not derive that key. Each one derives its own key that opens its own sealed copy of it, called a <b>slot</b>. Removing an unlock method deletes its slot. Rotating the vault key deals with anyone who already got the key out.</p>
+  <div class="answer">
+    <div><span class="k">Why you can add and remove methods</span><p>Every method wraps the same vault key independently. The master password unlocks the vault key, and with it you can seal a new copy for a new method, or delete a copy, without touching the others.</p></div>
+    <div><span class="k">Why a removed password stops working</span><p>The server holds the only copy of that slot and releases it only after login plus an authenticator code. Once the slot is deleted, the stolen password has nothing left to open.</p></div>
+    <div><span class="k">When removal is not enough</span><p>If the thief also has a copy of the server data, or already logged in once, they hold the vault key itself. Then you must <b>rotate</b>: new vault key, re-encrypted vault, new copies for the methods you keep.</p></div>
+  </div>
+</header>
+
+<section id="hierarchy">
+  <span class="eyebrow">The key hierarchy</span>
+  <h2>Three doors, one vault key</h2>
+  <figure class="fig">
+    <svg viewBox="0 0 780 500" role="img" aria-label="Key hierarchy: master password, unlock password and passkey each derive a key-encryption key, pass a server gate, open their slot, and recover the same vault key that encrypts the items.">
+      <defs>
+        <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-muted"/></marker>
+      </defs>
+      <!-- column helpers: centers 140, 390, 640 -->
+      <g style="--c:var(--master)">
+        <rect class="s-box" x="40" y="14" width="200" height="50" rx="8" style="stroke:var(--master)"/>
+        <text class="s-t" x="140" y="36" text-anchor="middle" style="fill:var(--master)">Master password</text>
+        <text class="s-s s-muted" x="140" y="54" text-anchor="middle">recovery, kept offline</text>
+        <rect class="s-box" x="40" y="94" width="200" height="50" rx="8" style="stroke:var(--rule)"/>
+        <text class="s-s s-ink" x="140" y="115" text-anchor="middle">Argon2id(password, salt₁)</text>
+        <text class="s-s s-muted" x="140" y="133" text-anchor="middle">slow, memory-hard stretch</text>
+        <rect class="s-box" x="40" y="174" width="200" height="50" rx="8" style="stroke:var(--rule)"/>
+        <text class="s-s s-ink" x="140" y="195" text-anchor="middle">HKDF → KEK₁  ·  HKDF → auth₁</text>
+        <text class="s-s s-muted" x="140" y="213" text-anchor="middle">two unrelated keys</text>
+        <path class="s-ln" d="M140 64V92" style="stroke:var(--muted)" marker-end="url(#a)"/>
+        <path class="s-ln" d="M140 144V172" style="stroke:var(--muted)" marker-end="url(#a)"/>
+      </g>
+      <g>
+        <rect class="s-box" x="290" y="14" width="200" height="50" rx="8" style="stroke:var(--unlock)"/>
+        <text class="s-t" x="390" y="36" text-anchor="middle" style="fill:var(--unlock)">Unlock password</text>
+        <text class="s-s s-muted" x="390" y="54" text-anchor="middle">everyday, + authenticator code</text>
+        <rect class="s-box" x="290" y="94" width="200" height="50" rx="8" style="stroke:var(--rule)"/>
+        <text class="s-s s-ink" x="390" y="115" text-anchor="middle">Argon2id(password, salt₂)</text>
+        <text class="s-s s-muted" x="390" y="133" text-anchor="middle">own salt, own result</text>
+        <rect class="s-box" x="290" y="174" width="200" height="50" rx="8" style="stroke:var(--rule)"/>
+        <text class="s-s s-ink" x="390" y="195" text-anchor="middle">HKDF → KEK₂  ·  HKDF → auth₂</text>
+        <text class="s-s s-muted" x="390" y="213" text-anchor="middle">code is NOT key material</text>
+        <path class="s-ln" d="M390 64V92" style="stroke:var(--muted)" marker-end="url(#a)"/>
+        <path class="s-ln" d="M390 144V172" style="stroke:var(--muted)" marker-end="url(#a)"/>
+      </g>
+      <g>
+        <rect class="s-box" x="540" y="14" width="200" height="50" rx="8" style="stroke:var(--passkey)"/>
+        <text class="s-t" x="640" y="36" text-anchor="middle" style="fill:var(--passkey)">Passkey</text>
+        <text class="s-s s-muted" x="640" y="54" text-anchor="middle">secret stays in the device</text>
+        <rect class="s-box" x="540" y="94" width="200" height="50" rx="8" style="stroke:var(--rule)"/>
+        <text class="s-s s-ink" x="640" y="115" text-anchor="middle">PRF(credential, prfSalt)</text>
+        <text class="s-s s-muted" x="640" y="133" text-anchor="middle">WebAuthn extension, 32 bytes</text>
+        <rect class="s-box" x="540" y="174" width="200" height="50" rx="8" style="stroke:var(--rule)"/>
+        <text class="s-s s-ink" x="640" y="195" text-anchor="middle">HKDF → KEK₃  ·  signature</text>
+        <text class="s-s s-muted" x="640" y="213" text-anchor="middle">signs the login challenge</text>
+        <path class="s-ln" d="M640 64V92" style="stroke:var(--muted)" marker-end="url(#a)"/>
+        <path class="s-ln" d="M640 144V172" style="stroke:var(--muted)" marker-end="url(#a)"/>
+      </g>
+      <!-- gate band -->
+      <rect x="20" y="246" width="740" height="52" rx="6" style="fill:var(--sunk);stroke:var(--rule);stroke-dasharray:5 4"/>
+      <text class="s-s s-muted" x="30" y="262">SERVER GATE · releases a slot only after:</text>
+      <text class="s-s s-ink" x="140" y="285" text-anchor="middle">auth₁ matches verifier</text>
+      <text class="s-s s-ink" x="390" y="285" text-anchor="middle">auth₂ matches + valid code</text>
+      <text class="s-s s-ink" x="640" y="285" text-anchor="middle">valid passkey signature</text>
+      <path class="s-ln" d="M140 224V244" style="stroke:var(--muted)" marker-end="url(#a)"/>
+      <path class="s-ln" d="M390 224V244" style="stroke:var(--muted)" marker-end="url(#a)"/>
+      <path class="s-ln" d="M640 224V244" style="stroke:var(--muted)" marker-end="url(#a)"/>
+      <!-- slots -->
+      <rect class="s-box" x="40" y="320" width="200" height="56" rx="8" style="stroke:var(--master);stroke-width:2"/>
+      <text class="s-t s-ink" x="140" y="342" text-anchor="middle">Slot 1</text>
+      <text class="s-s s-muted" x="140" y="362" text-anchor="middle">KEK₁ opens slot private key</text>
+      <rect class="s-box" x="290" y="320" width="200" height="56" rx="8" style="stroke:var(--unlock);stroke-width:2"/>
+      <text class="s-t s-ink" x="390" y="342" text-anchor="middle">Slot 2</text>
+      <text class="s-s s-muted" x="390" y="362" text-anchor="middle">KEK₂ opens slot private key</text>
+      <rect class="s-box" x="540" y="320" width="200" height="56" rx="8" style="stroke:var(--passkey);stroke-width:2"/>
+      <text class="s-t s-ink" x="640" y="342" text-anchor="middle">Slot 3</text>
+      <text class="s-s s-muted" x="640" y="362" text-anchor="middle">KEK₃ opens slot private key</text>
+      <path class="s-ln" d="M140 298V318" style="stroke:var(--muted)" marker-end="url(#a)"/>
+      <path class="s-ln" d="M390 298V318" style="stroke:var(--muted)" marker-end="url(#a)"/>
+      <path class="s-ln" d="M640 298V318" style="stroke:var(--muted)" marker-end="url(#a)"/>
+      <!-- converge -->
+      <path class="s-ln" d="M140 376C140 400 300 400 330 412" style="stroke:var(--master)" marker-end="url(#a)"/>
+      <path class="s-ln" d="M390 376V410" style="stroke:var(--unlock)" marker-end="url(#a)"/>
+      <path class="s-ln" d="M640 376C640 400 480 400 450 412" style="stroke:var(--passkey)" marker-end="url(#a)"/>
+      <text class="s-s s-muted" x="200" y="404" text-anchor="middle">decrypt its copy of VK</text>
+      <rect x="300" y="414" width="180" height="40" rx="8" style="fill:var(--vk)"/>
+      <text class="s-t" x="390" y="439" text-anchor="middle" style="fill:var(--surface)">Vault key VK (random)</text>
+      <path class="s-ln" d="M480 434H560" style="stroke:var(--muted)" marker-end="url(#a)"/>
+      <rect class="s-box" x="562" y="414" width="178" height="40" rx="8" style="stroke:var(--rule)"/>
+      <text class="s-s s-ink" x="651" y="438" text-anchor="middle">AES-GCM(VK, each item)</text>
+      <text class="s-s s-muted" x="390" y="482" text-anchor="middle">Only salts, verifiers, public keys and ciphertext live on the server. Passwords, KEKs and VK never leave your device.</text>
+    </svg>
+    <figcaption>Each unlock method has its own key-encryption key (KEK) and its own slot. A slot holds a small key pair. Its private key is sealed with the method's KEK, and a copy of the vault key is sealed to its public key. That second layer is what makes clean rotation possible later on.</figcaption>
+  </figure>
+</section>
+
+<section id="derive">
+  <span class="eyebrow">Derivations</span>
+  <h2>What each method computes</h2>
+  <div class="cols3">
+    <article class="method" style="--c:var(--master)">
+      <header><h3>Master / recovery password</h3><span>The root. Can always add, remove and rotate.</span></header>
+      <ol>
+        <li><div><code class="f">salt₁ = random 16 B   (stored on server)</code><span class="w">Public. The server hands it to anyone before login so the client can derive.</span></div></li>
+        <li><div><code class="f">S₁ = Argon2id(master, salt₁, m=64 MiB, t=3)</code><span class="w">Makes each guess expensive. The demo uses PBKDF2 because browsers lack Argon2.</span></div></li>
+        <li><div><code class="f">KEK₁ = HKDF(S₁, "slot-kek")</code><code class="f">auth₁ = HKDF(S₁, "server-auth")</code><span class="w">Domain separation: knowing auth₁ reveals nothing about KEK₁.</span></div></li>
+        <li><div><code class="f">server stores verifier₁ = SHA-256(auth₁)</code><span class="w">Login proof. Real systems often use SRP or OPAQUE so the server never sees auth₁ either.</span></div></li>
+        <li><div><code class="f">slot1.encPriv = AES-GCM(KEK₁, slotPriv₁)</code><span class="w">Opening this gives the slot's private key, which opens the slot's copy of VK.</span></div></li>
+      </ol>
+    </article>
+    <article class="method" style="--c:var(--unlock)">
+      <header><h3>Unlock password + code</h3><span>Convenient, and revocable on its own.</span></header>
+      <ol>
+        <li><div><code class="f">salt₂ = random 16 B   (new per slot)</code><span class="w">A fresh salt means the same password in two slots still gives unrelated keys.</span></div></li>
+        <li><div><code class="f">S₂ = Argon2id(unlockPw, salt₂)</code><span class="w">Same stretch as the master password. A short unlock password is the weak point under offline attack.</span></div></li>
+        <li><div><code class="f">KEK₂ = HKDF(S₂, "slot-kek")</code><code class="f">auth₂ = HKDF(S₂, "server-auth")</code><span class="w">Same split as before.</span></div></li>
+        <li><div><code class="f">totpSeed (20 B) stored server-side + in your app</code><code class="f">code = HOTP(totpSeed, ⌊t/30⌋) mod 10⁶</code><span class="w">The server checks the code before releasing slot 2. The code never feeds the KEK.</span></div></li>
+        <li><div><code class="f">slot2.encPriv = AES-GCM(KEK₂, slotPriv₂)</code><span class="w">Created by a client that already holds VK, which means one unlocked with the master password.</span></div></li>
+      </ol>
+    </article>
+    <article class="method" style="--c:var(--passkey)">
+      <header><h3>Passkey (WebAuthn PRF)</h3><span>No password at all. The secret stays in hardware.</span></header>
+      <ol>
+        <li><div><code class="f">prfSalt = random 32 B   (stored on server)</code><span class="w">Sent back to the authenticator on every login.</span></div></li>
+        <li><div><code class="f">s = SHA-256("WebAuthn PRF" ‖ 0x00 ‖ prfSalt)</code><code class="f">P = HMAC-SHA-256(credSecret, s)</code><span class="w">Computed inside the authenticator (CTAP2 hmac-secret). Same credential and salt always give the same P.</span></div></li>
+        <li><div><code class="f">KEK₃ = HKDF(P, "slot-kek")</code><span class="w">Deterministic, so it can wrap a key. Without the physical device and its PIN or biometric, no one can compute it.</span></div></li>
+        <li><div><code class="f">sig = ECDSA(credPriv, server challenge)</code><span class="w">The login proof. The server keeps the credential public key, never a secret.</span></div></li>
+        <li><div><code class="f">slot3.encPriv = AES-GCM(KEK₃, slotPriv₃)</code><span class="w">A passkey without PRF support can log you in, but it cannot unlock an encrypted vault.</span></div></li>
+      </ol>
+    </article>
+  </div>
+  <div class="callout">
+    <h3>Why the authenticator code can't be part of the key</h3>
+    <p class="prose">A TOTP code changes every 30 seconds, so it cannot wrap anything long-lived. To check it, the server must also hold the seed, so any key derived from the seed would be available to the server or to anyone who breaches it. The code therefore guards the <i>door</i>, meaning who may download slot 2, and adds nothing to the <i>lock</i>. That distinction decides the threat table below: an attacker with a copy of the server data skips the door and attacks the lock offline with the stolen password.</p>
+  </div>
+</section>
+
+<section id="lab">
+  <span class="eyebrow">Live lab · real WebCrypto, nothing leaves this page</span>
+  <h2>Steal it, revoke it, rotate it</h2>
+  <p class="note prose muted">An example vault has been set up below: a master password, an unlock password with an authenticator, and a passkey on a simulated laptop. The attacker starts out knowing your unlock password. Every hex string is real key material or ciphertext produced in your browser (P-256, AES-256-GCM, HKDF, PBKDF2-SHA-256 at 120,000 iterations standing in for Argon2id). The passkey's authenticator is simulated, because this page cannot call real WebAuthn.</p>
+
+  <div class="story" id="story">
+    <h3>Try this sequence</h3>
+    <ol>
+      <li data-step="1">Attacker: <b>Log in online</b>. Blocked: they have the password but no code.</li>
+      <li data-step="2">Tick <b>can phish a live code</b> and log in again. They get in and read the vault.</li>
+      <li data-step="3">Attacker: <b>Register own passkey</b>. The server refuses, because it requires the master password.</li>
+      <li data-step="4">Attacker: <b>Copy the server database</b>, as in a breach or a leaked backup.</li>
+      <li data-step="5">You: <b>Remove</b> the unlock-password slot on the server desk. Their online login now fails.</li>
+      <li data-step="6">You: <b>Add a secret</b>. Attacker: copy the database again, then <b>Crack every copy</b>. The new secret is readable with the vault key they kept.</li>
+      <li data-step="7">You: <b>Rotate vault key</b>. Attacker: copy and crack again. The new copy stays locked, while your master password and passkey still work.</li>
+    </ol>
+  </div>
+
+  <div class="desks">
+    <div class="desk" id="deskYou">
+      <h3><span style="color:var(--master)">You</span><small>client · holds the secrets</small></h3>
+      <div class="blk">
+        <span class="lbl">Authenticator app</span>
+        <div class="totp"><b id="code">––––––</b><span id="codeT">for unlock password</span></div>
+      </div>
+      <div class="blk">
+        <span class="lbl">Unlock</span>
+        <div class="field"><label for="myUnlock">Unlock password</label><div class="row"><input type="text" id="myUnlock" value="blue-otter-42" autocomplete="off"><button class="u" id="bUnlock" type="button">Unlock + code</button></div></div>
+        <div id="devices" class="items"></div>
+        <div class="row"><button class="m" id="bMaster" type="button">Unlock with master</button></div>
+        <div id="youItems" class="items"><span class="muted">Locked.</span></div>
+      </div>
+      <div class="blk">
+        <span class="lbl">Manage · needs master password</span>
+        <div class="field"><label for="masterPw">Master password</label><input type="text" id="masterPw" value="correct horse battery staple" autocomplete="off"></div>
+        <div class="field"><label for="newUnlock">New unlock password</label><div class="row"><input type="text" id="newUnlock" value="new-heron-77" autocomplete="off"><button class="ghost" id="bAddUnlock" type="button">Add</button></div></div>
+        <div class="row"><button class="ghost" id="bAddPasskey" type="button">Add passkey</button><button class="ghost" id="bAddItem" type="button">Add a secret</button><button class="m" id="bRotate" type="button">Rotate vault key</button></div>
+      </div>
+    </div>
+
+    <div class="desk" id="deskServer">
+      <h3><span>Server database</span><small>what a breach would leak</small></h3>
+      <div class="blk">
+        <div class="vkline"><span class="lbl">Vault key version</span><b id="vkv">–</b></div>
+        <span class="muted">The server never sees the vault key, only its version number.</span>
+      </div>
+      <div class="blk"><span class="lbl">Slots</span><div id="slots" style="display:grid;gap:8px"><span class="muted">Building example vault…</span></div></div>
+      <div class="blk"><span class="lbl">Encrypted items</span><div id="cts" class="ct"></div></div>
+    </div>
+
+    <div class="desk att" id="deskAtt">
+      <h3><span>Attacker</span><small>stole your unlock password</small></h3>
+      <div class="blk">
+        <span class="lbl">Holds</span>
+        <div class="has">
+          <div>Unlock password <code id="attPw">blue-otter-42</code></div>
+          <div>Vault keys learned <b id="attVKs" class="mono">0</b></div>
+        </div>
+        <label class="toggle" for="phish"><input type="checkbox" id="phish"> can phish a live authenticator code</label>
+      </div>
+      <div class="blk">
+        <span class="lbl">Online, through the server</span>
+        <div class="row"><button class="bad" id="aLogin" type="button">Log in online</button><button class="ghost" id="aPersist" type="button">Register own passkey</button></div>
+        <div id="attItems" class="items"></div>
+      </div>
+      <div class="blk">
+        <span class="lbl">Offline, on stolen copies</span>
+        <div class="row"><button class="bad" id="aGrab" type="button">Copy the server database</button><button class="ghost" id="aCrack" type="button">Crack every copy</button></div>
+        <div id="copies" style="display:grid;gap:6px"><span class="muted">No copies yet.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="log" id="log" aria-live="polite"></div>
+</section>
+
+<section id="threats">
+  <span class="eyebrow">Revocation</span>
+  <h2>What removing a slot does, and what only rotation does</h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>The attacker has…</th><th>Remove the slot</th><th>Remove + rotate the vault key</th><th>Still to do</th></tr></thead>
+      <tbody>
+        <tr><td>Your unlock password only</td><td><span class="pill y">locked out</span> They were already stopped at the code check. Removal makes the password worthless.</td><td><span class="pill y">locked out</span> Not needed.</td><td>Nothing. Pick a new unlock password.</td></tr>
+        <tr><td>Password + one phished code (logged in once)</td><td><span class="pill y">no new logins</span> But that session gave them VK and the plaintext they viewed.</td><td><span class="pill y">future data safe</span> VK they hold no longer matches the server.</td><td>Change the actual passwords stored in the vault that they could have read.</td></tr>
+        <tr><td>Password + a copy of server data (breach, backup, device cache)</td><td><span class="pill n">no effect offline</span> Their copy still holds the old slot. Code check doesn't apply offline. They get VK.</td><td><span class="pill p">old copy still open</span> Later copies are safe. The copy they hold stays readable forever.</td><td>Change stored secrets. Rotation cannot reach data the attacker already has.</td></tr>
+        <tr><td>VK itself (malware on an unlocked device)</td><td><span class="pill n">no effect</span> Slots only guard VK, and they have it.</td><td><span class="pill y">future data safe</span></td><td>Clean the device first, then rotate, or the new key leaks too.</td></tr>
+        <tr><td>Your passkey device, locked</td><td><span class="pill y">locked out</span> PRF output needs the device and its PIN or biometric. Remove the slot to be sure.</td><td><span class="pill y">locked out</span> Not needed unless the device was unlocked and used.</td><td>Revoke the passkey at the provider too.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="muted prose">Rule of thumb: <b>remove</b> when a credential is exposed, <b>remove and rotate</b> when the attacker may have had the vault key or a data copy, and <b>change the stored secrets</b> when they may have seen plaintext.</p>
+</section>
+
+<section id="rotation">
+  <span class="eyebrow">Rotation</span>
+  <h2>Why each slot carries a key pair</h2>
+  <div class="two">
+    <div class="prose" style="display:grid;gap:14px">
+      <p>The simplest design seals VK directly with each KEK: <code>slot.encVK = AES(KEK, VK)</code>. Removal works fine. Rotation does not, because writing the new VK into the passkey slot needs KEK₃, and KEK₃ only exists while the passkey is plugged in and touched. A master-password-only rotation would have to drop every other method and make you re-enroll them.</p>
+      <p>The key-pair layer fixes this. Each slot publishes a public key. Rotation, done from a master-password session, encrypts the new VK <i>to</i> each remaining slot's public key. No other method's secret is needed. The removed slot simply isn't on the list, so it never receives the new key.</p>
+      <p>For this to be safe the client must trust the public keys it encrypts to. A malicious server could swap in its own. Real designs sign the slot public keys with a key only the account owner holds, and check that signature before re-wrapping.</p>
+    </div>
+<pre><span class="c"># rotate(masterPw) — runs on your device</span>
+VK_old = unlock_with_master(masterPw)
+VK_new = random(32)
+
+<span class="c"># 1. re-encrypt the vault</span>
+for item in server.items:
+    pt   = AES_GCM.open(VK_old, item, aad=f"item|v{v}")
+    item = AES_GCM.seal(VK_new, pt,   aad=f"item|v{v+1}")
+
+<span class="c"># 2. hand the new key to every slot you keep</span>
+for slot in server.slots:          <span class="c"># removed slot is gone</span>
+    verify_sig(owner_key, slot.pub)
+    slot.encVK = ECIES.seal(slot.pub, VK_new,
+                            aad=f"vk|v{v+1}")
+
+server.vk_version = v + 1          <span class="c"># old VK now opens nothing new</span></pre>
+  </div>
+</section>
+
+<section id="rules">
+  <span class="eyebrow">Server rules</span>
+  <h2>What has to be enforced for revocation to mean anything</h2>
+  <ul class="rules">
+    <li><b>Adding, removing and rotating need the master password, freshly.</b><span>Otherwise someone logged in with the stolen unlock password registers their own passkey, and removing the stolen password leaves that backdoor in place. Step 3 of the lab shows the refusal.</span></li>
+    <li><b>After an incident, read the whole slot list.</b><span>Any slot you do not recognise is a way in. Notify by email on every slot change.</span></li>
+    <li><b>Keep the gate and the lock separate.</b><span>The login proof (auth key, code, passkey signature) and the KEK come from different HKDF branches, so a stolen verifier does not decrypt anything. A verifier still allows offline guessing, which is why the stretch is slow and the unlock password should be long.</span></li>
+    <li><b>Bind every ciphertext to its context.</b><span>AES-GCM associated data carries the slot id and key version, so the server cannot swap one slot's blob into another or replay an old version unnoticed.</span></li>
+    <li><b>Rate-limit and lock each slot separately.</b><span>Online guessing at the gate should hit limits long before offline cracking becomes the cheaper route.</span></li>
+    <li><b>Treat the master password as the root.</b><span>If it leaks, an attacker can do everything you can. Change it (new salt and new slot 1), rotate the vault key, and check the slot list.</span></li>
+  </ul>
+</section>
+
+<section id="real">
+  <span class="eyebrow">In the wild</span>
+  <h2>The same pattern in real systems</h2>
+  <div class="cols3">
+    <article class="method" style="--c:var(--ink)"><header><h3>LUKS disk encryption</h3><span>The textbook case of key slots</span></header>
+      <ol><li><div><span>One volume key, several keyslots (8 in LUKS1, 32 in LUKS2), each wrapping it under a passphrase or keyfile. <code>luksKillSlot</code> removes one. The cryptsetup docs warn that a saved header backup still contains the old slot, and that changing the actual volume key needs <code>cryptsetup reencrypt</code>. That is exactly the remove-versus-rotate split above.</span></div></li></ol></article>
+    <article class="method" style="--c:var(--ink)"><header><h3>Bitwarden</h3><span>Master password + PRF passkeys</span></header>
+      <ol><li><div><span>The master password is stretched into a key that wraps the account's symmetric key. "Log in with passkey" can also decrypt the vault when the passkey supports the PRF extension. Account encryption-key rotation re-encrypts the vault under a new key.</span></div></li></ol></article>
+    <article class="method" style="--c:var(--ink)"><header><h3>1Password</h3><span>Hardening the password slot</span></header>
+      <ol><li><div><span>Mixes a random 128-bit Secret Key, stored only on your devices, into the account password derivation (two-secret key derivation). A server breach alone then gives an attacker nothing to brute-force. Login uses SRP, so the server never receives a password-equivalent.</span></div></li></ol></article>
+  </div>
+</section>
+
+<section id="refs">
+  <span class="eyebrow">References</span>
+  <ol class="refs">
+    <li>W3C. <a href="https://www.w3.org/TR/webauthn-3/" target="_blank" rel="noopener">Web Authentication Level 3</a>, §10.1.4 Pseudo-random function extension (prf).</li>
+    <li>FIDO Alliance. Client to Authenticator Protocol (CTAP) 2.1, hmac-secret extension.</li>
+    <li>RFC 9106: <a href="https://www.rfc-editor.org/rfc/rfc9106" target="_blank" rel="noopener">Argon2 memory-hard function</a>. RFC 5869: HKDF. RFC 6238: TOTP.</li>
+    <li>cryptsetup project. <a href="https://gitlab.com/cryptsetup/cryptsetup/-/wikis/FrequentlyAskedQuestions" target="_blank" rel="noopener">cryptsetup FAQ</a>, sections on keyslots and header backups.</li>
+    <li>Bitwarden. <a href="https://bitwarden.com/help/bitwarden-security-white-paper/" target="_blank" rel="noopener">Security whitepaper</a>.</li>
+    <li>1Password. <a href="https://1passwordstatic.com/files/security/1password-white-paper.pdf" target="_blank" rel="noopener">1Password security design white paper</a>.</li>
+  </ol>
+</section>
+
+</div>
+<script>
+// ===== Vault key-slot engine (WebCrypto; runs in browser and node) =====
+const subtle = globalThis.crypto.subtle;
+const te = new TextEncoder(), td = new TextDecoder();
+const ITERS = 120000; // demo: PBKDF2-SHA256. Real systems: Argon2id with memory hardness.
+const rnd = n => globalThis.crypto.getRandomValues(new Uint8Array(n));
+const hex = (b, n) => Array.from(b instanceof Uint8Array ? b : new Uint8Array(b)).slice(0, n).map(x => x.toString(16).padStart(2, '0')).join('');
+const eq = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+const clone = o => structuredClone(o);
+
+async function stretch(pw, salt) {
+  const k = await subtle.importKey('raw', te.encode(pw), 'PBKDF2', false, ['deriveBits']);
+  return new Uint8Array(await subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: ITERS }, k, 256));
+}
+async function hkdf(ikm, info, salt = new Uint8Array(32)) {
+  const k = await subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits']);
+  return new Uint8Array(await subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: te.encode(info) }, k, 256));
+}
+const sha256 = async b => new Uint8Array(await subtle.digest('SHA-256', b));
+async function hmac(hash, key, msg) {
+  const k = await subtle.importKey('raw', key, { name: 'HMAC', hash }, false, ['sign']);
+  return new Uint8Array(await subtle.sign('HMAC', k, msg));
+}
+const aesKey = raw => subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+async function seal(raw, pt, aad) {
+  const iv = rnd(12);
+  const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv, additionalData: te.encode(aad) }, await aesKey(raw), pt));
+  return { iv, ct };
+}
+async function unseal(raw, box, aad) {
+  return new Uint8Array(await subtle.decrypt({ name: 'AES-GCM', iv: box.iv, additionalData: te.encode(aad) }, await aesKey(raw), box.ct));
+}
+// --- ECIES on P-256: lets anyone encrypt TO a slot without knowing its secret ---
+const EC = { name: 'ECDH', namedCurve: 'P-256' };
+async function genSlotKeypair() {
+  const kp = await subtle.generateKey(EC, true, ['deriveBits']);
+  return { pub: new Uint8Array(await subtle.exportKey('raw', kp.publicKey)), priv: new Uint8Array(await subtle.exportKey('pkcs8', kp.privateKey)) };
+}
+async function eciesEncrypt(pubRaw, pt, aad) {
+  const pub = await subtle.importKey('raw', pubRaw, EC, false, []);
+  const eph = await subtle.generateKey(EC, true, ['deriveBits']);
+  const shared = new Uint8Array(await subtle.deriveBits({ name: 'ECDH', public: pub }, eph.privateKey, 256));
+  const epk = new Uint8Array(await subtle.exportKey('raw', eph.publicKey));
+  const k = await hkdf(shared, 'vault-key-to-slot', epk);
+  return { epk, ...(await seal(k, pt, aad)) };
+}
+async function eciesDecrypt(privPkcs8, env, aad) {
+  const priv = await subtle.importKey('pkcs8', privPkcs8, EC, false, ['deriveBits']);
+  const epk = await subtle.importKey('raw', env.epk, EC, false, []);
+  const shared = new Uint8Array(await subtle.deriveBits({ name: 'ECDH', public: epk }, priv, 256));
+  return unseal(await hkdf(shared, 'vault-key-to-slot', env.epk), env, aad);
+}
+// --- TOTP (RFC 6238, SHA-1, 30 s, 6 digits) ---
+async function totp(seed, t = Date.now()) {
+  const ctr = Math.floor(t / 30000), msg = new Uint8Array(8);
+  new DataView(msg.buffer).setUint32(4, ctr);
+  const h = await hmac('SHA-1', seed, msg), o = h[19] & 15;
+  const n = ((h[o] & 127) << 24 | h[o + 1] << 16 | h[o + 2] << 8 | h[o + 3]) % 1e6;
+  return String(n).padStart(6, '0');
+}
+// --- Simulated platform authenticator (passkey). Its secrets never leave this object. ---
+class Authenticator {
+  constructor(label) { this.label = label; this.prfSecret = rnd(32); this.credId = rnd(16); }
+  async init() {
+    this.kp = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+    this.credPub = new Uint8Array(await subtle.exportKey('raw', this.kp.publicKey));
+    return this;
+  }
+  async assert(challenge, prfSalt) {
+    const sig = new Uint8Array(await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, this.kp.privateKey, challenge));
+    // WebAuthn PRF: salt' = SHA-256("WebAuthn PRF" || 0x00 || input); output = HMAC-SHA-256(credential secret, salt')
+    const s = await sha256(new Uint8Array([...te.encode('WebAuthn PRF'), 0, ...prfSalt]));
+    return { sig, prf: await hmac('SHA-256', this.prfSecret, s) };
+  }
+}
+async function verifyAssertion(credPub, challenge, sig) {
+  const k = await subtle.importKey('raw', credPub, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+  return subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, k, sig, challenge);
+}
+
+// ===== Client-side derivations =====
+async function passwordKeys(pw, salt) {
+  const s = await stretch(pw, salt);
+  return { kek: await hkdf(s, 'slot-kek'), auth: await hkdf(s, 'server-auth') };
+}
+
+// ===== The "server": stores only salts, verifiers, public keys, ciphertext =====
+class Server {
+  constructor() { this.db = { vkVersion: 0, items: [], slots: [] }; this.nextId = 1; this.log = []; }
+  snapshot() { return clone(this.db); }
+  slot(id) { return this.db.slots.find(s => s.id === id); }
+  async checkPassword(slot, authKey) { return eq(await sha256(authKey), slot.verifier); }
+  // Gate for password slots: proves the caller may download this slot's wrapped material.
+  async gateSlot(id, proof) {
+    const s = this.slot(id);
+    if (!s) return { ok: false, why: 'That slot no longer exists on the server.' };
+    if (!(await this.checkPassword(s, proof.auth))) return { ok: false, why: 'Wrong password.' };
+    if (s.type === 'unlock') {
+      const now = Date.now(), ok = await Promise.all([now - 30000, now].map(t => totp(s.totpSeed, t)));
+      if (!proof.code || !ok.includes(proof.code)) return { ok: false, matched: true, why: 'Password matched, but the authenticator code was missing or wrong.' };
+    }
+    return { ok: true, slot: clone(s) };
+  }
+  async gatePasskey(proof) {
+    const s = this.db.slots.find(x => x.type === 'passkey' && eq(x.credId, proof.credId));
+    if (!s) return { ok: false, why: 'This passkey is not registered any more.' };
+    if (!(await verifyAssertion(s.credPub, proof.challenge, proof.sig))) return { ok: false, why: 'Passkey signature did not verify.' };
+    return { ok: true, slot: clone(s) };
+  }
+  async requireMaster(authKey) {
+    const m = this.db.slots.find(s => s.type === 'master');
+    return m && await this.checkPassword(m, authKey);
+  }
+}
+const LABEL = { master: 'master password', unlock: 'unlock password', passkey: 'passkey' };
+
+// ===== Client: you =====
+class Client {
+  constructor(server) { this.server = server; this.vk = null; }
+  async slotMaterial(type, opts) {
+    const salt = rnd(16); const out = { salt };
+    if (type === 'passkey') {
+      out.prfSalt = rnd(32);
+      const a = await opts.authenticator.assert(rnd(32), out.prfSalt);
+      out.kek = await hkdf(a.prf, 'slot-kek');
+      out.credId = opts.authenticator.credId; out.credPub = opts.authenticator.credPub;
+    } else {
+      const k = await passwordKeys(opts.password, salt);
+      out.kek = k.kek; out.verifier = await sha256(k.auth);
+      if (type === 'unlock') out.totpSeed = rnd(20);
+    }
+    return out;
+  }
+  async buildSlot(type, label, opts) {
+    const m = await this.slotMaterial(type, opts);
+    const kp = await genSlotKeypair();
+    const id = 'S' + this.server.nextId++;
+    const slot = {
+      id, type, label, salt: m.salt, created: new Date().toISOString(),
+      verifier: m.verifier || null, totpSeed: m.totpSeed || null,
+      credId: m.credId || null, credPub: m.credPub || null, prfSalt: m.prfSalt || null,
+      pub: kp.pub,
+      encPriv: await seal(m.kek, kp.priv, 'slot-priv|' + id),
+      encVK: await eciesEncrypt(kp.pub, this.vk, 'vk|v' + this.server.db.vkVersion),
+      vkVersion: this.server.db.vkVersion,
+    };
+    return slot;
+  }
+  async createVault(masterPw, items) {
+    this.vk = rnd(32);
+    this.server.db.vkVersion = 1;
+    this.server.db.slots.push(await this.buildSlot('master', 'Master / recovery password', { password: masterPw }));
+    for (const it of items) await this.addItem(it.name, it.value);
+  }
+  async addItem(name, value) {
+    const box = await seal(this.vk, te.encode(JSON.stringify({ name, value })), 'item|v' + this.server.db.vkVersion);
+    this.server.db.items.push({ ...box, v: this.server.db.vkVersion });
+  }
+  async masterAuth(masterPw) {
+    const m = this.server.db.slots.find(s => s.type === 'master');
+    return (await passwordKeys(masterPw, m.salt)).auth;
+  }
+  async addSlot(type, label, opts, masterPw) {
+    if (!(await this.server.requireMaster(await this.masterAuth(masterPw)))) return { ok: false, why: 'Server refused: adding an unlock method needs the master password.' };
+    if (!this.vk) await this.unlock('master', { password: masterPw });
+    const slot = await this.buildSlot(type, label, opts);
+    this.server.db.slots.push(slot);
+    return { ok: true, slot };
+  }
+  async removeSlot(id, masterPw) {
+    if (!(await this.server.requireMaster(await this.masterAuth(masterPw)))) return { ok: false, why: 'Server refused: removing needs the master password.' };
+    const s = this.server.slot(id);
+    if (s.type === 'master') return { ok: false, why: 'The master slot is the recovery path and cannot be removed here.' };
+    this.server.db.slots = this.server.db.slots.filter(x => x.id !== id);
+    return { ok: true };
+  }
+  // Rotation: new vault key, re-encrypt items, re-wrap to every remaining slot's PUBLIC key.
+  async rotate(masterPw) {
+    if (!(await this.server.requireMaster(await this.masterAuth(masterPw)))) return { ok: false, why: 'Server refused: rotation needs the master password.' };
+    const r = await this.unlock('master', { password: masterPw });
+    if (!r.ok) return r;
+    const db = this.server.db, oldVK = this.vk, newV = db.vkVersion + 1, newVK = rnd(32);
+    const plain = [];
+    for (const it of db.items) plain.push(await unseal(oldVK, it, 'item|v' + it.v));
+    db.items = [];
+    for (const p of plain) db.items.push({ ...(await seal(newVK, p, 'item|v' + newV)), v: newV });
+    for (const s of db.slots) { s.encVK = await eciesEncrypt(s.pub, newVK, 'vk|v' + newV); s.vkVersion = newV; }
+    db.vkVersion = newV; this.vk = newVK;
+    return { ok: true, version: newV, rewrapped: db.slots.length };
+  }
+  // Normal unlock: pass the server gate, then unwrap locally.
+  async unlock(type, opts) {
+    const db = this.server.db;
+    if (type === 'passkey') {
+      const reg = db.slots.find(s => s.type === 'passkey' && eq(s.credId, opts.authenticator.credId));
+      if (!reg) return { ok: false, stage: 'server', why: 'This passkey is not registered on the server any more.' };
+      const challenge = rnd(32);
+      const a = await opts.authenticator.assert(challenge, reg.prfSalt);
+      const g = await this.server.gatePasskey({ credId: opts.authenticator.credId, challenge, sig: a.sig });
+      if (!g.ok) return { ok: false, stage: 'server', why: g.why };
+      return this.finish(g.slot, await hkdf(a.prf, 'slot-kek'));
+    }
+    const cands = db.slots.filter(s => s.type === type);
+    if (!cands.length) return { ok: false, stage: 'server', why: `No ${LABEL[type]} slot exists on the server.` };
+    let why = 'Wrong password.';
+    for (const s of cands) {
+      const k = await passwordKeys(opts.password, s.salt);   // salt is public; server sends it before login
+      const code = opts.codeFor ? await opts.codeFor(s.id) : null;
+      const g = await this.server.gateSlot(s.id, { auth: k.auth, code });
+      if (!g.ok) { why = g.why; if (g.matched) break; continue; }
+      return this.finish(g.slot, k.kek);
+    }
+    return { ok: false, stage: 'server', why };
+  }
+  async finish(slot, kek) {
+    try {
+      const vk = await openSlot(slot, kek);
+      this.vk = vk;
+      return { ok: true, slot, items: await readItems(this.server.db, vk) };
+    } catch (e) { return { ok: false, stage: 'crypto', why: 'Slot downloaded but the key would not unwrap.' }; }
+  }
+}
+async function openSlot(slot, kek) {
+  const priv = await unseal(kek, slot.encPriv, 'slot-priv|' + slot.id);
+  return eciesDecrypt(priv, slot.encVK, 'vk|v' + slot.vkVersion);
+}
+async function readItems(db, vk) {
+  const out = [];
+  for (const it of db.items) {
+    try { out.push(JSON.parse(td.decode(await unseal(vk, it, 'item|v' + it.v)))); } catch (e) { out.push(null); }
+  }
+  return out;
+}
+
+// ===== Attacker =====
+class Attacker {
+  constructor(server) { this.server = server; this.unlockPw = null; this.phish = false; this.copies = []; this.knownVKs = []; this.seenCodeSeed = null; }
+  learnVK(vk) { if (!this.knownVKs.some(k => eq(k, vk))) this.knownVKs.push(vk); }
+  async onlineLogin(victimCodeFor) {
+    const c = new Client(this.server);
+    const r = await c.unlock('unlock', { password: this.unlockPw, codeFor: this.phish ? victimCodeFor : null });
+    if (r.ok) this.learnVK(c.vk);
+    return r;
+  }
+  async persist() {
+    // Attacker is logged in via the unlock slot and tries to register their own passkey.
+    const fake = await new Authenticator('Attacker key').init();
+    const c = new Client(this.server);
+    const guess = this.unlockPw; // the only password they have
+    return c.addSlot('passkey', 'Attacker passkey', { authenticator: fake }, guess);
+  }
+  grab(label) { this.copies.push({ label, db: this.server.snapshot(), at: new Date() }); }
+  async crackAll(currentVersion) {
+    const res = [];
+    for (const cp of this.copies) {
+      const r = { label: cp.label, version: cp.db.vkVersion, via: null, items: [] };
+      // 1) offline: stolen unlock password against the unlock slot in this copy (no TOTP needed offline)
+      for (const s of cp.db.slots.filter(s => s.type === 'unlock')) {
+        try { const k = await passwordKeys(this.unlockPw, s.salt); const vk = await openSlot(s, k.kek); this.learnVK(vk); r.via = 'stolen unlock password + this copy\'s unlock slot'; break; } catch (e) {}
+      }
+      // 2) any vault key learned earlier
+      let got = [];
+      for (const vk of this.knownVKs) {
+        const items = await readItems(cp.db, vk);
+        if (items.some(Boolean)) { got = items; if (!r.via) r.via = 'a vault key learned earlier'; break; }
+      }
+      r.items = got.filter(Boolean); r.total = cp.db.items.length;
+      res.push(r);
+    }
+    return res;
+  }
+}
+
+(function(){
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const H = (b, n = 8) => b ? hex(b, n) + '…' : '–';
+const S = new Server(), you = new Client(S), A = new Attacker(S);
+A.unlockPw = 'blue-otter-42';
+const app = {};            // your authenticator app: slotId -> TOTP seed
+const devices = [];        // your passkey authenticators
+const NAMES = ['Laptop', 'Phone', 'Security key', 'Tablet', 'Desktop'];
+let flashId = null, attItems = null, youItems = null, busy = false;
+const victimCodeFor = async id => app[id] ? totp(app[id]) : null;
+const COLOR = { master: 'var(--master)', unlock: 'var(--unlock)', passkey: 'var(--passkey)' };
+
+function log(who, text, ok) {
+  const d = document.createElement('div');
+  const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  d.innerHTML = `<time>${t}</time><span class="who ${who}">${who}</span><span class="${ok === true ? 'ok' : ok === false ? 'no' : ''}">${text}</span>`;
+  $('log').prepend(d);
+}
+function done(n) { const li = document.querySelector(`#story li[data-step="${n}"]`); if (li) li.classList.add('done'); }
+
+function renderServer() {
+  const db = S.db;
+  $('vkv').textContent = 'v' + db.vkVersion;
+  $('slots').innerHTML = db.slots.map(s => {
+    const rows = [['salt', H(s.salt)]];
+    if (s.type === 'passkey') rows.push(['credential pub key', H(s.credPub)], ['PRF salt', H(s.prfSalt)]);
+    else rows.push(['login verifier', H(s.verifier)]);
+    if (s.type === 'unlock') rows.push(['TOTP seed', H(s.totpSeed)]);
+    rows.push(['slot public key', H(s.pub)], ['sealed private key', H(s.encPriv.ct)], ['sealed vault key', `${H(s.encVK.ct)} <b>v${s.vkVersion}</b>`]);
+    return `<div class="slot${s.id === flashId ? ' flash' : ''}" style="--c:${COLOR[s.type]}">
+      <div class="slot-h"><strong>${s.type === 'passkey' ? 'Passkey · ' + esc(s.label) : esc(s.label)}</strong><span class="row"><code>${s.id}</code>${s.type !== 'master' ? `<button class="ghost mini" data-rm="${s.id}" type="button">Remove</button>` : ''}</span></div>
+      <dl class="kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></div>`;
+  }).join('');
+  $('cts').innerHTML = db.items.map((it, i) => `<div>#${i + 1} · v${it.v} · ${hex(it.ct, 22)}…</div>`).join('') || '<span class="muted">None.</span>';
+  flashId = null;
+}
+function renderDevices() {
+  $('devices').innerHTML = devices.map((d, i) => {
+    const live = S.db.slots.some(s => s.type === 'passkey' && eq(s.credId, d.credId));
+    return `<div class="dev"><span>${live ? '' : '<s>'}Passkey · ${esc(d.label)}${live ? '' : '</s> <span class="muted">removed</span>'}</span><button class="p mini" data-pk="${i}" type="button">Unlock</button></div>`;
+  }).join('');
+}
+function itemsHtml(items, extra) {
+  if (!items) return '<span class="muted">Locked.</span>';
+  return (extra || '') + items.map(it => it ? `<div><span>${esc(it.name)}</span><span>${esc(it.value)}</span></div>` : '<div><span class="muted">unreadable</span></div>').join('');
+}
+function renderYou(via) { $('youItems').innerHTML = itemsHtml(youItems, via ? `<span class="muted">Unlocked via ${esc(via)}:</span>` : ''); }
+function renderAtt() {
+  $('attVKs').textContent = A.knownVKs.length;
+  $('attItems').innerHTML = attItems ? itemsHtml(attItems, '<span class="muted">Read during the live session:</span>') : '';
+  $('copies').innerHTML = A.copies.length ? A.copies.map(c => {
+    const r = c.result;
+    let body = '<span class="muted">not cracked yet</span>', cls = '';
+    if (r) {
+      if (r.items.length) { cls = 'read'; body = `<b class="st-r">Read ${r.items.length} of ${r.total}</b> <span class="muted">via ${esc(r.via)}</span><br><span>${r.items.map(i => esc(i.name)).join(', ')}</span>`; }
+      else { cls = 'safe'; body = `<b class="st-s">Locked: 0 of ${r.total}</b> <span class="muted">no slot opens with the stolen password, and no known key matches v${c.db.vkVersion}</span>`; }
+    }
+    return `<div class="copy ${cls}"><span><b>${esc(c.label)}</b> <span class="muted">· vault key v${c.db.vkVersion} · ${c.db.slots.length} slots · ${c.db.items.length} items</span></span><span>${body}</span></div>`;
+  }).join('') : '<span class="muted">No copies yet.</span>';
+}
+function renderAll() { renderServer(); renderDevices(); renderYou(); renderAtt(); }
+
+async function tickCode() {
+  const ids = Object.keys(app).filter(id => S.slot(id));
+  if (!ids.length) { $('code').textContent = '––––––'; $('codeT').textContent = 'no unlock password registered'; return; }
+  const id = ids[ids.length - 1];
+  $('code').textContent = await totp(app[id]);
+  $('codeT').textContent = `for slot ${id} · ${30 - Math.floor(Date.now() / 1000) % 30}s`;
+}
+
+async function run(fn) {
+  if (busy) return; busy = true;
+  document.querySelectorAll('#lab button').forEach(b => b.disabled = true);
+  try { await fn(); } catch (e) { log('server', 'Error: ' + esc(e.message || e), false); }
+  busy = false;
+  document.querySelectorAll('#lab button').forEach(b => b.disabled = false);
+  renderAll(); tickCode();
+}
+const masterPw = () => $('masterPw').value;
+
+// ---- You ----
+$('bUnlock').onclick = () => run(async () => {
+  const r = await new Client(S).unlock('unlock', { password: $('myUnlock').value, codeFor: victimCodeFor });
+  youItems = r.ok ? r.items : null;
+  log('you', r.ok ? `Unlocked with unlock password + code (slot ${r.slot.id}).` : esc(r.why), r.ok);
+  renderYou(r.ok ? 'unlock password' : null);
+});
+$('bMaster').onclick = () => run(async () => {
+  const r = await new Client(S).unlock('master', { password: masterPw() });
+  youItems = r.ok ? r.items : null;
+  log('you', r.ok ? 'Unlocked with the master password.' : esc(r.why), r.ok);
+});
+$('devices').onclick = e => {
+  const i = e.target.dataset.pk; if (i === undefined) return;
+  run(async () => {
+    const r = await new Client(S).unlock('passkey', { authenticator: devices[+i] });
+    youItems = r.ok ? r.items : null;
+    log('you', r.ok ? `Unlocked with passkey on ${esc(devices[+i].label)}.` : esc(r.why), r.ok);
+  });
+};
+$('bAddUnlock').onclick = () => run(async () => {
+  const pw = $('newUnlock').value.trim(); if (!pw) return;
+  const r = await you.addSlot('unlock', 'Unlock password', { password: pw }, masterPw());
+  if (r.ok) { app[r.slot.id] = r.slot.totpSeed; flashId = r.slot.id; $('myUnlock').value = pw; }
+  log('you', r.ok ? `Added unlock password as slot ${r.slot.id}. New salt, new KEK, new authenticator seed.` : esc(r.why), r.ok);
+});
+$('bAddPasskey').onclick = () => run(async () => {
+  const dev = await new Authenticator(NAMES[devices.length % NAMES.length]).init();
+  const r = await you.addSlot('passkey', dev.label, { authenticator: dev }, masterPw());
+  if (r.ok) { devices.push(dev); flashId = r.slot.id; }
+  log('you', r.ok ? `Registered passkey on ${esc(dev.label)} as slot ${r.slot.id}.` : esc(r.why), r.ok);
+});
+$('bAddItem').onclick = () => run(async () => {
+  const r = await you.unlock('master', { password: masterPw() });
+  if (!r.ok) { log('you', esc(r.why), false); return; }
+  const n = S.db.items.length + 1;
+  await you.addItem(`Secret #${n} (added ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`, 'tok_' + hex(rnd(4)));
+  log('you', `Added a secret, encrypted under vault key v${S.db.vkVersion}.`, true);
+  if (youItems) youItems = await readItems(S.db, you.vk);
+});
+$('bRotate').onclick = () => run(async () => {
+  const r = await you.rotate(masterPw());
+  if (!r.ok) { log('you', esc(r.why), false); return; }
+  log('you', `Rotated to vault key v${r.version}: re-encrypted ${S.db.items.length} items and sealed the new key to the public keys of ${r.rewrapped} remaining slots.`, true);
+  if (youItems) youItems = await readItems(S.db, you.vk);
+});
+$('slots').onclick = e => {
+  const id = e.target.dataset.rm; if (!id) return;
+  run(async () => {
+    const wasStolen = S.slot(id)?.label === 'Unlock password (stolen)';
+    const r = await you.removeSlot(id, masterPw());
+    log('you', r.ok ? `Removed slot ${id}. The server deleted its salt, verifier and sealed keys.` : esc(r.why), r.ok);
+    if (r.ok && wasStolen) done(5);
+  });
+};
+
+// ---- Attacker ----
+$('phish').onchange = e => { A.phish = e.target.checked; };
+$('aLogin').onclick = () => run(async () => {
+  const r = await A.onlineLogin(victimCodeFor);
+  attItems = r.ok ? r.items : attItems;
+  log('attacker', r.ok ? 'Logged in with the stolen password and a phished code. Downloaded slot, unwrapped the vault key, read the vault.' : 'Online login failed: ' + esc(r.why), !r.ok);
+  if (!r.ok && /code/.test(r.why)) done(1);
+  if (r.ok) done(2);
+  if (!r.ok && !S.db.slots.some(s => s.label === 'Unlock password (stolen)')) done(5);
+});
+$('aPersist').onclick = () => run(async () => {
+  const r = await A.persist();
+  log('attacker', r.ok ? 'Registered their own passkey. This is a backdoor that survives removing the stolen password.' : 'Tried to add their own passkey. ' + esc(r.why), !r.ok);
+  if (!r.ok) done(3);
+});
+$('aGrab').onclick = () => run(async () => {
+  A.grab(`Copy ${A.copies.length + 1}`);
+  log('attacker', `Copied the server database (vault key v${S.db.vkVersion}, ${S.db.slots.length} slots, ${S.db.items.length} items).`, null);
+  done(4);
+});
+$('aCrack').onclick = () => run(async () => {
+  if (!A.copies.length) { log('attacker', 'No copies to crack yet.', null); return; }
+  const res = await A.crackAll();
+  res.forEach((r, i) => { A.copies[i].result = r; });
+  const read = res.filter(r => r.items.length).length;
+  log('attacker', `Cracked offline: ${read} of ${res.length} copies readable. No authenticator code is checked offline.`, read === 0);
+  if (res.some(r => r.via === 'a vault key learned earlier')) done(6);
+  if (res.some((r, i) => !r.items.length && A.copies[i].db.vkVersion > 1)) done(7);
+});
+
+// ---- Example vault ----
+(async () => {
+  document.querySelectorAll('#lab button').forEach(b => b.disabled = true);
+  await you.createVault('correct horse battery staple', [
+    { name: 'Bank login', value: 'k.nowak / ••••4412' },
+    { name: 'Work email', value: 'app pw ••••9fe1' },
+    { name: 'Home server SSH', value: 'ed25519 ••••Q7c' },
+  ]);
+  const u = await you.addSlot('unlock', 'Unlock password (stolen)', { password: 'blue-otter-42' }, 'correct horse battery staple');
+  app[u.slot.id] = u.slot.totpSeed;
+  const dev = await new Authenticator('Laptop').init();
+  await you.addSlot('passkey', 'Laptop', { authenticator: dev }, 'correct horse battery staple');
+  devices.push(dev);
+  you.vk = null;
+  log('server', 'Example vault ready: master slot, unlock-password slot with authenticator, passkey slot. The attacker knows the unlock password.', null);
+  document.querySelectorAll('#lab button').forEach(b => b.disabled = false);
+  renderAll(); tickCode(); setInterval(tickCode, 1000);
+})();
+})();
+
+</script>
+
+</body></html>

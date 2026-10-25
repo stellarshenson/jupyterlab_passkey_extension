@@ -7,6 +7,7 @@ jupyterlab_passkey_extension
 eslint.config.mjs
 .venv
 .claude
+.agents
 docs/acc-crit*.md
 docs/defects*.md
 graphify-out

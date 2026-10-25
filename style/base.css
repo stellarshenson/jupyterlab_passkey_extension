@@ -804,3 +804,88 @@ textarea.jp-mod-styled.jp-PasskeyVaultForm-notes:focus {
   outline: none;
   box-shadow: var(--jp-input-box-shadow);
 }
+
+/*
+ * The category: the field joined to a plain button with a down arrow. The button
+ * opens the list of the categories in use.
+ */
+.jp-PasskeyVaultForm-category {
+  border-radius: var(--jp-border-radius);
+}
+
+/*
+ * The plain selector is not enough: JupyterLab's button.jp-mod-styled, which the
+ * dialog puts on every button of its body, sets a height of 32 px and a line height
+ * of 32 px, so the doubled selector carries the joined measures.
+ */
+.jp-PasskeyVaultForm-categoryToggle,
+.jp-PasskeyVaultForm-categoryToggle.jp-mod-styled {
+  box-sizing: border-box;
+  flex: 0 0 30px;
+  min-width: 30px;
+  display: grid;
+  place-items: center;
+  height: 28px;
+  line-height: 1;
+  padding: 0;
+  border: var(--jp-border-width) solid var(--jp-border-color1);
+  border-radius: 0 var(--jp-border-radius) var(--jp-border-radius) 0;
+  background: var(--jp-input-background);
+  color: var(--jp-ui-font-color2);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.jp-PasskeyVaultForm-categoryToggle svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.jp-PasskeyVaultForm-categoryToggle:focus,
+.jp-PasskeyVaultForm-categoryToggle.jp-mod-styled:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.jp-PasskeyVaultForm-category:hover .jp-PasskeyVaultForm-categoryToggle {
+  background: color-mix(
+    in srgb,
+    var(--jp-input-background) 90%,
+    var(--jp-ui-font-color0) 10%
+  );
+  color: var(--jp-ui-font-color0);
+}
+
+.jp-PasskeyVaultForm-category:focus-within
+  input.jp-mod-styled.jp-PasskeyVaultForm-input,
+.jp-PasskeyVaultForm-category:focus-within .jp-PasskeyVaultForm-categoryToggle {
+  border-color: var(--jp-brand-color1);
+}
+
+.jp-PasskeyVaultForm-category:focus-within .jp-PasskeyVaultForm-categoryToggle {
+  color: var(--jp-brand-color1);
+}
+
+/* A vault with no category: the button stays in place, unlit, and opens nothing. */
+.jp-PasskeyVaultForm-categoryToggle.jp-mod-styled:disabled {
+  background: var(--jp-input-background);
+  color: var(--jp-ui-font-color3);
+  cursor: default;
+}
+
+/*
+ * The list is at least 232 px wide and widens to its longest category, up to the
+ * width of the field, which the arrow's click sets inline as max-width. It ends
+ * above the footer actions. The cap needs !important: Lumino writes an inline
+ * max-height before it attaches the menu.
+ */
+.jp-PasskeyVaultForm-categoryMenu {
+  box-sizing: border-box;
+  min-width: 232px;
+  max-height: 168px !important;
+}

@@ -148,6 +148,21 @@ export function formatAgo(stamp?: string): string {
   return `${Math.floor(age / (365 * 86_400_000))}y ago`;
 }
 
+/** An entry row's tooltip: the name, then each field and time that is set, and Last used always (never when unused); never the password. */
+export function entryTooltip(e: IEntry): string {
+  return [
+    e.name,
+    e.username && `Username: ${e.username}`,
+    e.url && `URL: ${e.url}`,
+    e.category && `Category: ${e.category}`,
+    `Last used: ${formatAgo(e.used)}`,
+    e.updated && `Updated: ${formatAgo(e.updated)}`,
+    e.created && `Created: ${formatAgo(e.created)}`
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 /** An unlock duration in hours and minutes, a zero part left out: 4h, 1h 30m, 45m. */
 export function formatMinutes(minutes: number): string {
   const h = Math.floor(minutes / 60);
@@ -806,7 +821,8 @@ export class VaultPanel extends Widget {
       const value = await editEntry(
         () => this._api.generate(),
         undefined,
-        this._entries.map(e => e.name)
+        this._entries.map(e => e.name),
+        this._entries.map(e => e.category)
       );
       if (value) {
         const { name, ...fields } = value;
@@ -822,7 +838,12 @@ export class VaultPanel extends Widget {
       async () => {
         // Only the fields the form changed (see editEntry): a field changed elsewhere
         // meanwhile stays.
-        const value = await editEntry(() => this._api.generate(), entry);
+        const value = await editEntry(
+          () => this._api.generate(),
+          entry,
+          [],
+          this._entries.map(e => e.category)
+        );
         if (value) {
           const { name, ...changed } = value;
           if (Object.keys(changed).length > 0) {
@@ -1213,7 +1234,7 @@ export class VaultPanel extends Widget {
     line.dataset.focusKey = `row:${e.name}`;
     const label = e.username ? `${e.name}, ${e.username}` : e.name;
     const ageText = e.used ? `last used ${formatAgo(e.used)}` : 'never used';
-    line.title = label;
+    line.title = entryTooltip(e);
     line.setAttribute('aria-label', `${label}, ${ageText}`);
     line.setAttribute('aria-haspopup', 'dialog');
     const age = e.used ? Date.now() - Date.parse(e.used) : NaN;

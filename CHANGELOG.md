@@ -2,6 +2,20 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.67] - 2026-10-25
+
+Shows each vault entry's details on hover and offers the vault's existing categories in the entry dialog, and makes the vault browser suite deterministic.
+
+### Added
+
+- Hovering an entry row shows a multi-line tooltip: the name, then Username, URL, Category, Last used, Updated and Created as ages, each only when set; the password and notes never appear
+- The Category field in the Add and Edit entry dialogs has an arrow that lists the vault's existing categories once each and sorted; a choice fills the still-editable field, and a typed category is saved as typed
+
+### Fixed
+
+- The vault browser suite no longer fails when the create action outlasts a 5 s assertion: the helper waits for the panel to finish the action before checking the state
+- Each vault browser test resets its workspace on navigation, so a stale saved layout can no longer hide the Launcher and fail startup
+
 ## [1.1.60] - 2026-10-23
 
 Shows the vault icon in the Settings Editor in the enabled colour.

@@ -2,7 +2,9 @@ import { Dialog } from '@jupyterlab/apputils';
 
 import { LabIcon } from '@jupyterlab/ui-components';
 
-import { Widget } from '@lumino/widgets';
+import { CommandRegistry } from '@lumino/commands';
+
+import { Menu, Widget } from '@lumino/widgets';
 
 import { askSecret, launchWithEscape } from '../passphrase';
 
@@ -50,7 +52,8 @@ export class EntryForm extends Widget {
   constructor(
     private readonly _generate: () => Promise<string>,
     entry?: IEntry,
-    private readonly _taken: string[] = []
+    private readonly _taken: string[] = [],
+    categories: string[] = []
   ) {
     super();
     this.addClass('jp-PasskeyVaultForm');
@@ -99,6 +102,56 @@ export class EntryForm extends Widget {
 
     this.url = input('text', entry?.url);
     this.category = input('text', entry?.category);
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'jp-PasskeyVaultForm-categoryToggle';
+    toggle.setAttribute('aria-label', 'Existing categories');
+    toggle.setAttribute('aria-haspopup', 'menu');
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.append(arrow());
+    // Joined to the field as the eye is to the password field.
+    const combo = document.createElement('div');
+    combo.className =
+      'jp-PasskeyVaultForm-row jp-PasskeyVaultForm-joined jp-PasskeyVaultForm-category';
+    combo.append(this.category, toggle);
+    const menu = new Menu({ commands: new CommandRegistry() });
+    menu.addClass('jp-PasskeyVaultForm-categoryMenu');
+    // Each category in use once, in the order of the panel's category headers.
+    for (const category of [...new Set(categories)]
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))) {
+      const command = `passkey-vault:category-${category}`;
+      menu.commands.addCommand(command, {
+        label: category,
+        execute: () => {
+          this.category.value = category;
+          this.category.dispatchEvent(new Event('input', { bubbles: true }));
+          this.category.dispatchEvent(new Event('change', { bubbles: true }));
+          this.category.focus();
+        }
+      });
+      menu.addItem({ command });
+    }
+    // A vault with no category has none to offer, and an empty menu says nothing.
+    toggle.disabled = menu.items.length === 0;
+    // The menu is a widget of the page body, so the dialog body, which clips its own
+    // overflow, cannot clip it.
+    toggle.addEventListener('click', event => {
+      event.preventDefault();
+      const rect = combo.getBoundingClientRect();
+      // The menu is attached to the page body, where a percentage says nothing
+      // about the dialog; the width of the field bounds it in pixels.
+      menu.node.style.maxWidth = rect.width + 'px';
+      toggle.setAttribute('aria-expanded', 'true');
+      menu.open(rect.left, rect.bottom);
+    });
+    menu.aboutToClose.connect(() => {
+      toggle.setAttribute('aria-expanded', 'false');
+      // Closing removes the focused menu item from the page; Escape returns to the arrow.
+      toggle.focus();
+    });
+    this._menu = menu;
+    this._toggle = toggle;
     this.notes = document.createElement('textarea');
     this.notes.className = 'jp-mod-styled jp-PasskeyVaultForm-notes';
     this.notes.value = entry?.notes ?? '';
@@ -108,7 +161,7 @@ export class EntryForm extends Widget {
       field('Username', this.username),
       field('Password', passwordRow, this._passwordHelp, this.password),
       field('URL', this.url),
-      field('Category', this.category),
+      field('Category', combo, undefined, this.category),
       field('Notes', this.notes)
     );
     this._validate();
@@ -144,6 +197,8 @@ export class EntryForm extends Widget {
     // Capture phase, ahead of Dialog's own listener - see PassphraseBody.
     document.addEventListener('input', this._revalidate, true);
     document.addEventListener('keydown', this._keepEnterInNotes, true);
+    window.addEventListener('focus', this._keepFocusInMenu, true);
+    window.addEventListener('keydown', this._keysToMenu, true);
     void Promise.resolve().then(() => {
       this.name.dispatchEvent(new Event('input', { bubbles: true }));
     });
@@ -152,19 +207,67 @@ export class EntryForm extends Widget {
   onBeforeDetach(): void {
     document.removeEventListener('input', this._revalidate, true);
     document.removeEventListener('keydown', this._keepEnterInNotes, true);
+    window.removeEventListener('focus', this._keepFocusInMenu, true);
+    window.removeEventListener('keydown', this._keysToMenu, true);
+  }
+
+  /** Close the category menu with the dialog, so no menu stays in the page body. */
+  dispose(): void {
+    this._menu.dispose();
+    super.dispose();
   }
 
   /**
    * Dialog's keydown handler calls preventDefault on every Enter, so no line break
-   * could be typed in Notes and Enter on Generate did nothing. Stopped here, in
-   * document capture, Enter never reaches it and does its own work.
+   * could be typed in Notes and Enter on Generate or the category arrow did nothing.
+   * Stopped here, in document capture, Enter never reaches it and does its own work.
    */
   private readonly _keepEnterInNotes = (event: KeyboardEvent): void => {
     if (
       event.key === 'Enter' &&
-      (event.target === this.notes || event.target === this.generate)
+      (event.target === this.notes ||
+        event.target === this.generate ||
+        event.target === this._toggle)
     ) {
       event.stopPropagation();
+    }
+  };
+
+  /**
+   * The open category menu is in the page body, outside the dialog, and Dialog's
+   * document-capture focus listener pulls any focus outside the dialog back to its
+   * first field. Stopped here, in window capture, focus stays on the open menu.
+   */
+  private readonly _keepFocusInMenu = (event: FocusEvent): void => {
+    if (
+      event.target instanceof Node &&
+      this._menu.node.contains(event.target)
+    ) {
+      event.stopPropagation();
+      // The stop also blocks the item's own onfocus, which sets the item Enter chooses.
+      const i = Array.prototype.indexOf.call(
+        this._menu.contentNode.children,
+        event.target
+      );
+      if (i >= 0) {
+        this._menu.activeIndex = i;
+      }
+    }
+  };
+
+  /**
+   * While the category menu is open, a key on the arrow or in the menu goes to the
+   * menu, which stops it, so Escape and Enter never reach launchWithEscape or Dialog,
+   * both in document capture. Window capture runs first; the arrow also covers the
+   * frame before the menu takes focus.
+   */
+  private readonly _keysToMenu = (event: KeyboardEvent): void => {
+    const t = event.target as Node;
+    if (
+      this._menu.isAttached &&
+      (t === this._toggle || this._menu.node.contains(t))
+    ) {
+      this._menu.handleEvent(event);
     }
   };
 
@@ -187,6 +290,8 @@ export class EntryForm extends Widget {
   private readonly _passwordHelp: HTMLDivElement;
   private readonly _editing: boolean;
   private readonly _nameHelp: HTMLDivElement;
+  private readonly _menu: Menu;
+  private readonly _toggle: HTMLButtonElement;
 }
 
 const KEEP_HELP = 'Leave empty to keep the current password';
@@ -194,6 +299,18 @@ const KEEP_HELP = 'Leave empty to keep the current password';
 /** A lower-case message as a sentence of its own. */
 export function sentence(text: string): string {
   return `${text[0].toUpperCase()}${text.slice(1)}.`;
+}
+
+/** The down arrow of the button that opens the list of the categories in use. */
+function arrow(): SVGSVGElement {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(ns, 'path');
+  path.setAttribute('d', 'M6 9l6 6 6-6');
+  svg.append(path);
+  return svg;
 }
 
 function input(type: string, value?: string): HTMLInputElement {
@@ -235,7 +352,8 @@ function field(
 }
 
 /**
- * Open the add or edit form; null when cancelled. `taken` are the names in use. It
+ * Open the add or edit form; null when cancelled. `taken` are the names in use,
+ * `categories` the categories the Category field offers. It
  * answers the name and only the fields the user changed - the form's own loading (a
  * textarea turns CRLF into LF, a one-line field drops line breaks) is no change, and
  * the vault stores a field an add leaves out as empty.
@@ -243,9 +361,10 @@ function field(
 export async function editEntry(
   generate: () => Promise<string>,
   entry?: IEntry,
-  taken: string[] = []
+  taken: string[] = [],
+  categories: string[] = []
 ): Promise<IEntryFormValue | null> {
-  const body = new EntryForm(generate, entry, taken);
+  const body = new EntryForm(generate, entry, taken, categories);
   const dialog = new Dialog({
     title: entry ? 'Edit entry' : 'Add entry',
     body,

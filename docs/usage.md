@@ -38,6 +38,8 @@ Only the `sidebar` setting remains in the Settings Editor.
 The Vault panel is in the right sidebar. The `sidebar` setting places it on the left.
 
 - **Unlock and list** - creates and unlocks the vault, lists entries by category with how long ago each key was last used, shows nothing while locked, and opens a row read-only with Edit, Delete and Close
+- **Row tooltip** - hovering an entry shows its name, then Username, URL, Category, Last used, Updated and Created as ages, and never the password
+- **Category** - the Add and Edit dialogs list the vault's existing categories beside the Category field; a choice fills the field, which still accepts a typed category
 - **Password and proof** - the value shows dots until you click the eye button, which asks a passkey PRF or, without one, a code, password or recovery passphrase
 - **`reveal_seconds`** - after a proof the panel skips the proof for the `reveal_seconds` setting (default 60), or until the tab locks the vault or the page reloads
 - **Security view** - the cog shows the key holder, the unlock methods with Remove or Change, and the data key's age with Rotate data key; it adds a passkey or a password plus authenticator app (`password_min_length`, default 12)

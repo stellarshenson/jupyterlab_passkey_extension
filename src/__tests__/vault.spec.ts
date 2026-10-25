@@ -93,6 +93,7 @@ import { askProof, EntryForm, EntryView, registerMfa } from '../vault/dialogs';
 import { setTranslator } from '../trans';
 import {
   ARM_DELAY_MS,
+  entryTooltip,
   formatMinutes,
   formatRemaining,
   REFRESH_MS,
@@ -1763,7 +1764,9 @@ describe('VaultPanel', () => {
     });
     expect(mockEditEntry).toHaveBeenCalledWith(
       expect.any(Function),
-      ENTRIES[2]
+      ENTRIES[2],
+      [],
+      ['infra', 'infra', 'home']
     );
     expect(api.edit).toHaveBeenCalledWith('nas/ugos', { username: 'k2' });
   });
@@ -3750,6 +3753,79 @@ describe('EntryForm', () => {
     form.dispose();
   });
 
+  it('offers each category in use once and sorted, and returns a typed one as typed', () => {
+    const form = new EntryForm(
+      async () => 'x',
+      undefined,
+      [],
+      ['infra', '', 'home', 'infra']
+    );
+    Widget.attach(form, document.body);
+    const toggle = form.node.querySelector(
+      'button[aria-label="Existing categories"]'
+    ) as HTMLButtonElement;
+    toggle.click();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const menu = document.querySelector(
+      '.jp-PasskeyVaultForm-categoryMenu'
+    ) as HTMLElement;
+    expect(
+      Array.from(menu.querySelectorAll('.lm-Menu-itemLabel')).map(
+        l => l.textContent
+      )
+    ).toEqual(['home', 'infra']);
+    // Down to the first category, then Enter chooses it.
+    menu.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 40 }));
+    menu.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 13 }));
+    expect(form.category.value).toBe('home');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(document.querySelector('.jp-PasskeyVaultForm-categoryMenu')).toBe(
+      null
+    );
+    // An item focused without the arrow keys, as a screen reader can, is the one Enter chooses.
+    toggle.click();
+    const second = document.querySelectorAll(
+      '.jp-PasskeyVaultForm-categoryMenu .lm-Menu-item'
+    )[1] as HTMLElement;
+    second.focus();
+    second.dispatchEvent(
+      new KeyboardEvent('keydown', { keyCode: 13, bubbles: true })
+    );
+    expect(form.category.value).toBe('infra');
+    // A category the menu does not list is the value as typed.
+    form.category.value = 'travel';
+    expect(form.getValue().category).toBe('travel');
+    // Focus moved out of the open list without a pointer press, as a screen reader
+    // can: keys in the other fields do their own work and choose no category.
+    toggle.click();
+    menu.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 40 }));
+    form.username.focus();
+    const typed = new KeyboardEvent('keydown', {
+      key: 'a',
+      keyCode: 65,
+      bubbles: true,
+      cancelable: true
+    });
+    form.username.dispatchEvent(typed);
+    expect(typed.defaultPrevented).toBe(false);
+    form.notes.focus();
+    form.notes.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })
+    );
+    expect(form.category.value).toBe('travel');
+    expect(form.getValue().category).toBe('travel');
+    form.dispose();
+    // A vault with no category has none to offer.
+    const empty = new EntryForm(async () => 'x');
+    expect(
+      (
+        empty.node.querySelector(
+          'button[aria-label="Existing categories"]'
+        ) as HTMLButtonElement
+      ).disabled
+    ).toBe(true);
+  });
+
   it('says so when Generate fails, and leaves the field as it was', async () => {
     const form = new EntryForm(async () => {
       throw new Error('the Jupyter server did not answer');
@@ -4755,5 +4831,37 @@ it('shows the unlock duration in hours and minutes, a zero part left out', () =>
     '1h 30m',
     '45m',
     '24h'
+  ]);
+});
+
+it('describes an entry in its row tooltip, one line per field and time that is set', () => {
+  const ago = (ms: number): string => new Date(Date.now() - ms).toISOString();
+  const full = {
+    ...ENTRIES[0],
+    used: ago(5 * 60_000),
+    updated: ago(3 * 3_600_000),
+    created: ago(4 * 86_400_000)
+  };
+  expect(entryTooltip(full).split('\n')).toEqual([
+    'github/api',
+    'Username: me',
+    'URL: https://github.com',
+    'Category: infra',
+    'Last used: 5m ago',
+    'Updated: 3h ago',
+    'Created: 4d ago'
+  ]);
+  const bare = {
+    ...full,
+    username: '',
+    url: '',
+    category: '',
+    updated: '',
+    used: undefined
+  };
+  expect(entryTooltip(bare).split('\n')).toEqual([
+    'github/api',
+    'Last used: never',
+    'Created: 4d ago'
   ]);
 });
