@@ -366,6 +366,39 @@ test('a hidden panel leaves the settings view', async ({ page }) => {
   ).not.toHaveClass(/jp-mod-active/);
 });
 
+test('header icons stay in place and disable themselves when a view does not use them', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await openCog(page);
+  const icon = (name: string) => panel(page).getByRole('button', { name });
+  for (const name of [
+    'Lock the vault',
+    'Add an entry',
+    'Filter entries',
+    'Refresh',
+    'Vault settings and security'
+  ]) {
+    await expect(icon(name)).toBeVisible();
+  }
+  await expect(icon('Add an entry')).toBeDisabled();
+  await expect(icon('Filter entries')).toBeDisabled();
+  await expect(icon('Lock the vault')).toBeEnabled();
+  await expect(icon('Refresh')).toBeEnabled();
+  await expect(icon('Vault settings and security')).toBeEnabled();
+  await icon('Vault settings and security').click();
+  await expect(icon('Add an entry')).toBeEnabled();
+  await expect(icon('Filter entries')).toBeEnabled();
+  await icon('Lock the vault').click();
+  await expect(state(page)).toHaveText('Locked');
+  await expect(icon('Lock the vault')).toBeDisabled();
+  await expect(icon('Add an entry')).toBeDisabled();
+  await expect(icon('Filter entries')).toBeDisabled();
+  await expect(icon('Refresh')).toBeEnabled();
+  await expect(icon('Vault settings and security')).toBeEnabled();
+});
+
 test('a category collapses from its header and stays collapsed after a reload', async ({
   page
 }) => {

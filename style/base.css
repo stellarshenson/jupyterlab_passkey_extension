@@ -146,7 +146,13 @@
   cursor: pointer;
 }
 
-.jp-PasskeyVaultPanel-iconButton:hover {
+/* Faded by opacity, as the lab's own disabled buttons and the AI sessions panel are. */
+.jp-PasskeyVaultPanel-iconButton:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.jp-PasskeyVaultPanel-iconButton:hover:not(:disabled) {
   background: var(--jp-layout-color3);
   color: var(--jp-ui-font-color1);
 }

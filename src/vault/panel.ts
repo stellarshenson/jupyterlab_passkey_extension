@@ -1011,18 +1011,22 @@ export class VaultPanel extends Widget {
     this._renderStatus();
     const s = this._status;
     const unlocked = !!s?.unlocked;
-    this._lockButton.style.display = unlocked ? '' : 'none';
-    // Hidden in the cog view but kept in place, so Lock never moves under the pointer.
-    this._addButton.style.display = unlocked ? '' : 'none';
-    this._addButton.style.visibility = this._view === 'main' ? '' : 'hidden';
-    this._filterButton.style.display = unlocked ? '' : 'none';
-    this._filterButton.style.visibility = this._view === 'main' ? '' : 'hidden';
+    // Every header icon keeps its place on every view; one that cannot act here
+    // is disabled, so a click aimed at it does nothing and Lock never moves.
+    const onList = this._view === 'main';
+    this._lockButton.disabled = !unlocked;
+    this._addButton.disabled = !unlocked || !onList;
+    this._filterButton.disabled = !unlocked || !onList;
     // The pressed state is drawn with a class, which says nothing to a screen reader.
     this._filterButton.classList.toggle('jp-mod-active', this._filterShown);
     this._filterButton.setAttribute('aria-pressed', String(this._filterShown));
     this._cogButton.classList.toggle(
       'jp-mod-active',
       this._view === 'settings'
+    );
+    this._cogButton.setAttribute(
+      'aria-pressed',
+      String(this._view === 'settings')
     );
     this._renderBanner();
 
@@ -1100,9 +1104,7 @@ export class VaultPanel extends Widget {
     const target =
       nodes.find(
         node =>
-          node.dataset.focusKey === key &&
-          node.style.display !== 'none' &&
-          node.style.visibility !== 'hidden'
+          node.dataset.focusKey === key && !(node as HTMLButtonElement).disabled
       ) ?? (this._filter.isConnected ? this._filter : this._refreshButton);
     target.focus();
   }

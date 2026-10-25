@@ -1157,7 +1157,7 @@ describe('VaultPanel', () => {
     // takes the typing at once.
     const toggle = panel.node.querySelector(
       'button[title="Filter entries"]'
-    ) as HTMLElement;
+    ) as HTMLButtonElement;
     expect(panel.node.querySelector('input')).toBeNull();
     expect(toggle.getAttribute('aria-pressed')).toBe('false');
     const filter = openFilter(panel);
@@ -1179,13 +1179,14 @@ describe('VaultPanel', () => {
       panel.node.querySelectorAll('.jp-PasskeyVaultPanel-rowName')
     ).toHaveLength(3);
     expect(openFilter(panel).value).toBe('');
-    // The button belongs to the entry list: out of the cog view, kept in place.
+    // The button belongs to the entry list: out of the list it stays in place, disabled.
     (
       panel.node.querySelector(
         'button[title="Vault settings and security"]'
       ) as HTMLElement
     ).click();
-    expect(toggle.style.visibility).toBe('hidden');
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.style.visibility).toBe('');
   });
 
   it('shows each entry as its name, username and last-used age, with no buttons', async () => {
@@ -2891,23 +2892,71 @@ describe('VaultPanel', () => {
       MessageLoop.sendMessage(panel, Widget.Msg.BeforeHide);
     });
 
-    it('keeps the header buttons in place in the cog view, with + hidden', async () => {
+    it('keeps every header button in place in the cog view, disabling + and Filter', async () => {
       const panel = await openCog(fakeApi());
-      const add = panel.node.querySelector(
-        'button[title="Add an entry"]'
-      ) as HTMLElement;
-      // Still laid out, so Lock stays where it was; hidden, so it cannot be clicked.
-      expect(add.style.display).toBe('');
-      expect(add.style.visibility).toBe('hidden');
+      const button = (title: string) =>
+        panel.node.querySelector(
+          `button[title="${title}"]`
+        ) as HTMLButtonElement;
+      const titles = [
+        'Lock the vault',
+        'Add an entry',
+        'Filter entries',
+        'Refresh',
+        'Vault settings and security'
+      ];
+      for (const title of titles) {
+        expect(button(title).style.display).toBe('');
+        expect(button(title).style.visibility).toBe('');
+      }
+      expect(button('Add an entry').disabled).toBe(true);
+      expect(button('Filter entries').disabled).toBe(true);
+      expect(button('Lock the vault').disabled).toBe(false);
+      expect(button('Refresh').disabled).toBe(false);
+      expect(button('Vault settings and security').disabled).toBe(false);
     });
 
-    it('does not return focus to the hidden + in the cog view', async () => {
+    it('does not return focus to the disabled + in the cog view', async () => {
       const panel = await openCog(fakeApi());
       const add = panel.node.querySelector(
         'button[title="Add an entry"]'
       ) as HTMLElement;
       (panel as any)._restoreFocus(add.dataset.focusKey);
+      const refresh = panel.node.querySelector(
+        'button[title="Refresh"]'
+      ) as HTMLElement;
       expect(document.activeElement).not.toBe(add);
+      expect(document.activeElement).toBe(refresh);
+    });
+
+    it('keeps every header button in place and disables the locked ones', async () => {
+      const panel = await panelWith(
+        fakeApi({
+          status: jest
+            .fn()
+            .mockResolvedValue(status({ unlocked: false, remaining: null }))
+        })
+      );
+      const button = (title: string) =>
+        panel.node.querySelector(
+          `button[title="${title}"]`
+        ) as HTMLButtonElement;
+      const titles = [
+        'Lock the vault',
+        'Add an entry',
+        'Filter entries',
+        'Refresh',
+        'Vault settings and security'
+      ];
+      for (const title of titles) {
+        expect(button(title).style.display).toBe('');
+        expect(button(title).style.visibility).toBe('');
+      }
+      expect(button('Lock the vault').disabled).toBe(true);
+      expect(button('Add an entry').disabled).toBe(true);
+      expect(button('Filter entries').disabled).toBe(true);
+      expect(button('Refresh').disabled).toBe(false);
+      expect(button('Vault settings and security').disabled).toBe(false);
     });
 
     it('redraws the settings view when a restart changed the key holder, its notice or the file', async () => {
