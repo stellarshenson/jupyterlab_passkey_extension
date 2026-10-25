@@ -314,4 +314,19 @@ The vault sidebar panel, its dialogs and styles
   - root-cause: 2026-10-23T06:05:50Z @kj schema/vault.json setting-icon names ui-components:lock, the stock lockIcon painted jp-icon4; the other entries paint jp-icon3
   - log: 2026-10-23T06:05:50Z @kj added
   - log: 2026-10-23T06:18:05Z @kj closed
+- [-] `DEF-PANEL-38-LAST-USED` **last used never changes after a reveal or an agent get** - MEDIUM; the row and its tooltip keep the old last used, never for every entry, though passwords are revealed and keys are fetched all day; cause: the running server predates the used stamp; fix: restart the server, re-read the list at once after a reveal; `jupyterlab_passkey_extension/vault/service.py`, `src/vault/panel.ts`
+  - repro: with the panel open, reveal the password of an entry and run `jupyterlab-passkey vault get <entry>`; the row keeps its old last used
+  - test-tags: UNIT, E2E
+  - root-cause: 2026-10-25T02:40:21Z @kj the running server started 2026-10-22T16:26, before the used stamp landed at 19:56, so no read records it; the panel redraws the list only at its 15 s poll
+  - log: 2026-10-25T02:40:21Z @kj added
+  - log: 2026-10-25T03:28:15Z @kj owner chose not to restart JupyterLab now; the running server keeps the pre-stamp module, so nothing records last used until a restart
+  - log: 2026-10-25T05:16:47Z @kj panel side fixed in 1.1.70 and SHIPped; the server-side stamp still waits on a JupyterLab restart, which the owner deferred
+  - log: 2026-10-25T05:17:58Z @kj rejected: not a code defect: the running server process predated the used stamp; 1.1.70 records and shows it and Galata proved it on a fresh server; the live symptom clears at the next restart
+- [x] `DEF-PANEL-39-AGE-FROZEN` **last used age stays frozen while the panel is open** - MEDIUM; the row keeps the age it was drawn with - now stays now past the minute - until something else redraws the list; fix: redraw the ages with the 15 s poll; `src/vault/panel.ts`
+  - evidence: jest 'the ages advance on the poll without a Refresh click' and 'keeps the ages advancing while the Add form is open'; Galata 45/45 with 2m ago after a two-minute clock shift; lint 0 errors; build 1.1.70
+  - repro: open the panel with a just-used entry and leave it; the age still reads now after two minutes
+  - test-tags: UNIT, E2E
+  - root-cause: 2026-10-25T03:43:01Z @kj the 15 s tick draws the status and the banner only; rows redraw in _render, reached on a revision change, a show, or an action
+  - log: 2026-10-25T03:43:01Z @kj added
+  - log: 2026-10-25T05:16:39Z @kj closed: fixed: the 15 s tick repaints the row ages in place, and the busy tick does too
 

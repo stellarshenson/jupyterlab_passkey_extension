@@ -1747,6 +1747,13 @@ The vault sidebar panel in JupyterLab
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-10-24T18:17:13Z @kj added; reason: the owner's wording names the field, the menu, the choice and the free-text rule
   - log: 2026-10-24T18:35:02Z @kj closed
+- [x] `ACC-PANEL-260-USED-FRESH` **used ages stay true in the open panel** - HIGH; a reveal in the panel updates its row at once; a use by another client shows within the 15 s poll; the ages advance while the panel stays open; the row colour and tooltip follow the same age
+  - evidence: jest 're-reads the entries as soon as a reveal returns' and 'keeps the ages advancing while the Add form is open'; Galata 18/18 with reveal to row 57 ms, CLI get 11.9 s and 2m ago after the shift; jest 277/277, pytest 528, Galata 45/45, lint 0 errors, build 1.1.70
+  - test: jest: a reveal re-reads the entries at once, and the poll redraws the ages with no Refresh click; Galata: reveal to row at once, a CLI get to row within one poll, and 2m ago after a two-minute clock shift
+  - test-tags: UNIT, E2E
+  - mechanism: 2026-10-25T03:43:00Z @kj panel.ts: the reveal callback calls refresh() once revealPassword returns, and the 15 s tick redraws the row ages in place
+  - log: 2026-10-25T03:43:00Z @kj added
+  - log: 2026-10-25T05:16:39Z @kj closed: verified with the last-used freshness work
 
 ## Vault settings `CONFIG`
 

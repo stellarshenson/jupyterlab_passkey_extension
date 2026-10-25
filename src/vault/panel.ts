@@ -362,11 +362,13 @@ export class VaultPanel extends Widget {
         // Both reads answered; the vault locked between them.
         this._status = { ...this._status, unlocked: false, remaining: null };
         this._readError = null;
+        this._entries = [];
+        this._entriesRead = false;
       } else {
         this._readError = describeFailure(e);
+        // The last entries stay drawn while the banner says why.
+        this._entriesRead = false;
       }
-      this._entries = [];
-      this._entriesRead = false;
     }
     // Not while an action runs: its line reports its own change.
     if (!this._busy && shape(this._status) !== before) {
@@ -423,8 +425,10 @@ export class VaultPanel extends Widget {
     }
     if (this._busy) {
       // The action reads and redraws when it ends. A read now could write an older
-      // status back, or take the action's change for one made elsewhere.
+      // status back, or take the action's change for one made elsewhere; the age
+      // repaint sends no request and rebuilds nothing the open form depends on.
       this._renderStatus();
+      this._redrawAges();
       return;
     }
     const before = shape(this._status);
@@ -463,6 +467,26 @@ export class VaultPanel extends Widget {
     }
     this._renderStatus();
     this._renderBanner();
+    // The ages stay true between reads. No `_render`: it rebuilds the body, and a
+    // filter being typed would lose its focus and caret.
+    if (this._status?.unlocked && this._view === 'main') {
+      this._redrawAges();
+    }
+  }
+
+  /** Redraw each rendered row's age from the entries last read. */
+  private _redrawAges(): void {
+    const rows = Array.from(
+      this._body.querySelectorAll<HTMLElement>(`.${C}-rowLine`)
+    );
+    for (const line of rows) {
+      const key = line.dataset.focusKey ?? '';
+      const name = key.startsWith('row:') ? key.slice('row:'.length) : '';
+      const entry = this._entries.find(e => e.name === name);
+      if (entry) {
+        this._paintAge(entry, line);
+      }
+    }
   }
 
   /**
@@ -877,7 +901,12 @@ export class VaultPanel extends Widget {
         const { credId, prf } = await passkeyPrf(status, this._host);
         return { cred_id: credId, prf };
       },
-      reveal: proof => this._api.revealPassword(entry.name, proof),
+      reveal: async proof => {
+        const value = await this._api.revealPassword(entry.name, proof);
+        // The server stamped the use: read the row again behind the open popup.
+        void this.refresh();
+        return value;
+      },
       typed: [
         ...(status.authenticator ? (['code'] as const) : []),
         ...(status.slots.some(x => x.type === 'password')
@@ -1232,26 +1261,35 @@ export class VaultPanel extends Widget {
     const line = el('button', `${C}-rowLine`);
     line.type = 'button';
     line.dataset.focusKey = `row:${e.name}`;
-    const label = e.username ? `${e.name}, ${e.username}` : e.name;
-    const ageText = e.used ? `last used ${formatAgo(e.used)}` : 'never used';
-    line.title = entryTooltip(e);
-    line.setAttribute('aria-label', `${label}, ${ageText}`);
     line.setAttribute('aria-haspopup', 'dialog');
-    const age = e.used ? Date.now() - Date.parse(e.used) : NaN;
-    if (Number.isFinite(age)) {
-      if (age < 60_000) {
-        line.classList.add('jp-mod-recentlyActive');
-      } else if (age > 7 * 86_400_000) {
-        line.classList.add('jp-mod-stale');
-      }
-    }
     line.append(
       el('span', `${C}-rowName`, e.name),
       el('span', `${C}-rowUser`, e.username),
-      el('span', `${C}-rowAge`, formatAgo(e.used))
+      el('span', `${C}-rowAge`)
     );
     line.addEventListener('click', () => void this._open(e));
+    this._paintAge(e, line);
     return line;
+  }
+
+  /**
+   * Draw an entry's age on its row: the age text, the recent and stale classes, the
+   * aria-label's part and the tooltip. The tick runs it again while the row stands,
+   * so an age that crosses a threshold changes without a redraw.
+   */
+  private _paintAge(e: IEntry, line: HTMLElement): void {
+    const ago = formatAgo(e.used);
+    const age = e.used ? Date.now() - Date.parse(e.used) : NaN;
+    line.classList.toggle('jp-mod-recentlyActive', age < 60_000);
+    line.classList.toggle('jp-mod-stale', age > 7 * 86_400_000);
+    const label = e.username ? `${e.name}, ${e.username}` : e.name;
+    const ageText = e.used ? `last used ${ago}` : 'never used';
+    line.setAttribute('aria-label', `${label}, ${ageText}`);
+    line.title = entryTooltip(e);
+    const span = line.querySelector<HTMLElement>(`.${C}-rowAge`);
+    if (span) {
+      span.textContent = ago;
+    }
   }
 
   private _renderSettings(s: IStatus): void {

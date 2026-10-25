@@ -1960,6 +1960,22 @@ describe('VaultPanel', () => {
     expect(text(panel)).not.toContain('s3cret-value');
   });
 
+  it('re-reads the entries as soon as a reveal returns', async () => {
+    mockViewEntry.mockResolvedValue(null);
+    const api = fakeApi();
+    const panel = await panelWith(api);
+    (
+      panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine') as HTMLElement
+    ).click();
+    await flush();
+    const how = mockViewEntry.mock.calls[0][1];
+    const reads = api.entries.mock.calls.length;
+    const value = await how.reveal();
+    await flush();
+    expect(value).toBe('s3cret-value');
+    expect(api.entries.mock.calls.length).toBe(reads + 1);
+  });
+
   it('tells the popup whether this tab has just unlocked or proven, and reads plainly then', async () => {
     mockViewEntry.mockResolvedValue(null);
     const api = fakeApi();
@@ -2215,6 +2231,83 @@ describe('VaultPanel', () => {
       await jest.advanceTimersByTimeAsync(REFRESH_MS);
       expect(text(panel)).not.toContain('Create vault');
       expect(button(panel, 'Unlock with passkey')).toBeTruthy();
+      panel.dispose();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('advances an age across the poll, with no Refresh click', async () => {
+    jest.useFakeTimers();
+    try {
+      const used = new Date(Date.now() - 30_000).toISOString();
+      const api = fakeApi({
+        entries: jest.fn().mockResolvedValue([{ ...ENTRIES[0], used }])
+      });
+      const panel = new VaultPanel({
+        api,
+        openSettings: jest.fn(),
+        host: HOST
+      });
+      Widget.attach(panel, document.body);
+      MessageLoop.sendMessage(panel, Widget.Msg.AfterShow);
+      await jest.advanceTimersByTimeAsync(0);
+      const line = panel.node.querySelector(
+        '.jp-PasskeyVaultPanel-rowLine'
+      ) as HTMLElement;
+      const age = line.querySelector(
+        '.jp-PasskeyVaultPanel-rowAge'
+      ) as HTMLElement;
+      expect(age.textContent).toBe('now');
+      expect(line.classList.contains('jp-mod-recentlyActive')).toBe(true);
+      // The clock moves on as in the Galata test; the poll carries the new age.
+      jest.setSystemTime(Date.now() + 60_000);
+      await jest.advanceTimersByTimeAsync(2 * REFRESH_MS);
+      // The same line, redrawn in place: the list was not rebuilt or re-read.
+      expect(panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine')).toBe(
+        line
+      );
+      expect(age.textContent).toBe('2m ago');
+      expect(line.classList.contains('jp-mod-recentlyActive')).toBe(false);
+      expect(api.entries).toHaveBeenCalledTimes(1);
+      panel.dispose();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps the ages advancing while the Add form is open', async () => {
+    jest.useFakeTimers();
+    try {
+      const used = new Date(Date.now() - 30_000).toISOString();
+      const api = fakeApi({
+        entries: jest.fn().mockResolvedValue([{ ...ENTRIES[0], used }])
+      });
+      const panel = new VaultPanel({
+        api,
+        openSettings: jest.fn(),
+        host: HOST
+      });
+      Widget.attach(panel, document.body);
+      MessageLoop.sendMessage(panel, Widget.Msg.AfterShow);
+      await jest.advanceTimersByTimeAsync(0);
+      const age = panel.node.querySelector(
+        '.jp-PasskeyVaultPanel-rowAge'
+      ) as HTMLElement;
+      expect(age.textContent).toBe('now');
+      let answer: (v: undefined) => void = () => undefined;
+      mockEditEntry.mockReturnValue(
+        new Promise<undefined>(resolve => (answer = resolve))
+      );
+      (
+        panel.node.querySelector('button[title="Add an entry"]') as HTMLElement
+      ).click();
+      jest.setSystemTime(Date.now() + 60_000);
+      await jest.advanceTimersByTimeAsync(REFRESH_MS);
+      expect(panel.node.getAttribute('aria-busy')).toBe('true');
+      expect(age.textContent).toBe('1m ago');
+      answer(undefined);
+      await jest.advanceTimersByTimeAsync(0);
       panel.dispose();
     } finally {
       jest.useRealTimers();
@@ -3374,6 +3467,18 @@ describe('VaultPanel', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('leaves the last entries drawn when a read after them fails', async () => {
+    const api = fakeApi();
+    const panel = await panelWith(api);
+    api.status.mockRejectedValueOnce(new NoAnswer());
+    await panel.refresh();
+    expect(text(panel)).toContain('github/api');
+    expect(lines(panel)).toEqual([
+      ['error', 'cannot reach the Jupyter server']
+    ]);
+    panel.dispose();
   });
 
   it('says on the next tick that the server stopped answering, and clears it once it answers', async () => {

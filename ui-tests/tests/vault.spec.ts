@@ -1,4 +1,5 @@
 import { expect, test } from '@jupyterlab/galata';
+import { spawn } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1196,4 +1197,90 @@ test('the data key is rotated with the recovery passphrase as the proof', async 
   await expect(panel(page)).toContainText('Data key rotated');
   await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
   expect(created()).not.toBe(before);
+});
+
+/**
+ * Run the vault CLI against this suite's server, the way an agent reads a key: no
+ * browser, no panel. The suite's runtime dir is already pinned by playwright.config.js,
+ * so the only server `jupyter server list` shows is the test one; the lab's own
+ * discovery variables must go, or the CLI would post to the developer's real lab.
+ */
+function vaultGet(name: string): Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}> {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    JUPYTER_PORT: process.env.JUPYTER_TEST_PORT || '8888'
+  };
+  for (const variable of ['JUPYTER_SERVER_URL', 'JUPYTERHUB_SERVICE_PREFIX']) {
+    delete env[variable];
+  }
+  const child = spawn('jupyterlab-passkey', ['vault', 'get', name], { env });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (data: Buffer) => (stdout += data.toString()));
+  child.stderr.on('data', (data: Buffer) => (stderr += data.toString()));
+  return new Promise(resolve =>
+    child.on('close', code => resolve({ code, stdout, stderr }))
+  );
+}
+
+test('a revealed or externally read entry shows its use without a manual refresh', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+
+  const SECRET = 'vault-e2e-secret-7Qp';
+  const add = async (name: string) => {
+    await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+    const form = page.locator('.jp-Dialog');
+    await form.getByLabel('Name', { exact: true }).fill(name);
+    await form.getByLabel('Username').fill('me');
+    await form.getByLabel('Password', { exact: true }).fill(SECRET);
+    await form.getByRole('button', { name: 'Save' }).click();
+    await expect(form).toHaveCount(0);
+  };
+  await add('reveal/one');
+  await add('agent/two');
+
+  const row = (name: string) =>
+    panel(page).locator('.jp-PasskeyVaultPanel-rowLine', { hasText: name });
+  const age = (name: string) =>
+    row(name).locator('.jp-PasskeyVaultPanel-rowAge');
+
+  // Create vault sent a proof just now, so the reveal window is open and the eye asks
+  // nothing. Nothing below presses Refresh: the row must follow on its own.
+  await row('reveal/one').click();
+  const dialog = page.locator('.jp-Dialog');
+  await dialog.getByRole('button', { name: 'Show password' }).click();
+  await expect(dialog.getByLabel('Password', { exact: true })).toHaveValue(
+    SECRET
+  );
+  const revealed = Date.now();
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(age('reveal/one')).toHaveText('now', { timeout: 2000 });
+  const revealMs = Date.now() - revealed;
+
+  const got = await vaultGet('agent/two');
+  expect(got.code, got.stderr).toBe(0);
+  expect(got.stdout.trim()).toBe(SECRET);
+  const read = Date.now();
+  await expect(age('agent/two')).toHaveText('now', { timeout: 20000 });
+  const readMs = Date.now() - read;
+
+  console.log(
+    `reveal to row: ${revealMs} ms; CLI get to row: ${readMs} ms (poll 15000 ms)`
+  );
+
+  // The age must keep up with the clock while the panel sits open, not stay at the
+  // value it was drawn with. Two minutes on, the same row reads 2m ago.
+  await page.evaluate(() => {
+    const now = Date.now;
+    Date.now = () => now() + 120000;
+  });
+  await expect(age('agent/two')).toHaveText('2m ago', { timeout: 17000 });
 });

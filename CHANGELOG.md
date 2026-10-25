@@ -2,6 +2,20 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.71] - 2026-10-25
+
+Keeps the vault panel's last-used ages true while it stays open.
+
+### Changed
+
+- Revealing a password in an entry's popup updates that row's last-used age at once, without waiting for the next poll
+- The entry list's ages advance with the clock while the panel stays open, including while an Add or Edit form is open behind it
+- A use from another client (the CLI, the Python API, another tab) still shows on the row within the 15 s poll
+
+### Fixed
+
+- A failed read after a successful one no longer blanks the entry list: the last rows stay drawn and the banner says why the read failed; only a locked vault clears them
+
 ## [1.1.67] - 2026-10-25
 
 Shows each vault entry's details on hover and offers the vault's existing categories in the entry dialog, and makes the vault browser suite deterministic.

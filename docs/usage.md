@@ -37,7 +37,7 @@ Only the `sidebar` setting remains in the Settings Editor.
 
 The Vault panel is in the right sidebar. The `sidebar` setting places it on the left.
 
-- **Unlock and list** - creates and unlocks the vault, lists entries by category with how long ago each key was last used, shows nothing while locked, and opens a row read-only with Edit, Delete and Close
+- **Unlock and list** - creates and unlocks the vault, lists entries by category with how long ago each key was last used, kept current while the panel is open: a reveal updates its row at once and a use from another client shows within 15 s, shows nothing while locked, and opens a row read-only with Edit, Delete and Close
 - **Row tooltip** - hovering an entry shows its name, then Username, URL, Category, Last used, Updated and Created as ages, and never the password
 - **Category** - the Add and Edit dialogs list the vault's existing categories beside the Category field; a choice fills the field, which still accepts a typed category
 - **Password and proof** - the value shows dots until you click the eye button, which asks a passkey PRF or, without one, a code, password or recovery passphrase
