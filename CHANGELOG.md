@@ -2,6 +2,18 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.74] - 2026-10-25
+
+Keeps the vault panel header stable across views: every icon stays in place, and the ones a view cannot use are disabled instead of hidden.
+
+### Changed
+
+- The panel header keeps all five icons in place on every view; Add and Filter are disabled in the settings (cog) view, and a locked or absent vault also disables Lock, instead of hiding them
+
+### Added
+
+- The settings cog exposes its pressed state with aria-pressed, matching the filter button
+
 ## [1.1.73] - 2026-10-25
 
 Marks a key used today so it no longer looks like one never used, and lifts the recent colour above the contrast floor.
