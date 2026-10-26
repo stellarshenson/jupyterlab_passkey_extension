@@ -1736,9 +1736,10 @@ The vault sidebar panel in JupyterLab
   - mechanism: 2026-10-20T20:12:15Z @kj _fillList renders each header as a button; the collapsed set is loaded from and saved to localStorage key jupyterlab_passkey_extension:vault:collapsed
   - log: 2026-10-20T20:12:15Z @kj added
   - log: 2026-10-20T20:12:23Z @kj closed
-- [x] `ACC-PANEL-256-USED-AGE` **Used age in the entry list** - HIGH; each key shows how long ago it was last used; used within the last day the name and age read in the theme's link colour; over seven days the name dims to 65% opacity; labels read now, 5m ago, 3h ago, 4d ago, 2mo ago, 1y ago, never
-  - evidence: Jest 277: the 5-minute row carries jp-mod-recentlyActive and an unused row takes neither class; Galata 45/45 asserts the row class before and after its reveal; lint 0 problems
-  - test: jest: the entry row shows the relative age and the recent and stale classes from the used stamp
+- [x] `ACC-PANEL-256-USED-AGE` **Used age in the entry list** - HIGH; each key shows last-used age in the AI sessions panel's three grades: under a minute, name and age in the theme's link colour; over seven days or never used, name at 65% opacity; otherwise normal colour; labels now, 5m ago, 3h ago, 4d ago, 2mo ago, 1y ago, never
+  - related: DEF-PANEL-41-RECENCY-GRADES
+  - evidence: jest 278/278: rows used 30 s, 5 min and 8 d ago and never take recent, neither, stale and stale; Galata 46/46 asserts the never-used row dim at 0.65 then recent after its reveal; lint 0 problems
+  - test: jest: rows used 30 s, 5 min and 8 d ago and never take the recent class, neither class, the stale class and the stale class; Galata: a never-used row dims, then reads now in the link colour after its reveal
   - test-tags: UNIT, E2E
   - mechanism: 2026-10-22T14:33:19Z @kj used is an ISO stamp in the encrypted entry; the panel formats it with the same thresholds and labels as the AI sessions panel
   - log: 2026-10-22T14:33:19Z @kj added
@@ -1750,6 +1751,10 @@ The vault sidebar panel in JupyterLab
   - log: 2026-10-25T08:47:23Z @kj reopened; evidence retired: Jest 277 passed: the unused row carries jp-mod-stale beside the stale row, and a row used minutes ago carries neither class; Galata 45/45 asserts the never-used name at opacity 0.65 and 1 after its reveal; lint 0 problems
   - log: 2026-10-25T08:47:23Z @kj closed
   - log: 2026-10-25T09:14:23Z @kj amended text "each key shows how long ago it was last used; used within the last day the name and age read in the brand colour; over seven days the name dims to 65% opacity; labels read now, 5m ago, 3h ago, 4d ago, 2mo ago, 1y ago, never" -> "each key shows how long ago it was last used; used within the last day the name and age read in the theme's link colour; over seven days the name dims to 65% opacity; labels read now, 5m ago, 3h ago, 4d ago, 2mo ago, 1y ago, never"
+  - log: 2026-10-26T15:04:25Z @kj amended text "each key shows how long ago it was last used; used within the last day the name and age read in the theme's link colour; over seven days the name dims to 65% opacity; labels read now, 5m ago, 3h ago, 4d ago, 2mo ago, 1y ago, never" -> "each key shows last-used age in the AI sessions panel's three grades: under a minute, name and age in the theme's link colour; over seven days or never used, name at 65% opacity; otherwise normal colour; labels now, 5m ago, 3h ago, 4d ago, 2mo ago, 1y ago, never"
+  - log: 2026-10-26T15:04:29Z @kj edited test "jest: the entry row shows the relative age and the recent and stale classes from the used stamp" -> "jest: rows used 30 s, 5 min and 8 d ago and never take the recent class, neither class, the stale class and the stale class; Galata: a never-used row dims, then reads now in the link colour after its reveal"
+  - log: 2026-10-26T15:04:31Z @kj reopened: reopened to refresh evidence for the three-grade rule from DEF-PANEL-41-RECENCY-GRADES; evidence retired: Jest 277: the 5-minute row carries jp-mod-recentlyActive and an unused row takes neither class; Galata 45/45 asserts the row class before and after its reveal; lint 0 problems
+  - log: 2026-10-26T15:04:34Z @kj closed
 - [x] `ACC-PANEL-258-ROW-TOOLTIP` **Entry tooltip describes the entry** - MEDIUM; hovering an entry row shows a tooltip: the name, then Username, URL, Category, Last used, Updated and Created, one per line and only when set; Last used always shows and reads never for an unused entry; times show the age, as on the row; the password is never in it
   - evidence: jest 'describes an entry in its row tooltip, one line per field and time that is set' gives every line in order and Last used: never for a bare entry; jest 272/272, Galata vault 16/16, lint 0 errors, build 1.1.61
   - test: entryTooltip unit test in src/__tests__

@@ -2,6 +2,14 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.75] - 2026-10-26
+
+Colours the vault list's last-use ages in the AI sessions panel's three grades, with a never-used key as the oldest.
+
+### Fixed
+
+- A key used under a minute ago reads `now` in the link colour, a use within seven days keeps the normal colour, and a use over seven days ago or none dims the name; the link colour no longer covers a whole day, and a never-used key no longer keeps the normal colour
+
 ## [1.1.74] - 2026-10-25
 
 Keeps the vault panel header stable across views: every icon stays in place, and the ones a view cannot use are disabled instead of hidden.

@@ -345,4 +345,13 @@ The vault sidebar panel, its dialogs and styles
 - [-] `DEF-PANEL-40-NEVER-DIM-1` **Never-used entries look as bright as recently used ones** - MEDIUM; In the list a never-used entry renders the same as one used minutes ago, so 32 of 34 rows read alike. Recent use must stand out.
   - log: 2026-10-25T08:47:27Z @kj regression of DEF-PANEL-40-NEVER-DIM
   - log: 2026-10-25T08:47:35Z @kj rejected: filed in error: the reopen followed a reject that failed for a missing author; no regression occurred
+- [x] `DEF-PANEL-41-RECENCY-GRADES` **Recency colours differ from the AI panel grades** - MEDIUM; the link colour marks any use within a day instead of under a minute, and a never-used entry keeps the normal colour instead of the over-seven-days dim; the AI sessions panel has three grades: now, normal, dim
+  - evidence: panel.ts _paintAge marks recent under 60 s and stale over 7 d or never; jest 278/278 asserts the four grades; Galata 46/46 asserts the never-used row dim at 0.65 then recent after its reveal; lint 0 problems
+  - related: DEF-PANEL-40-NEVER-DIM
+  - repro: Open the panel with entries used 30 s, 5 min and 8 d ago and one never used; the 5-minute row reads in the link colour and the never-used row in the normal colour
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-10-26T14:51:17Z @kj the DEF-PANEL-40-NEVER-DIM fix in 1.1.73 widened the link-colour band from 60 s to a day and left never-used rows undimmed after the review rated the dim's contrast 2.95:1; the owner's model is the AI panel's three grades
+  - log: 2026-10-26T14:51:05Z @kj added
+  - log: 2026-10-26T14:51:17Z @kj root-cause updated "2026-10-26T14:51:05Z @kj the DEF-PANEL-40 fix in 1.1.73 widened the link-colour band from 60 s to a day and left never-used rows undimmed after the review rated the dim's contrast 2.95:1; the owner's model is the AI panel's three grades" -> "the DEF-PANEL-40-NEVER-DIM fix in 1.1.73 widened the link-colour band from 60 s to a day and left never-used rows undimmed after the review rated the dim's contrast 2.95:1; the owner's model is the AI panel's three grades"
+  - log: 2026-10-26T15:04:00Z @kj closed
 

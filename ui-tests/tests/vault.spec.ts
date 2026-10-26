@@ -1289,8 +1289,12 @@ test('a revealed or externally read entry shows its use without a manual refresh
   const age = (name: string) =>
     row(name).locator('.jp-PasskeyVaultPanel-rowAge');
 
-  // Both adds are still unused, so neither row takes the recent class yet.
+  // Both adds are still unused, so they take the stale dim and not the recent class.
   await expect(row('reveal/one')).not.toHaveClass(/jp-mod-recentlyActive/);
+  await expect(row('reveal/one')).toHaveClass(/jp-mod-stale/);
+  await expect(
+    row('reveal/one').locator('.jp-PasskeyVaultPanel-rowName')
+  ).toHaveCSS('opacity', '0.65');
 
   // Create vault sent a proof just now, so the reveal window is open and the eye asks
   // nothing. Nothing below presses Refresh: the row must follow on its own.
@@ -1305,6 +1309,7 @@ test('a revealed or externally read entry shows its use without a manual refresh
   await expect(dialog).toHaveCount(0);
   await expect(age('reveal/one')).toHaveText('now', { timeout: 2000 });
   await expect(row('reveal/one')).toHaveClass(/jp-mod-recentlyActive/);
+  await expect(row('reveal/one')).not.toHaveClass(/jp-mod-stale/);
   const revealMs = Date.now() - revealed;
 
   const got = await vaultGet('agent/two');

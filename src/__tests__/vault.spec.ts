@@ -1208,7 +1208,7 @@ describe('VaultPanel', () => {
     expect(labels.filter(l => /Copy|Show/.test(l ?? ''))).toEqual([]);
   });
 
-  it('shows how long ago each entry was used, bright when recent and dim when stale', async () => {
+  it('shows how long ago each entry was used in three grades: now bright, over a week or never dim, the rest plain', async () => {
     const ago = (ms: number): string => new Date(Date.now() - ms).toISOString();
     const entries = [
       { ...ENTRIES[0], name: 'recent', used: ago(30_000) },
@@ -1232,10 +1232,18 @@ describe('VaultPanel', () => {
     expect(row('recent').classList.contains('jp-mod-recentlyActive')).toBe(
       true
     );
-    expect(row('stale').classList.contains('jp-mod-stale')).toBe(true);
-    expect(row('unused').classList.contains('jp-mod-stale')).toBe(false);
+    expect(row('recent').classList.contains('jp-mod-stale')).toBe(false);
     expect(row('minutes').classList.contains('jp-mod-recentlyActive')).toBe(
-      true
+      false
+    );
+    expect(row('minutes').classList.contains('jp-mod-stale')).toBe(false);
+    expect(row('stale').classList.contains('jp-mod-stale')).toBe(true);
+    expect(row('stale').classList.contains('jp-mod-recentlyActive')).toBe(
+      false
+    );
+    expect(row('unused').classList.contains('jp-mod-stale')).toBe(true);
+    expect(row('unused').classList.contains('jp-mod-recentlyActive')).toBe(
+      false
     );
   });
 
@@ -2265,13 +2273,13 @@ describe('VaultPanel', () => {
       expect(age.textContent).toBe('now');
       expect(line.classList.contains('jp-mod-recentlyActive')).toBe(true);
       // The clock moves on as in the Galata test; the poll carries the new age.
-      jest.setSystemTime(Date.now() + 86_400_000);
+      jest.setSystemTime(Date.now() + 60_000);
       await jest.advanceTimersByTimeAsync(2 * REFRESH_MS);
       // The same line, redrawn in place: the list was not rebuilt or re-read.
       expect(panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine')).toBe(
         line
       );
-      expect(age.textContent).toBe('1d ago');
+      expect(age.textContent).toBe('2m ago');
       expect(line.classList.contains('jp-mod-recentlyActive')).toBe(false);
       expect(api.entries).toHaveBeenCalledTimes(1);
       panel.dispose();
