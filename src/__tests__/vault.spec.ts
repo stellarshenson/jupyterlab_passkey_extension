@@ -2170,7 +2170,7 @@ describe('VaultPanel', () => {
     expect(document.activeElement).toBe(header(panel, 'infra'));
     expect(
       window.localStorage.getItem(
-        'jupyterlab_passkey_extension:vault:collapsed'
+        '@stellarshenson/jupyterlab-passkey-extension:vault:collapsed'
       )
     ).toBe('["infra"]');
     // A panel built after a reload reads the state back.
@@ -2182,14 +2182,14 @@ describe('VaultPanel', () => {
     expect(names(again)).toEqual(['nas/ugos', 'github/api', 'gitlab/api']);
     expect(
       window.localStorage.getItem(
-        'jupyterlab_passkey_extension:vault:collapsed'
+        '@stellarshenson/jupyterlab-passkey-extension:vault:collapsed'
       )
     ).toBe('[]');
   });
 
   it('shows every category expanded when the stored state is unreadable', async () => {
     window.localStorage.setItem(
-      'jupyterlab_passkey_extension:vault:collapsed',
+      '@stellarshenson/jupyterlab-passkey-extension:vault:collapsed',
       '{'
     );
     const panel = await panelWith(fakeApi());

@@ -189,7 +189,7 @@ test('the Settings Editor shows the vault icon in the enabled colour', async ({
   const list = page.locator('.jp-PluginList');
   const icon = list
     .locator(
-      '.jp-PluginList-entry[data-id="jupyterlab_passkey_extension:vault"]'
+      '.jp-PluginList-entry[data-id="@stellarshenson/jupyterlab-passkey-extension:vault"]'
     )
     .locator('svg path')
     .first();

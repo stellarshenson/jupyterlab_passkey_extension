@@ -29,10 +29,10 @@ const NONCE =
   'Names the one-shot relay of this request; [A-Za-z0-9_-]{16,128}.';
 
 /**
- * Initialization data for the jupyterlab_passkey_extension extension.
+ * Initialization data for the @stellarshenson/jupyterlab-passkey-extension extension.
  */
 const plugin: JupyterFrontEndPlugin<void> = {
-  id: 'jupyterlab_passkey_extension:plugin',
+  id: '@stellarshenson/jupyterlab-passkey-extension:plugin',
   description:
     "Jupyterlab extension to allow passkeys to be captured by Jupyterlab with supporting API, CLI etc - to allow internal functionality such as vaults or secrets to be using the passkey functionality of the user's browser or operating system",
   autoStart: true,
@@ -43,7 +43,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
     translator: ITranslator | null
   ) => {
     console.log(
-      'JupyterLab extension jupyterlab_passkey_extension is activated!'
+      'JupyterLab extension @stellarshenson/jupyterlab-passkey-extension is activated!'
     );
     setTranslator(translator);
 

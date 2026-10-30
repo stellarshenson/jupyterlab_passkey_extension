@@ -238,7 +238,8 @@ const vaultIcon = new LabIcon({
 });
 
 /** The localStorage key of the categories the user collapsed in the entry list. */
-const COLLAPSED_KEY = 'jupyterlab_passkey_extension:vault:collapsed';
+const COLLAPSED_KEY =
+  '@stellarshenson/jupyterlab-passkey-extension:vault:collapsed';
 
 function loadCollapsed(): Set<string> {
   try {

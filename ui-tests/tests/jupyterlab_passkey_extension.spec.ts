@@ -96,7 +96,8 @@ test('should emit an activation console message', async ({ page }) => {
   expect(
     logs.filter(
       s =>
-        s === 'JupyterLab extension jupyterlab_passkey_extension is activated!'
+        s ===
+        'JupyterLab extension @stellarshenson/jupyterlab-passkey-extension is activated!'
     )
   ).toHaveLength(1);
 });

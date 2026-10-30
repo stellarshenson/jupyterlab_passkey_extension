@@ -20,7 +20,7 @@ import { runShow } from '../show';
 // The vault plugin has its own tests (vault.spec.ts); stubbed here so this file keeps
 // testing only the bridge plugin's wiring.
 jest.mock('../vault/plugin', () => ({
-  vaultPlugin: { id: 'jupyterlab_passkey_extension:vault' }
+  vaultPlugin: { id: '@stellarshenson/jupyterlab-passkey-extension:vault' }
 }));
 import { ITranslator } from '@jupyterlab/translation';
 import plugins from '../index';
@@ -29,8 +29,8 @@ const plugin = plugins[0];
 
 it('exports the bridge plugin and the vault plugin', () => {
   expect(plugins.map(p => p.id)).toEqual([
-    'jupyterlab_passkey_extension:plugin',
-    'jupyterlab_passkey_extension:vault'
+    '@stellarshenson/jupyterlab-passkey-extension:plugin',
+    '@stellarshenson/jupyterlab-passkey-extension:vault'
   ]);
 });
 
@@ -204,7 +204,9 @@ describe('plugin activation', () => {
   it('declares the palette optional and auto-starts (DI wiring)', () => {
     // A regression moving ICommandPalette into `requires` would fail to load in
     // real JupyterLab when no palette is present; pin the optional wiring.
-    expect(plugin.id).toBe('jupyterlab_passkey_extension:plugin');
+    expect(plugin.id).toBe(
+      '@stellarshenson/jupyterlab-passkey-extension:plugin'
+    );
     expect(plugin.autoStart).toBe(true);
     expect(plugin.optional).toContain('ICommandPalette');
     expect(plugin.requires ?? []).not.toContain('ICommandPalette');

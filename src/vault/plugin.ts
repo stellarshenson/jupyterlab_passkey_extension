@@ -16,7 +16,7 @@ import { VaultApi, VaultError } from './api';
 // eslint-disable-next-line jupyter/prefer-lazy-imports -- activate() needs the panel class at once
 import { VaultPanel } from './panel';
 
-const VAULT_PLUGIN_ID = 'jupyterlab_passkey_extension:vault';
+const VAULT_PLUGIN_ID = '@stellarshenson/jupyterlab-passkey-extension:vault';
 const UNLOCK_COMMAND = 'passkey:vault-unlock';
 export const REGISTER_COMMAND = 'passkey:vault-register';
 const PANEL_RANK = 900;
