@@ -32,7 +32,7 @@ dependencies = [
     # The `render` endpoint draws a staged code to a distorted PNG the `show` command
     # displays, so the code never reaches the page as text. Pillow >= 10.1 provides
     # ImageFont.load_default(size=...), so no font file has to ship with the package.
-    "Pillow>=10.1,<14",
+    "Pillow>=13.0,<14",
     # The vault: AES-256-GCM for the entries and the wrapped data key, Argon2id for
     # the recovery and unlock password slots, HKDF for a passkey slot's PRF.
     "cryptography>=50.0,<51",
@@ -49,8 +49,8 @@ dev = [
     "jupyter-builder>=1.2,<2",
 ]
 test = [
-    "coverage>=7.16,<8",
-    "pytest>=9.1,<10",
+    "coverage>=7.17,<8",
+    "pytest>=9.2,<10",
     "pytest-asyncio>=1.4,<2",
     "pytest-cov>=7.1,<8",
     "pytest-jupyter[server]>=0.11,<1",

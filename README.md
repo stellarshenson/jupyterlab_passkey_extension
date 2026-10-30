@@ -163,7 +163,7 @@ The vault, its panel and configuration, the server API, the frontend commands an
 
 ## Requirements
 
-- **Server and gesture** - JupyterLab >= 4.0.0 over HTTPS or localhost (a secure context), and an open tab supplies the gesture
+- **Server and gesture** - JupyterLab >= 4.6.0 over HTTPS or localhost (a secure context), and an open tab supplies the gesture
 - **Hostname** - a passkey belongs to a hostname, never an IP
 - **Dependencies** - the [notifications extension](https://github.com/stellarshenson/jupyterlab_notifications_extension) is installed with the package
 - **Passkeys** - `create` and `get` need a passkey, while `passphrase`, `copy` and `show` need none

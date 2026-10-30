@@ -152,3 +152,6 @@ tmp/
 
 # graphify's generated graph
 graphify-out/
+
+# Run output
+logs/
