@@ -6,7 +6,7 @@ author_email: konrad.jelen+github@gmail.com
 author_name: Stellars Henson
 has_ai_rules: false
 has_binder: false
-has_settings: false
+has_settings: true
 kind: frontend-and-server
 labextension_name: '@stellarshenson/jupyterlab-passkey-extension'
 project_short_description: Jupyterlab extension to allow passkeys to be captured by
@@ -14,6 +14,6 @@ project_short_description: Jupyterlab extension to allow passkeys to be captured
     as vaults or secrets to be using the passkey functionality of the user's browser
     or operating system
 python_name: jupyterlab_passkey_extension
-repository: ''
+repository: https://github.com/stellarshenson/jupyterlab_passkey_extension
 test: true
 

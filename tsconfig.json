@@ -22,5 +22,5 @@
     "target": "ES2018",
     "types": ["jest"]
   },
-  "include": ["src/*", "src/vault/*"]
+  "include": ["src/*", "src/vault/*"] // template-sync: keep
 }
