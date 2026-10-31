@@ -2,6 +2,17 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.1.77] - 2026-10-31
+
+### Changed
+
+- Raise the memory limit of the mock PyPI in the release check
+- Upgrade to extension template v4.6.5 and Makefile 1.46
+
+### Fixed
+
+- Take the scoped @stellarshenson/jupyterlab-passkey-extension npm name
+
 ## [1.1.75] - 2026-10-26
 
 Colours the vault list's last-use ages in the AI sessions panel's three grades, with a never-used key as the oldest.
