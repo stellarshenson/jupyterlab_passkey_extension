@@ -627,7 +627,7 @@ export class VaultPanel extends Widget {
       async () => {
         const { accepted, value } = await askSecret(
           'Choose a recovery passphrase and store it offline - it is the only way in without a passkey.',
-          false,
+          true,
           'Create vault'
         );
         if (!accepted || value === null) {
@@ -745,7 +745,7 @@ export class VaultPanel extends Widget {
 
   /**
    * Add the unlock password and the authenticator app, which are one unlock method:
-   * the password twice, then a proof, then the app. The app's code is typed last,
+   * the password, then a proof, then the app. The app's code is typed last,
    * because the request checks it and a code stays right for less than a minute.
    */
   private _addMfa(s: IStatus): Promise<void> {
@@ -754,8 +754,8 @@ export class VaultPanel extends Widget {
       async () => {
         const minLength = s.settings.password_min_length;
         const { accepted, value } = await askSecret(
-          `Enter the new unlock password twice, at least ${minLength} characters`,
-          false,
+          `Enter the new unlock password, at least ${minLength} characters`,
+          true,
           title,
           { minLength }
         );
@@ -790,8 +790,8 @@ export class VaultPanel extends Widget {
           return false;
         }
         const { accepted, value } = await askSecret(
-          'Enter the new recovery passphrase twice, and store it offline',
-          false,
+          'Enter the new recovery passphrase, and store it offline',
+          true,
           'Change recovery passphrase'
         );
         if (!accepted || value === null) {

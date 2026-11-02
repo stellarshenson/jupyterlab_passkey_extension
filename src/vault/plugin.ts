@@ -19,6 +19,7 @@ import { VaultPanel } from './panel';
 const VAULT_PLUGIN_ID = '@stellarshenson/jupyterlab-passkey-extension:vault';
 const UNLOCK_COMMAND = 'passkey:vault-unlock';
 export const REGISTER_COMMAND = 'passkey:vault-register';
+export const SETUP_COMMAND = 'passkey:vault-setup';
 const PANEL_RANK = 900;
 
 export type Side = 'left' | 'right';
@@ -87,7 +88,8 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
     settingRegistry: ISettingRegistry | null,
     translator: ITranslator | null
   ) => {
-    const { askProof, registerWithProof } = await import('./dialogs');
+    const { askProof, registerWithProof, setupVault, unlockWithChoice } =
+      await import('./dialogs');
     const { ipAddressAdvice, isIpAddress, matchingSlots, unlockWithPasskey } =
       await import('./webauthn');
     setTranslator(translator);
@@ -118,6 +120,12 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
               type: 'string',
               description:
                 'Names the relay the outcome is posted to; with none, nothing is posted.'
+            },
+            method: {
+              type: 'string',
+              enum: ['passkey', 'choose'],
+              description:
+                'How to unlock: a passkey (default), or a choice of a passkey, the password and a code, or the recovery passphrase.'
             }
           }
         }
@@ -127,14 +135,32 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
           app,
           args.nonce as string | undefined,
           async () => {
+            const host = location.hostname;
+            if ((args.method as string | undefined) === 'choose') {
+              // Read now: the choice depends on the slots the vault has.
+              return unlockWithChoice(api, await api.status(), host);
+            }
             // The state this tab last read keeps the WebAuthn call free of a network
             // read. With no passkey for this hostname in it, it can be stale (a
             // passkey registered since), so it is read again.
             let status = panel.status ?? (await api.status());
-            if (matchingSlots(status.slots, location.hostname).length === 0) {
+            if (matchingSlots(status.slots, host).length === 0) {
               status = await api.status();
             }
-            return unlockWithPasskey(api, status);
+            // No passkey this tab can use: offer every way in instead.
+            if (
+              isIpAddress(host) ||
+              matchingSlots(status.slots, host).length === 0
+            ) {
+              return unlockWithChoice(api, status, host);
+            }
+            try {
+              return await unlockWithPasskey(api, status);
+            } catch {
+              // The slot matches, but its passkey is on another machine or was
+              // deleted: offer every way in instead of failing the unlock.
+              return unlockWithChoice(api, status, host);
+            }
           },
           panel
         )
@@ -182,6 +208,29 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
               throw new VaultError(0, 'adding the passkey was cancelled');
             }
           },
+          panel
+        )
+    });
+
+    app.commands.addCommand(SETUP_COMMAND, {
+      label: trans.__('Set Up Vault'),
+      describedBy: {
+        args: {
+          type: 'object',
+          properties: {
+            nonce: {
+              type: 'string',
+              description:
+                'Names the relay the outcome is posted to; with none, nothing is posted.'
+            }
+          }
+        }
+      },
+      execute: args =>
+        answerCli(
+          app,
+          args.nonce as string | undefined,
+          () => setupVault(api, location.hostname),
           panel
         )
     });

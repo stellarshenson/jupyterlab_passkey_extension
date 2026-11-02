@@ -25,9 +25,12 @@ import { newSetupKey, otpauthUri, qrSvg } from './totp';
 
 import {
   describeFailure,
+  ipAddressAdvice,
+  isIpAddress,
   matchingSlots,
   passkeyPrf,
-  registerPasskey
+  registerPasskey,
+  unlockWithPasskey
 } from './webauthn';
 
 export interface IEntryFormValue extends IEntryFields {
@@ -44,10 +47,13 @@ export class EntryForm extends Widget {
   readonly name: HTMLInputElement;
   readonly username: HTMLInputElement;
   readonly password: HTMLInputElement;
+  readonly confirm: HTMLInputElement;
+  readonly twice: HTMLInputElement;
   readonly url: HTMLInputElement;
   readonly category: HTMLInputElement;
   readonly notes: HTMLTextAreaElement;
   readonly generate: HTMLButtonElement;
+  private _confirming = false;
 
   constructor(
     private readonly _generate: () => Promise<string>,
@@ -70,6 +76,27 @@ export class EntryForm extends Widget {
     // Never let the browser or a password manager fill in, or keep, this value.
     this.password.autocomplete = 'new-password';
 
+    // Typed by hand, a password can be confirmed; a generated or pasted one is
+    // typed once. The confirm field starts out of play and starts empty.
+    this.confirm = input('password');
+    this.confirm.placeholder = trans.__('Confirm password');
+    this.confirm.autocomplete = 'new-password';
+    this.confirm.hidden = true;
+    this.twice = document.createElement('input');
+    this.twice.type = 'checkbox';
+    const twiceRow = document.createElement('label');
+    twiceRow.className = 'jp-PasskeyVaultForm-help';
+    twiceRow.append(this.twice, document.createTextNode('Type it twice'));
+    this.twice.addEventListener('change', () => {
+      this._confirming = this.twice.checked;
+      this.confirm.hidden = !this._confirming;
+      if (!this._confirming) {
+        this.confirm.value = '';
+      }
+      this._validate();
+    });
+    this.confirm.addEventListener('input', () => this._validate());
+
     this.generate = document.createElement('button');
     this.generate.type = 'button';
     this.generate.className = 'jp-mod-styled jp-PasskeyVaultForm-generate';
@@ -79,6 +106,8 @@ export class EntryForm extends Widget {
         value => {
           this.password.value = value;
           this._showPasswordHelp();
+          // A filled field can turn a pair that agreed into a mismatch.
+          this._validate();
         },
         e => {
           // The field keeps what it held: the rule for Save still applies.
@@ -94,11 +123,16 @@ export class EntryForm extends Widget {
     const passwordRow = document.createElement('div');
     passwordRow.className = 'jp-PasskeyVaultForm-row';
     passwordRow.append(this.password, this.generate);
+    const passwordBox = document.createElement('div');
+    passwordBox.append(passwordRow, twiceRow, this.confirm);
     this._passwordHelp = document.createElement('div');
     this._passwordHelp.className = 'jp-PasskeyVaultForm-help';
     this._editing = !!entry;
     this._showPasswordHelp();
-    this.password.addEventListener('input', () => this._showPasswordHelp());
+    this.password.addEventListener('input', () => {
+      this._showPasswordHelp();
+      this._validate();
+    });
 
     this.url = input('text', entry?.url);
     this.category = input('text', entry?.category);
@@ -160,11 +194,12 @@ export class EntryForm extends Widget {
     this.node.append(
       field('Name', this.name, this._nameHelp),
       field('Username', this.username),
-      field('Password', passwordRow, this._passwordHelp, this.password),
+      field('Password', passwordBox, this._passwordHelp, this.password),
       field('URL', this.url),
       field('Category', combo, undefined, this.category),
       field('Notes', this.notes)
     );
+    this.confirm.setAttribute('aria-describedby', this._passwordHelp.id);
     this._validate();
   }
 
@@ -273,12 +308,20 @@ export class EntryForm extends Widget {
   };
 
   private readonly _revalidate = (event: Event): void => {
-    if (event.target === this.name) {
+    if (
+      event.target === this.name ||
+      event.target === this.password ||
+      event.target === this.confirm ||
+      event.target === this.twice
+    ) {
       this._validate();
     }
   };
 
   private _validate(): void {
+    // Read the box rather than a value set on `change`: a click fires `input`
+    // first, and Dialog reads validity on `input`, so the gate must already know.
+    this._confirming = this.twice.checked;
     const name = this.name.value.trim();
     const taken = this._taken.includes(name)
       ? `An entry named ${name} already exists`
@@ -286,6 +329,27 @@ export class EntryForm extends Widget {
     this.name.setCustomValidity(name === '' ? 'An entry needs a name' : taken);
     // Said under the field: a greyed-out Save alone does not say why.
     this._nameHelp.textContent = taken;
+    const mismatchHelp = trans.__('Enter the same password in both fields');
+    // Same mechanism for the opt-in confirmation: a custom validity puts the
+    // form into `:invalid`, which is what disables Save. Out of play, it is clear
+    // so a hidden field cannot hold the dialog shut.
+    this.confirm.setCustomValidity(
+      this._confirming && this.confirm.value !== this.password.value
+        ? mismatchHelp
+        : ''
+    );
+    // Said under the field as the name refusal is: a mismatch greys Save with no
+    // other message. The restore touches the line only while it still holds that
+    // sentence, so a failed Generate line is not wiped.
+    if (
+      this._confirming &&
+      this.confirm.value !== '' &&
+      this.confirm.value !== this.password.value
+    ) {
+      this._passwordHelp.textContent = mismatchHelp;
+    } else if (this._passwordHelp.textContent === mismatchHelp) {
+      this._showPasswordHelp();
+    }
   }
 
   private readonly _passwordHelp: HTMLDivElement;
@@ -984,8 +1048,11 @@ export async function askProof(
  */
 export type UnlockMethod = 'passkey' | 'mfa';
 
+/** Every way the vault opens, as the unlock chooser offers them. */
+export type VaultMethod = UnlockMethod | 'recovery';
+
 /** Each method as the dialog that offers them names it, with one line on what it is. */
-const METHODS: Record<UnlockMethod, { label: string; about: string }> = {
+const METHODS: Record<VaultMethod, { label: string; about: string }> = {
   passkey: {
     label: trans.__('Passkey'),
     about: 'Fingerprint, face, PIN or security key.'
@@ -993,6 +1060,10 @@ const METHODS: Record<UnlockMethod, { label: string; about: string }> = {
   mfa: {
     label: trans.__('Password and authenticator app'),
     about: 'A password, then a 6-digit code from your phone.'
+  },
+  recovery: {
+    label: trans.__('Recovery passphrase'),
+    about: 'The passphrase you stored offline.'
   }
 };
 
@@ -1004,15 +1075,20 @@ export interface IMethodState {
 /** The body of the dialog that offers the methods: one button for each. */
 class MethodForm extends Widget {
   /** The method whose button was pressed. */
-  chosen: UnlockMethod | null = null;
+  chosen: VaultMethod | null = null;
 
   /** `close` closes the dialog once a method is chosen. */
-  constructor(states: Record<UnlockMethod, IMethodState>, close: () => void) {
+  constructor(
+    states: Partial<Record<VaultMethod, IMethodState>>,
+    close: () => void
+  ) {
     super();
     this.addClass('jp-PasskeyVaultForm');
-    for (const kind of Object.keys(METHODS) as UnlockMethod[]) {
+    for (const kind of (Object.keys(METHODS) as VaultMethod[]).filter(
+      kind => kind in states
+    )) {
       const { label, about } = METHODS[kind];
-      const { unavailable } = states[kind];
+      const { unavailable } = states[kind] ?? {};
       const name = document.createElement('span');
       name.textContent = label;
       const help = document.createElement('span');
@@ -1055,14 +1131,16 @@ class MethodForm extends Widget {
 
 /**
  * Ask which unlock method to add: a press on a method chooses it and closes the
- * dialog. Resolves to null when the user backs out.
+ * dialog. Resolves to null when the user backs out. `title` names the question, so
+ * the same buttons serve adding a method and unlocking.
  */
 export async function chooseUnlockMethod(
-  states: Record<UnlockMethod, IMethodState>
-): Promise<UnlockMethod | null> {
+  states: Partial<Record<VaultMethod, IMethodState>>,
+  title: string = trans.__('Add unlock method')
+): Promise<VaultMethod | null> {
   const body = new MethodForm(states, () => dialog.reject());
   const dialog = new Dialog({
-    title: trans.__('Add unlock method'),
+    title,
     body,
     focusNodeSelector: '.jp-PasskeyVaultForm-choice:enabled',
     hasClose: false,
@@ -1070,6 +1148,61 @@ export async function chooseUnlockMethod(
   });
   await launchWithEscape(dialog);
   return body.chosen;
+}
+
+/**
+ * Ask how to unlock the vault, then unlock by the method chosen: a passkey for this
+ * hostname, the unlock password with a code, or the recovery passphrase. Throws the
+ * cancellation as one line for the CLI.
+ */
+export async function unlockWithChoice(
+  api: VaultApi,
+  status: IStatus,
+  host: string = location.hostname
+): Promise<void> {
+  const kind = await chooseUnlockMethod(
+    {
+      passkey: isIpAddress(host)
+        ? { unavailable: sentence(ipAddressAdvice(status.slots)) }
+        : matchingSlots(status.slots, host).length > 0
+          ? {}
+          : { unavailable: `No passkey was added for ${host}.` },
+      mfa: status.slots.some(slot => slot.type === 'password')
+        ? {}
+        : { unavailable: 'No unlock password was set.' },
+      recovery: {}
+    },
+    trans.__('Unlock vault')
+  );
+  if (kind === 'passkey') {
+    await unlockWithPasskey(api, status, host);
+  } else if (kind === 'mfa') {
+    const { accepted, value } = await askSecret(
+      'Enter the unlock password',
+      true,
+      'Unlock vault'
+    );
+    if (!accepted || value === null) {
+      throw new VaultError(0, 'the unlock was cancelled');
+    }
+    const code = status.authenticator ? await askUnlockCode() : undefined;
+    if (code === null) {
+      throw new VaultError(0, 'the unlock was cancelled');
+    }
+    await api.unlockPassword(value, code);
+  } else if (kind === 'recovery') {
+    const { accepted, value } = await askSecret(
+      'Enter the recovery passphrase',
+      true,
+      'Unlock vault'
+    );
+    if (!accepted || value === null) {
+      throw new VaultError(0, 'the unlock was cancelled');
+    }
+    await api.unlockRecovery(value);
+  } else {
+    throw new VaultError(0, 'the unlock was cancelled');
+  }
 }
 
 /** The body of the dialog that adds an app: the QR code, the setup key, and the code field. */
@@ -1192,4 +1325,57 @@ export async function registerWithProof(
   }
   await registerPasskey(api, name, confirmNewPasskey, proof, host);
   return true;
+}
+
+/** The step's outcome as the one line the waiting CLI prints: what stopped, and the
+ * next step. */
+function stepError(step: string, outcome: string): VaultError {
+  return new VaultError(
+    0,
+    `the ${step} step ${outcome} - run the command again to continue the vault set-up`
+  );
+}
+
+/**
+ * Set the vault up from the notification a command with no terminal raised: the
+ * recovery passphrase, then a passkey for this hostname. Each step reads the vault
+ * first and is skipped when it is done, so a run after a cancelled or crashed step
+ * continues at the missing one.
+ */
+export async function setupVault(api: VaultApi, host: string): Promise<void> {
+  let status = await api.status();
+  let passphrase: string | null = null;
+  if (!status.initialized) {
+    const { accepted, value } = await askSecret(
+      'Choose a recovery passphrase and store it offline - it is the only way in without a passkey.',
+      true,
+      'Create vault'
+    );
+    if (!accepted || value === null) {
+      throw stepError('recovery passphrase', 'was cancelled');
+    }
+    passphrase = value;
+    try {
+      await api.init(value);
+    } catch (e) {
+      throw stepError('recovery passphrase', `failed (${describeFailure(e)})`);
+    }
+    status = await api.status();
+  }
+  if (isIpAddress(host) || matchingSlots(status.slots, host).length > 0) {
+    return;
+  }
+  try {
+    // The passphrase just chosen is the proof the server asks for the new passkey.
+    const proof =
+      passphrase === null
+        ? await askProof(status, host, 'Add passkey', true)
+        : { current: passphrase };
+    if (proof !== null && (await registerWithProof(api, proof, '', host))) {
+      return;
+    }
+  } catch (e) {
+    throw stepError('passkey', `failed (${describeFailure(e)})`);
+  }
+  throw stepError('passkey', 'was cancelled');
 }

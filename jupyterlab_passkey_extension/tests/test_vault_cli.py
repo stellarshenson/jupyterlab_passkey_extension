@@ -45,10 +45,15 @@ class FakeStdin:
         return self.buffer.read().decode()
 
 
+class FakeTty(io.StringIO):
+    def isatty(self):
+        return True
+
+
 @pytest.fixture
 def server(vault_env, monkeypatch):
     svc = handlers._service
-    calls = []
+    calls, steps = [], []
 
     def request(method, action, body=None, params=None):
         table = {"GET": handlers._GET, "POST": handlers._POST, "PATCH": handlers._PATCH}[method]
@@ -62,18 +67,24 @@ def server(vault_env, monkeypatch):
 
     def browser_step(command, args, label, message, timeout):
         calls.append(command)
+        steps.append({"command": command, **args})
         if command == client.REGISTER_COMMAND:
             n = len(svc.status()["slots"])  # the recovery slot is one: cred-1, then cred-2
             # The page sends a proof; here the recovery passphrase.
             svc.add_passkey(f"cred-{n}", "lab.example", "c2FsdA", PRF, args.get("label") or None,
                             {"current": PASS})
         elif command == client.UNLOCK_COMMAND:
-            svc.unlock_passkey("cred-1", PRF)
+            if args.get("method") == "choose":
+                # The chooser was answered with the recovery passphrase.
+                svc.unlock_recovery(PASS)
+            else:
+                svc.unlock_passkey("cred-1", PRF)
 
     for module in (client, vcli):
         monkeypatch.setattr(module, "request", request)
         monkeypatch.setattr(module, "browser_step", browser_step)
     svc.calls = calls
+    svc.steps = steps
     return svc
 
 
@@ -112,15 +123,38 @@ def test_init_without_a_passkey(server, monkeypatch):
     assert [s["type"] for s in server.status()["slots"]] == ["recovery"]
 
 
-def test_a_vault_without_a_passkey_names_the_recovery_unlock(server, monkeypatch):
-    # No notification for a passkey the vault does not have: unlock and get stop at once.
+def test_a_vault_without_a_passkey_chooses_a_method_and_get_returns_the_value(server, monkeypatch, capsys):
+    # One call: the chooser step, then the reveal, with no separate unlock.
     run(monkeypatch, "vault", "init", "--no-passkey", stdin=PASS)
+    run(monkeypatch, "vault", "add", "github/api", stdin=SECRET + "\n")
     run(monkeypatch, "vault", "lock")
     server.calls.clear()
-    for argv in (("vault", "unlock"), ("vault", "get", "github/api")):
-        with pytest.raises(SystemExit, match="vault unlock --recovery"):
-            run(monkeypatch, *argv)
-    assert server.calls == []
+    server.steps.clear()
+    assert run(monkeypatch, "vault", "get", "github/api") == 0
+    assert server.calls == [client.UNLOCK_COMMAND]
+    assert [(s["command"], s.get("method")) for s in server.steps] == [
+        (client.UNLOCK_COMMAND, "choose")]
+    assert capsys.readouterr().out == SECRET + "\n"
+
+
+def test_a_cancelled_chooser_exits_non_zero_without_a_secret(server, monkeypatch, capsys):
+    run(monkeypatch, "vault", "init", "--no-passkey", stdin=PASS)
+    run(monkeypatch, "vault", "add", "github/api", stdin=SECRET + "\n")
+    run(monkeypatch, "vault", "lock")
+
+    def cancelled(command, args, label, message, timeout):
+        assert args.get("method") == "choose"
+        raise SystemExit("ceremony failed: the unlock was cancelled")
+
+    monkeypatch.setattr(client, "browser_step", cancelled)
+    with pytest.raises(SystemExit) as exit_:
+        run(monkeypatch, "vault", "get", "github/api")
+    # The one line is the exit status; no value reaches stdout or stderr.
+    assert exit_.value.code != 0
+    assert "the unlock was cancelled" in str(exit_.value.code)
+    out, err = capsys.readouterr()
+    assert SECRET not in out + err
+    assert server.status()["unlocked"] is False
 
 
 def test_the_python_unlock_without_a_vault_says_run_init(server):
@@ -141,6 +175,45 @@ def test_init_at_a_terminal_asks_twice_and_refuses_a_mismatch(server, monkeypatc
     with pytest.raises(SystemExit, match="differ"):
         run(monkeypatch, "vault", "init")
     assert server.status()["initialized"] is False
+
+
+def test_a_secret_in_the_browser_asks_once_with_the_twice_toggle(monkeypatch):
+    # A blind terminal prompt has no control to offer, so it asks twice; the
+    # browser dialog has the checkbox, so it opens with one field.
+    seen = {}
+
+    def trigger(command, args, label, message):
+        seen.update({"command": command, "args": args})
+
+    monkeypatch.setattr(vcli._cli, "_trigger", trigger)
+    monkeypatch.setattr(vcli._cli, "_wait", lambda *a, **kw: None)
+    monkeypatch.setattr(vcli.relay, "collect", lambda nonce, kind: PASS)
+    monkeypatch.setattr(vcli.relay, "unstage", lambda nonce, kind: None)
+    a = argparse.Namespace(in_browser=True, timeout=1.0)
+
+    assert vcli._read_secret(a, "Password", twice=True) == PASS
+
+    assert seen["command"] == cli.PASSPHRASE_COMMAND
+    assert seen["args"]["once"] is True
+    assert "twice" not in seen["args"]
+
+
+def test_recovery_in_the_browser_asks_the_new_passphrase_with_the_toggle(ready, monkeypatch):
+    seen = []
+
+    def trigger(command, args, label, message):
+        seen.append(args)
+
+    monkeypatch.setattr(vcli._cli, "_trigger", trigger)
+    monkeypatch.setattr(vcli._cli, "_wait", lambda *a, **kw: None)
+    answers = iter([PASS, "another passphrase"])
+    monkeypatch.setattr(vcli.relay, "collect", lambda nonce, kind: next(answers))
+    monkeypatch.setattr(vcli.relay, "unstage", lambda nonce, kind: None)
+    assert run(monkeypatch, "vault", "recovery", "--in-browser") == 0
+    # Both prompts are one field with the "Type it twice" toggle, as every secret.
+    assert seen[0]["once"] is True
+    assert seen[1]["once"] is True
+    assert "twice" not in seen[1]
 
 
 def test_lock_and_unlock_with_passkey_and_recovery(ready, monkeypatch, capsys):
@@ -242,8 +315,12 @@ def test_get_prints_only_the_value(ready, monkeypatch, capsys):
 def test_get_on_a_locked_vault_unlocks_first(ready, monkeypatch, capsys):
     run(monkeypatch, "vault", "lock")
     ready.calls.clear()
+    ready.steps.clear()
     run(monkeypatch, "vault", "get", "github/api")
+    # A passkey for the tab's hostname is the fast path: one click, no chooser.
     assert ready.calls == [client.UNLOCK_COMMAND]
+    assert [(s["command"], s.get("method")) for s in ready.steps] == [
+        (client.UNLOCK_COMMAND, None)]
     assert capsys.readouterr().out == SECRET + "\n"
 
 
@@ -855,6 +932,63 @@ def test_rotate_refuses_a_wrong_recovery_proof(ready, monkeypatch):
 def test_a_missing_vault_is_one_line(server, monkeypatch):
     with pytest.raises(SystemExit, match="no vault at .* vault init"):
         run(monkeypatch, "vault", "list")
+
+
+def test_a_missing_vault_asks_once_and_creates_it_on_yes(server, monkeypatch):
+    answers = iter([PASS, PASS])  # the recovery passphrase, typed twice by init
+    monkeypatch.setattr(vcli.getpass, "getpass", lambda prompt: next(answers))
+    monkeypatch.setattr(sys, "stdin", FakeStdin("", tty=True))
+    monkeypatch.setattr(sys, "stdout", FakeTty())
+    asked = []
+    monkeypatch.setattr("builtins.input", lambda prompt: asked.append(prompt) or "yes")
+    assert run(monkeypatch, "vault", "list") == 0
+    assert asked == [f"No vault at {server.status()['path']}. Create it now? [y/N] "]
+    assert server.status()["initialized"] is True
+    assert server.calls == [client.REGISTER_COMMAND]
+
+
+def test_a_missing_vault_is_left_alone_on_no(server, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", FakeStdin("", tty=True))
+    monkeypatch.setattr(sys, "stdout", FakeTty())
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    with pytest.raises(SystemExit, match=r"^no vault at .+ - run `jupyterlab-passkey vault init`$"):
+        run(monkeypatch, "vault", "list")
+    assert server.status()["initialized"] is False
+    assert server.calls == []
+
+
+def test_add_offers_the_missing_vault_before_asking_for_the_secret(server, monkeypatch):
+    order = []
+    answers = iter([PASS, PASS, SECRET, SECRET])  # the recovery passphrase twice, then the password
+
+    monkeypatch.setattr(sys, "stdin", FakeStdin("", tty=True))
+    monkeypatch.setattr(sys, "stdout", FakeTty())
+    monkeypatch.setattr("builtins.input", lambda prompt: order.append("create") or "yes")
+    monkeypatch.setattr(vcli.getpass, "getpass", lambda prompt: order.append("secret") or next(answers))
+    assert run(monkeypatch, "vault", "add", "github/api", "-u", "me",
+               "--url", "https://github.com") == 0
+    # The set-up offer first: the secret is typed once, after the vault exists.
+    assert order == ["create", "secret", "secret", "secret", "secret"]
+    assert [entry["name"] for entry in server.list_entries()] == ["github/api"]
+
+
+def test_edit_checks_the_vault_before_asking_for_the_secret(server, monkeypatch):
+    monkeypatch.setattr(vcli, "_new_password",
+                        lambda a: pytest.fail("asked for the secret before the set-up offer"))
+    a = argparse.Namespace(username=None, url=None, category=None, notes=None,
+                           password=True, generate=False, in_browser=False)
+    with pytest.raises(client.VaultClientError, match="no vault at"):
+        vcli.cmd_edit(a, client.Vault())
+
+
+def test_a_missing_vault_never_asks_without_a_terminal_on_stdout(server, monkeypatch):
+    # A terminal on stdin but not stdout, as `vault get x > file`: no question, no vault.
+    monkeypatch.setattr(sys, "stdin", FakeStdin("", tty=True))
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("asked on a pipe"))
+    with pytest.raises(SystemExit, match="no vault at"):
+        run(monkeypatch, "vault", "list")
+    assert server.status()["initialized"] is False
+    assert server.calls == []
 
 
 def test_no_server_is_one_line(vault_env, monkeypatch):

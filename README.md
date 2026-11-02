@@ -31,16 +31,18 @@ A passkey bridge for JupyterLab that exposes the passkey (WebAuthn) capability o
 - **Passkeys** - `create` registers and `get` asserts Windows Hello, Touch ID or a security key from a process with no browser
 - **Approval** - the user approves the ceremony in the open tab, and the call blocks until the result returns
 - **PRF** - `get --prf-salt` returns the same 32 bytes for the same credential and salt, so a vault can derive its key and store none
-- **`passphrase`** - prompts in the browser and prints only a reference to the staged value (`keyctl:...` or `file:...`)
+- **`passphrase`** - asks once in the browser, with an optional "Type it twice" confirm, and prints only a reference to the staged value (`keyctl:...` or `file:...`)
 - **No terminal copy** - the value never appears in the terminal, the shell history, a process argument or the CLI
 - **`copy`** - places a value on the clipboard through a one-shot relay
 - **`show`** - renders a code as a distorted image absent from the DOM text and the accessibility tree
+- **Vault on demand** - a vault command that finds no vault offers to create one at a terminal, and `vault get` unlocks a locked vault in the same call
+- **Git credentials** - `git-credential-jupyterlab-passkey` answers git's credential request from the vault; `vault git install` and `vault git uninstall` set or remove it, and `vault git migrate` imports git's plaintext store
 
 ### Working with an AI agent
 
 `passphrase` and `copy` let an AI agent handle a secret without printing it.
 
-- **Secret entry** - `passphrase --once --prompt "..."` gives an agent a reference, never a secret
+- **Secret entry** - `passphrase --prompt "..."` gives an agent a reference, never a secret
 - **Pipe** - `pass-cli` can send bytes into `copy` without printing them
 - **Help and skill** - `--help` says what each subcommand prints and whether it waits, and [`SKILL.md`](.agents/skills/jupyterlab-passkey-extension/SKILL.md) adds the rules it cannot state
 - **Why link** - the wheel installs the skill at `<sys.prefix>/share/jupyter/agents/skills/jupyterlab-passkey-extension/SKILL.md`, and no agent reads that directory, so one of the two links below makes it readable

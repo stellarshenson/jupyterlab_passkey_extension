@@ -16,7 +16,7 @@ Secrets move both ways. `passphrase` takes one FROM you in a dialog and stages i
 relay for a vault or a .env to read; `copy` sends one TO the clipboard of the browser
 you are sitting in front of, to paste wherever it is wanted:
 
-    tok_ref=$(jupyterlab-passkey passphrase --once --prompt "GitHub token") || exit 1
+    tok_ref=$(jupyterlab-passkey passphrase --prompt "GitHub token") || exit 1
     PASS_SECRET_REF=$tok_ref pass-cli-save github/api -u me -c infrastructure
 
     pass-cli get github/api --field password --quiet --no-clipboard | jupyterlab-passkey copy
@@ -547,13 +547,13 @@ def cmd_passphrase(a) -> int:
     args_obj = {"nonce": nonce}
     if a.prompt:
         args_obj["prompt"] = a.prompt
-    if a.once:
-        args_obj["once"] = True
+    if a.twice:
+        args_obj["twice"] = True
     _trigger(
         PASSPHRASE_COMMAND, args_obj,
-        "Enter secret" if a.once else "Enter passphrase",
-        "Enter the secret - click to open the dialog." if a.once
-        else "Enter the passphrase - click to open the dialog.",
+        "Enter passphrase" if a.twice else "Enter secret",
+        "Enter the passphrase - click to open the dialog." if a.twice
+        else "Enter the secret - click to open the dialog.",
     )
     # A cancel stages a marker that ends the wait at once, and two entries that differ
     # cannot be submitted, so a timeout means the dialog was never finished.
@@ -595,7 +595,7 @@ def _read_stdin_or_file(file_arg, noun, empty_msg, nontext_msg):
         # the one thing this bridge exists to avoid. Typing one is `passphrase`'s job.
         raise SystemExit(
             f"refusing to read a {noun} from a terminal - pipe it in or pass a FILE "
-            "(to type one, use `jupyterlab-passkey passphrase --once`)"
+            "(to type one, use `jupyterlab-passkey passphrase`)"
         )
     source = "stdin" if file_arg == "-" else file_arg
     try:
@@ -967,18 +967,18 @@ Use it to get a secret out of a head and into something else: a vault entry, a .
 keystore's recovery slot. An AI agent can run this and pipe the reference onward without
 the secret ever entering its transcript. The consumer resolves the scheme itself.
 
-The value is entered twice and Submit stays disabled until the two match. --once drops
-the confirm field for a secret being pasted rather than typed. Cancelling exits 1 at
-once.
+The value is entered once. A "Type it twice" checkbox adds a confirm field, and Submit
+stays disabled until the two match. --twice asks for the value twice with no toggle.
+Cancelling exits 1 at once.
 """,
         """
 examples:
-  # a passphrase being set - typed twice, confirmed. The consumer resolves the ref:
+  # a passphrase being set - the dialog offers "Type it twice". The consumer resolves the ref:
   pass_ref=$(jupyterlab-passkey passphrase --prompt "Recovery passphrase") || exit 1
   PASS_RECOVERY_REF="$pass_ref" pass-cli-open --ensure
 
-  # a token being pasted - once is enough
-  tok_ref=$(jupyterlab-passkey passphrase --once --prompt "GitHub token") || exit 1
+  # a token being pasted - one field, nothing to confirm
+  tok_ref=$(jupyterlab-passkey passphrase --prompt "GitHub token") || exit 1
 
   # resolving a reference by hand, either backend:
   case "$pass_ref" in
@@ -990,11 +990,15 @@ examples:
     )
     s.add_argument(
         "--prompt", metavar="TEXT",
-        help="dialog prompt text (default: 'Enter the passphrase twice', or 'Enter the secret' with --once)",
+        help="dialog prompt text (default: 'Enter the secret', or 'Enter the passphrase twice' with --twice)",
     )
     s.add_argument(
         "--once", action="store_true",
-        help="ask for the secret once instead of twice - for a value pasted from a password manager",
+        help="accepted for compatibility; one entry is the default",
+    )
+    s.add_argument(
+        "--twice", action="store_true",
+        help="ask for the value twice, with a confirm field that cannot be dismissed",
     )
     s.set_defaults(func=cmd_passphrase)
 
@@ -1023,7 +1027,7 @@ after --block has already returned 0.
 
 Exactly one trailing newline is stripped, as $(...) would; a multi-line secret survives
 intact. A stdin that is a terminal is refused - that would echo the secret into the
-scrollback; pipe it in, pass a FILE, or use `passphrase --once` to type one.
+scrollback; pipe it in, pass a FILE, or use `passphrase` to type one.
 """,
         """
 examples:
@@ -1077,7 +1081,7 @@ an image, and an OCR pass still has to beat the distortion.
 
 Fire and forget: it posts and returns, and nothing is reported back - the click is
 what shows it. Exactly one trailing newline is stripped. A stdin that is a terminal
-is refused; pipe it in, pass a FILE, or use `passphrase --once` to type one.
+is refused; pipe it in, pass a FILE, or use `passphrase` to type one.
 """,
         """
 examples:

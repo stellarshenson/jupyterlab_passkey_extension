@@ -122,6 +122,21 @@ The vault server side, CLI and Python API
   - root-cause: 2026-10-22T14:34:39Z @kj likely cause: the config file was seeded with the effective old setting (240) before the 1.1.55 default moved to 30, so the value became an explicit override instead of a default
   - log: 2026-10-22T14:34:39Z @kj added
   - log: 2026-10-22T14:35:01Z @kj closed
+- [x] `DEF-VAULT-42-NEW-ENTRY` **New entry reads never** - MEDIUM; a key added just now reads `never` as its last use, and dims, until it is first read or edited; adding counts as an action
+  - evidence: pytest jupyterlab_passkey_extension/tests 532 passed, 0 failed; test_a_new_entry_is_stamped_used_at_add: a new entry carries used equal to created, so the panel reads it as just now rather than never
+  - repro: unlock the vault, add cratesio/api in the panel, read the row: last use never, dimmed
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-11-01T11:44:40Z @kj service.add writes created and updated but no used stamp, so list_entries returns an empty used and the panel prints never
+  - log: 2026-11-01T11:44:40Z @kj added
+  - log: 2026-11-01T12:37:57Z @kj closed
+  - log: 2026-11-01T15:08:10Z @kj regressed as DEF-VAULT-42-NEW-ENTRY-1
+- [x] `DEF-VAULT-42-NEW-ENTRY-1` **New entry reads never** - MEDIUM; a key added just now reads `never` as its last use, and dims, until it is first read or edited; adding counts as an action
+  - evidence: test_an_imported_entry_is_stamped_used_at_import passes: import_entries stamps used equal to created, so an entry added by vault import or vault git migrate reads as just now, not never
+  - test-tags: UNIT
+  - repro: import an entry with vault import or vault git migrate, read the row: last use never, dimmed
+  - log: 2026-11-01T15:08:10Z @kj regression of DEF-VAULT-42-NEW-ENTRY: still reproduced through vault import and vault git migrate; import_entries did not stamp used
+  - log: 2026-11-01T15:08:42Z @kj edited repro added "import an entry with vault import or vault git migrate, read the row: last use never, dimmed"; test-tags added "UNIT"
+  - log: 2026-11-01T15:08:50Z @kj closed
 
 ## Vault panel `PANEL`
 

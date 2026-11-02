@@ -866,11 +866,20 @@ async def test_add_refuses_a_duplicate_and_edit_changes_only_given_fields(jp_fet
     assert (await call(jp_fetch, "reveal", {"name": "github/api"}))["value"] == SECRET
 
 
-async def test_a_new_entry_has_no_used_stamp(jp_fetch, vault_env, entry_clock):
+async def test_a_new_entry_is_stamped_used_at_add(jp_fetch, vault_env, entry_clock):
     await init(jp_fetch)
     await add(jp_fetch)
-    [entry] = (await call(jp_fetch, "entries", method="GET"))["entries"]
-    assert entry["used"] == ""
+    [entry] = handlers._service.list_entries()
+    assert entry["used"] and entry["used"] == entry["created"]
+    assert time.strptime(entry["used"], "%Y-%m-%dT%H:%M:%SZ")
+
+
+async def test_an_imported_entry_is_stamped_used_at_import(jp_fetch, vault_env, entry_clock):
+    await init(jp_fetch)
+    await call(jp_fetch, "import", {"entries": [{"name": "imported/api", "password": SECRET}]})
+    [entry] = handlers._service.list_entries()
+    assert entry["used"] and entry["used"] == entry["created"]
+    assert time.strptime(entry["used"], "%Y-%m-%dT%H:%M:%SZ")
 
 
 async def test_a_reveal_stamps_used_and_leaves_created_and_updated(jp_fetch, vault_env, entry_clock):

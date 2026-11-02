@@ -11,21 +11,25 @@ import { trans } from './trans';
 export interface IPassphraseArgs {
   nonce: string;
   prompt?: string;
+  /** Accepted for compatibility: one entry is the default. */
   once?: boolean;
+  /** true asks the value twice, in two fields that must agree. */
+  twice?: boolean;
 }
 
 /** Whether the two fields agree yet, and what to tell the user about it. */
 type MatchState = 'pending' | 'match' | 'mismatch' | 'short';
 
 /**
- * Dialog body: a password field, and a second one to confirm it unless `once`.
+ * Dialog body: a password field, and one to confirm it - always when `once` is
+ * false, and behind the "Type it twice" checkbox when it is true.
  *
  * Double entry catches a typo in a passphrase being SET, where nothing else
  * will - get it wrong and the mistake surfaces at the next unlock, by which
  * time the right value is forgotten. It earns nothing for a secret being
- * PASTED out of a password manager, which is why `once` exists: the source of
- * truth is already on the clipboard, and asking for it twice only invites two
- * pastes of the same mistake.
+ * PASTED out of a password manager, which is why a single entry is the default:
+ * the source of truth is already on the clipboard, and asking for it twice only
+ * invites two pastes of the same mistake. A value typed by hand can opt in.
  *
  * Native inputs carry jp-mod-styled so the lab themes their focus ring and
  * sizing. The status line always occupies its row - only its visibility flips -
@@ -33,11 +37,12 @@ type MatchState = 'pending' | 'match' | 'mismatch' | 'short';
  */
 class PassphraseBody extends Widget {
   readonly first: HTMLInputElement;
-  readonly second: HTMLInputElement | null;
-  private readonly _status: HTMLDivElement | null;
-  private readonly _announce: HTMLDivElement | null;
-  private readonly _gate: HTMLInputElement;
+  readonly second: HTMLInputElement;
+  readonly twice: HTMLInputElement | null;
+  private readonly _status: HTMLDivElement;
+  private readonly _announce: HTMLDivElement;
   private readonly _noun: string;
+  private _confirming: boolean;
 
   /**
    * `password` says the secret being set is a password, not a passphrase, and how
@@ -56,61 +61,61 @@ class PassphraseBody extends Widget {
     label.textContent = prompt;
 
     this._noun = _password ? 'Password' : 'Passphrase';
-    this.first = PassphraseBody._input(once ? 'Secret' : this._noun);
-    this.second = once
-      ? null
-      : PassphraseBody._input(`Confirm ${this._noun.toLowerCase()}`);
-
-    // The field Dialog's validity gate hangs off: the confirm field where there
-    // is one, since that is where a mismatch is discovered, and the only field
-    // where there is not.
-    this._gate = this.second ?? this.first;
-
-    // Nothing to report without a second field to disagree with the first.
-    this._status = once ? null : document.createElement('div');
-    this._announce = once ? null : document.createElement('div');
-    if (this._status && this._announce) {
-      // Two elements for one message, because the two jobs have opposite needs.
-      //
-      // _status is the row you see: it holds its space at every state and only
-      // flips `visibility`, so the dialog's bottom edge never walks under the
-      // pointer. Blanking its text while pending would drop the line box and
-      // collapse it - the very jump the reserved row exists to prevent - so its
-      // text is always set, and `aria-hidden` keeps that from being read out.
-      //
-      // _announce is the row a screen reader hears: it must sit in the
-      // accessibility tree from the start, because a live region that is INSERTED
-      // already holding its text is not reliably announced - and `visibility:
-      // hidden` (which is what keeps _status quiet while pending) takes a node out
-      // of that tree entirely. So this one is always present, always empty until
-      // there is something true to say, and clipped to zero geometry so it cannot
-      // touch the height _status is busy defending.
-      this._status.className = 'jp-PassphraseDialog-status';
-      this._status.setAttribute('aria-hidden', 'true');
-      this._announce.className = 'jp-PassphraseDialog-announce';
-      this._announce.setAttribute('role', 'status');
+    this.first = PassphraseBody._input(
+      once && !_password ? 'Secret' : this._noun
+    );
+    this.second = PassphraseBody._input(`Confirm ${this._noun.toLowerCase()}`);
+    this._confirming = !once;
+    this.twice = once ? document.createElement('input') : null;
+    if (this.twice) {
+      this.twice.type = 'checkbox';
+      this.twice.addEventListener('change', () =>
+        this._setConfirming(this.twice!.checked)
+      );
     }
+
+    // Two elements for one message, because the two jobs have opposite needs.
+    //
+    // _status is the row you see: it holds its space at every state and only
+    // flips `visibility`, so the dialog's bottom edge never walks under the
+    // pointer. Blanking its text while pending would drop the line box and
+    // collapse it - the very jump the reserved row exists to prevent - so its
+    // text is always set, and `aria-hidden` keeps that from being read out.
+    //
+    // _announce is the row a screen reader hears: it must sit in the
+    // accessibility tree from the start, because a live region that is INSERTED
+    // already holding its text is not reliably announced - and `visibility:
+    // hidden` (which is what keeps _status quiet while pending) takes a node out
+    // of that tree entirely. So this one is always present, always empty until
+    // there is something true to say, and clipped to zero geometry so it cannot
+    // touch the height _status is busy defending.
+    this._status = document.createElement('div');
+    this._announce = document.createElement('div');
+    this._status.className = 'jp-PassphraseDialog-status';
+    this._announce.className = 'jp-PassphraseDialog-announce';
+    this._status.setAttribute('aria-hidden', 'true');
+    this._announce.setAttribute('role', 'status');
 
     // Keeps the widget correct on its own terms, detached and untested by a
     // Dialog. The capture-phase listener added on attach is what wins the race
     // with Dialog's own gate; _validate is idempotent, so both firing is fine.
     const revalidate = () => this._validate();
     this.first.addEventListener('input', revalidate);
-    this.second?.addEventListener('input', revalidate);
+    this.second.addEventListener('input', revalidate);
 
     this.node.appendChild(label);
     this.node.appendChild(this.first);
-    if (this.second) {
-      this.node.appendChild(this.second);
+    if (this.twice) {
+      const toggle = document.createElement('label');
+      toggle.className = 'jp-PassphraseDialog-toggle';
+      toggle.append(this.twice, document.createTextNode('Type it twice'));
+      this.node.appendChild(toggle);
     }
-    if (this._status) {
-      this.node.appendChild(this._status);
-    }
-    if (this._announce) {
-      this.node.appendChild(this._announce);
-    }
+    this.node.appendChild(this.second);
+    this.node.appendChild(this._status);
+    this.node.appendChild(this._announce);
 
-    this._validate();
+    this._setConfirming(this._confirming);
   }
 
   /** The agreed value, or null when empty or mismatched. */
@@ -119,12 +124,28 @@ class PassphraseBody extends Widget {
     if (v === '') {
       return null;
     }
-    return this.second === null || v === this.second.value ? v : null;
+    return this._confirming && v !== this.second.value ? null : v;
   }
 
   /** What the status line is currently reporting. */
   get state(): MatchState {
-    return (this._status?.dataset.state as MatchState) ?? 'pending';
+    return (this._status.dataset.state as MatchState) || 'pending';
+  }
+
+  /** The field Dialog's validity gate hangs off; see the constructor. */
+  private get _gate(): HTMLInputElement {
+    return this._confirming ? this.second : this.first;
+  }
+
+  /** Put the confirm field in or out of play, clearing it when it goes out. */
+  private _setConfirming(confirming: boolean): void {
+    this._confirming = confirming;
+    this.second.hidden = !confirming;
+    this._status.hidden = !confirming;
+    if (!confirming) {
+      this.second.value = '';
+    }
+    this._validate();
   }
 
   onAfterAttach(): void {
@@ -152,12 +173,21 @@ class PassphraseBody extends Widget {
 
   /** Bound so add/removeEventListener agree on the identity. */
   private readonly _revalidate = (event: Event): void => {
-    if (event.target === this.first || event.target === this.second) {
+    if (
+      event.target === this.first ||
+      event.target === this.second ||
+      event.target === this.twice
+    ) {
       this._validate();
     }
   };
 
   private _validate(): void {
+    // Read the box rather than a value set on `change`: a click fires `input`
+    // first, and Dialog reads validity on `input`, so the gate must already know.
+    if (this.twice) {
+      this._confirming = this.twice.checked;
+    }
     const matched = this.value !== null;
     const short = (this.value ?? '').length < (this._password?.minLength ?? 0);
 
@@ -165,18 +195,26 @@ class PassphraseBody extends Widget {
     // every accept button whenever its subtree matches `:invalid`, and a custom
     // validity message is what puts this field there. Empty counts as invalid
     // either way - `value` is null until there is something non-empty, and (with
-    // a confirm field) until both agree on it.
-    this._gate.setCustomValidity(
+    // a confirm field) until both agree on it. The field not gating just now must
+    // be clean, or Dialog, which checks the whole subtree, would hold Submit shut
+    // over a message left there while it was the gate.
+    const gate = this._gate;
+    (gate === this.first ? this.second : this.first).setCustomValidity('');
+    gate.setCustomValidity(
       !matched
-        ? this.second === null
-          ? 'Enter the secret'
-          : `Enter the same ${this._noun.toLowerCase()} in both fields`
+        ? this._confirming
+          ? `Enter the same ${this._noun.toLowerCase()} in both fields`
+          : 'Enter the secret'
         : short
           ? `Enter at least ${this._password?.minLength} characters`
           : ''
     );
 
-    if (!this.second || !this._status || !this._announce) {
+    // Out of play, nothing is reported and the hidden row keeps no text.
+    if (!this._confirming) {
+      this._status.dataset.state = '';
+      this._status.textContent = '';
+      this._announce.textContent = '';
       return;
     }
 
@@ -224,13 +262,14 @@ class PassphraseBody extends Widget {
 }
 
 /**
- * Prompt for a secret - twice by default, once with `once` - and relay it to
+ * Prompt for a secret - once by default, twice with `twice` - and relay it to
  * the server.
  *
- * Two entries are confirmed to match in the dialog; a single entry need only be
- * non-empty. Either way the value is POSTed to the "passphrase" endpoint, which
- * writes it raw to a relay (a keyctl key, or an atomic 0600 file) so a local
- * client can read it -
+ * A single entry need only be non-empty, and gains the "Type it twice" toggle
+ * for a value typed by hand; two entries are a caller asking for confirmation,
+ * and must match. Either way the value is POSTed to the "passphrase" endpoint,
+ * which writes it raw to a relay (a keyctl key, or an atomic 0600 file) so a
+ * local client can read it -
  * a vault, a .env, anything that should never see the value cross a terminal.
  * Returns true when a value was relayed, false when the user cancelled. The
  * value is never logged.
@@ -239,10 +278,10 @@ export async function runPassphrase(
   args: IPassphraseArgs,
   serverSettings: ServerConnection.ISettings
 ): Promise<boolean> {
-  const once = args.once === true;
+  const twice = args.twice === true;
   const { accepted, value: passphrase } = await askSecret(
-    args.prompt ?? (once ? 'Enter the secret' : 'Enter the passphrase twice'),
-    once
+    args.prompt ?? (twice ? 'Enter the passphrase twice' : 'Enter the secret'),
+    !twice
   );
 
   if (!accepted) {
@@ -308,10 +347,13 @@ export async function launchWithEscape<T>(
 /**
  * Ask for a secret in the passphrase dialog and return it, relaying nothing.
  *
- * `accepted` is false when the user cancelled; `value` is null when the dialog
- * was accepted without a confirmed value, which the Submit gate should prevent.
- * The vault panel asks for its recovery passphrase through this, and with `password`
- * for a new unlock password, which must have its minimum length before Submit works.
+ * `once` gives one field with a "Type it twice" toggle; without it the caller
+ * asks for confirmation and the two fields must agree, with no way to turn that
+ * off. `accepted` is false when the user cancelled; `value` is null when the
+ * dialog was accepted without a confirmed value, which the Submit gate should
+ * prevent. The vault panel asks for its recovery passphrase through this, and
+ * with `password` for a new unlock password, which must have its minimum length
+ * before Submit works.
  */
 export async function askSecret(
   prompt: string,

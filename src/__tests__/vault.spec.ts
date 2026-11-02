@@ -601,7 +601,7 @@ describe('VaultPanel', () => {
     await flush();
     expect(mockAskSecret).toHaveBeenCalledWith(
       expect.any(String),
-      false,
+      true,
       'Create vault'
     );
     expect(api.init).toHaveBeenCalledWith('recovery words');
@@ -3038,7 +3038,7 @@ describe('VaultPanel', () => {
       await flush();
       expect(mockAskSecret).toHaveBeenCalledWith(
         expect.any(String),
-        false,
+        true,
         'Change recovery passphrase'
       );
       expect(api.replaceRecovery).toHaveBeenCalledWith('new words', {
@@ -3047,6 +3047,21 @@ describe('VaultPanel', () => {
       });
       expect(lineAtAsk).toBeUndefined();
       expect(text(panel)).toContain('Recovery passphrase changed');
+      mockAskSecret.mockReset();
+    });
+
+    it('changes nothing when the prompt hands back no new passphrase', async () => {
+      fakePasskey();
+      // askSecret hands back no value when the field is left empty or the dialog is
+      // cancelled.
+      mockAskSecret.mockResolvedValue({ accepted: true, value: null });
+      const api = fakeApi();
+      const panel = await openCog(api);
+      button(panel, 'Change').click();
+      await flush();
+      await flush();
+      expect(api.replaceRecovery).not.toHaveBeenCalled();
+      expect(text(panel)).not.toContain('Recovery passphrase changed');
       mockAskSecret.mockReset();
     });
 
@@ -3778,6 +3793,12 @@ describe('VaultPanel', () => {
 // --------------------------------------------------------------------------- //
 
 describe('EntryForm', () => {
+  /** Tick or untick the "Type it twice" box, as a click does. */
+  const tick = (form: EntryForm, on: boolean) => {
+    form.twice.checked = on;
+    form.twice.dispatchEvent(new Event('change'));
+  };
+
   it('never lets the browser autofill the password and fills it on Generate', async () => {
     const form = new EntryForm(async () => 'fresh-generated');
     expect(form.password.type).toBe('password');
@@ -3859,6 +3880,88 @@ describe('EntryForm', () => {
     expect(
       empty.name.validationMessage || empty.name.validity.customError
     ).toBeTruthy();
+  });
+
+  it('saves with one password field when Type it twice is off, and gates Save on a match when it is on', () => {
+    const form = new EntryForm(async () => 'x');
+    expect(form.twice.checked).toBe(false);
+    expect(form.confirm.hidden).toBe(true);
+
+    form.password.value = 'typed by hand';
+    form.password.dispatchEvent(new Event('input'));
+    // Off: nothing is asked twice, and the confirm field holds no error.
+    expect(form.getValue().password).toBe('typed by hand');
+    expect(form.confirm.checkValidity()).toBe(true);
+
+    tick(form, true);
+    expect(form.confirm.hidden).toBe(false);
+    // On: the confirm field carries the custom validity that disables Save.
+    expect(form.confirm.checkValidity()).toBe(false);
+    form.confirm.value = 'typed by han';
+    form.confirm.dispatchEvent(new Event('input'));
+    expect(form.confirm.validationMessage).toBe(
+      'Enter the same password in both fields'
+    );
+    form.confirm.value = 'typed by hand';
+    form.confirm.dispatchEvent(new Event('input'));
+    expect(form.confirm.checkValidity()).toBe(true);
+
+    // Off again: the value and its validity are cleared, and Save is not held.
+    tick(form, false);
+    expect(form.confirm.hidden).toBe(true);
+    expect(form.confirm.value).toBe('');
+    expect(form.confirm.checkValidity()).toBe(true);
+  });
+
+  it('shuts Save again when Generate replaces a password the confirm field had matched', async () => {
+    const form = new EntryForm(async () => 'fresh-generated');
+    tick(form, true);
+    form.password.value = 'typed';
+    form.password.dispatchEvent(new Event('input'));
+    form.confirm.value = 'typed';
+    form.confirm.dispatchEvent(new Event('input'));
+    expect(form.confirm.checkValidity()).toBe(true);
+
+    form.generate.click();
+    await flush();
+
+    expect(form.password.value).toBe('fresh-generated');
+    expect(form.confirm.checkValidity()).toBe(false);
+  });
+
+  it('starts Edit unticked, and an empty password still keeps the current one', () => {
+    const form = new EntryForm(async () => 'x', ENTRIES[0]);
+    expect(form.twice.checked).toBe(false);
+    expect(form.confirm.hidden).toBe(true);
+    // Ticked over an empty field: an empty pair agrees, and no password is sent.
+    tick(form, true);
+    expect(form.confirm.checkValidity()).toBe(true);
+    expect(form.getValue()).not.toHaveProperty('password');
+  });
+
+  it('says under the field that the confirmation differs, and restores the help on a match', () => {
+    const form = new EntryForm(async () => 'x', ENTRIES[0]);
+    tick(form, true);
+    expect(form.confirm.getAttribute('aria-describedby')).toBe(
+      form.password.getAttribute('aria-describedby')
+    );
+    form.password.value = 'typed';
+    form.password.dispatchEvent(new Event('input'));
+    form.confirm.value = 'typed twice';
+    form.confirm.dispatchEvent(new Event('input'));
+    expect(form.confirm.checkValidity()).toBe(false);
+    expect(form.node.textContent).toContain(
+      'Enter the same password in both fields'
+    );
+    form.confirm.value = 'typed';
+    form.confirm.dispatchEvent(new Event('input'));
+    expect(form.confirm.checkValidity()).toBe(true);
+    expect(form.node.textContent).toContain(
+      'Save replaces the current password'
+    );
+    expect(form.node.textContent).not.toContain(
+      'Enter the same password in both fields'
+    );
   });
 
   it('shows Edit with the same visible fields as Add, the name read-only, plus the keep-password help', () => {
@@ -4194,8 +4297,8 @@ describe('the password and authenticator app', () => {
     expect(mockChoose).toHaveBeenCalledWith({ passkey: {}, mfa: {} });
     await settle();
     expect(mockAskSecret).toHaveBeenCalledWith(
-      'Enter the new unlock password twice, at least 16 characters',
-      false,
+      'Enter the new unlock password, at least 16 characters',
+      true,
       ADD,
       { minLength: 16 }
     );

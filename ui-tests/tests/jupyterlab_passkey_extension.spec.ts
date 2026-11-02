@@ -230,15 +230,17 @@ test('get without prf_salt returns the credential and no PRF', async ({
  */
 async function openPassphraseDialog(
   page: any,
-  nonce: string
+  nonce: string,
+  twice = false
 ): Promise<{ done: Promise<boolean> }> {
   const done = page.evaluate(
-    (n: string) =>
+    ({ n, t }: { n: string; t: boolean }) =>
       (window as any).jupyterapp.commands.execute('passkey:passphrase', {
         nonce: n,
-        prompt: 'Recovery passphrase'
+        prompt: 'Recovery passphrase',
+        twice: t
       }) as Promise<boolean>,
-    nonce
+    { n: nonce, t: twice }
   );
   await page.waitForSelector('.jp-PassphraseDialog-body');
   return { done };
@@ -254,7 +256,7 @@ test('passphrase dialog relays the value to a raw 0600 relay file', async ({
   fs.rmSync(passFile, { force: true });
   const PASSPHRASE = 'correct horse battery staple';
 
-  const { done } = await openPassphraseDialog(page, nonce);
+  const { done } = await openPassphraseDialog(page, nonce, true);
 
   const inputs = page.locator('.jp-PassphraseDialog-input');
   await inputs.nth(0).fill(PASSPHRASE);
@@ -280,7 +282,7 @@ test('passphrase dialog cannot submit two entries that differ', async ({
   const passFile = path.join(RELAY_DIR, `${nonce}.pass`);
   fs.rmSync(passFile, { force: true });
 
-  const { done } = await openPassphraseDialog(page, nonce);
+  const { done } = await openPassphraseDialog(page, nonce, true);
 
   const submit = page.locator('.jp-Dialog-button.jp-mod-accept');
   const status = page.locator('.jp-PassphraseDialog-status');
@@ -313,7 +315,11 @@ test('passphrase dialog keeps its height as the status changes', async ({
 }) => {
   await page.goto();
 
-  const { done } = await openPassphraseDialog(page, 'testpassheight0123456789');
+  const { done } = await openPassphraseDialog(
+    page,
+    'testpassheight0123456789',
+    true
+  );
 
   const dialog = page.locator('.jp-Dialog-content');
   const inputs = page.locator('.jp-PassphraseDialog-input');
@@ -344,7 +350,7 @@ test('passphrase dialog relays nothing when cancelled', async ({ page }) => {
   const passFile = path.join(RELAY_DIR, `${nonce}.pass`);
   fs.rmSync(passFile, { force: true });
 
-  const { done } = await openPassphraseDialog(page, nonce);
+  const { done } = await openPassphraseDialog(page, nonce, true);
 
   const inputs = page.locator('.jp-PassphraseDialog-input');
   await inputs.nth(0).fill('correct horse battery staple');
@@ -355,7 +361,7 @@ test('passphrase dialog relays nothing when cancelled', async ({ page }) => {
   expect(fs.existsSync(passFile)).toBe(false);
 });
 
-test('passphrase --once takes one entry, with no confirm field to match', async ({
+test('passphrase takes one entry by default, and the toggle asks for a second', async ({
   page
 }) => {
   await page.goto();
@@ -369,7 +375,6 @@ test('passphrase --once takes one entry, with no confirm field to match', async 
     (n: string) =>
       (window as any).jupyterapp.commands.execute('passkey:passphrase', {
         nonce: n,
-        once: true,
         prompt: 'GitHub token'
       }) as Promise<boolean>,
     nonce
@@ -378,16 +383,32 @@ test('passphrase --once takes one entry, with no confirm field to match', async 
 
   const inputs = page.locator('.jp-PassphraseDialog-input');
   const submit = page.locator('.jp-Dialog-button.jp-mod-accept');
+  const twice = page.getByRole('checkbox', { name: 'Type it twice' });
+  const status = page.locator('.jp-PassphraseDialog-status');
 
-  await expect(inputs).toHaveCount(1);
-  // Nothing to disagree with, so no status row either.
-  await expect(page.locator('.jp-PassphraseDialog-status')).toHaveCount(0);
+  // One field, and the confirm field it can reveal, out of play and saying nothing.
+  await expect(inputs.nth(0)).toBeVisible();
+  await expect(inputs.nth(1)).toBeHidden();
+  await expect(twice).not.toBeChecked();
+  await expect(status).toBeHidden();
 
   // The gate still holds an empty field shut, and still opens on the real
   // keystroke rather than one behind it - the capture-phase ordering has to be
   // right in this mode too, and jest cannot see it because it mocks Dialog away.
   await expect(submit).toBeDisabled();
   await inputs.nth(0).fill(TOKEN);
+  await expect(submit).toBeEnabled();
+
+  // Opting in reveals the confirm field and shuts Submit until the pair agrees.
+  await twice.check();
+  await expect(inputs.nth(1)).toBeVisible();
+  await expect(status).toBeHidden();
+  await expect(submit).toBeDisabled();
+  await inputs.nth(1).fill(`${TOKEN}_typo`);
+  await expect(status).toHaveText('Passphrases do not match');
+  await expect(submit).toBeDisabled();
+  await inputs.nth(1).fill(TOKEN);
+  await expect(status).toHaveText('Passphrases match');
   await expect(submit).toBeEnabled();
 
   await page.click('.jp-Dialog-button.jp-mod-accept');

@@ -47,7 +47,7 @@ jest.mock('../vault/api', () => ({
 }));
 
 import schema from '../../schema/vault.json';
-import { REGISTER_COMMAND, vaultPlugin } from '../vault/plugin';
+import { REGISTER_COMMAND, SETUP_COMMAND, vaultPlugin } from '../vault/plugin';
 
 /** A vault whose one passkey belongs to this tab's hostname (jsdom: localhost). */
 function vaultStatus(): any {
@@ -126,7 +126,10 @@ it('labels its commands and the panel through the lab translator, and describes 
   const register = commands.get(REGISTER_COMMAND);
   expect(unlock.label).toBe('<Unlock Vault With Passkey>');
   expect(register.label).toBe('<Add Vault Passkey>');
-  expect(Object.keys(unlock.describedBy.args.properties)).toEqual(['nonce']);
+  expect(Object.keys(unlock.describedBy.args.properties)).toEqual([
+    'nonce',
+    'method'
+  ]);
   expect(Object.keys(register.describedBy.args.properties)).toEqual([
     'nonce',
     'label'
@@ -297,6 +300,216 @@ it('reads the vault again for an unlock when this tab read no passkey for its ho
   await commands.get('passkey:vault-unlock').execute({ nonce: 'n6' });
   expect(mockApi.unlockPasskey.mock.calls[0][0]).toBe('AAEC');
   expect(answered()).toEqual({ nonce: 'n6', ok: true });
+});
+
+it('runs the chooser for method choose, and the passkey with no method', async () => {
+  const commands = await activate();
+  const answers = (): any[] =>
+    mockRequest.mock.calls
+      .filter(c => c[0] === 'result')
+      .map(c => JSON.parse(c[2].body));
+  mockApi.unlockRecovery = jest.fn().mockResolvedValue(vaultStatus());
+  mockAskSecret.mockResolvedValue({ accepted: true, value: 'recovery words' });
+  mockLaunch.mockImplementation(async (dialog: any) => {
+    expect(dialog.options.title).toBe('Unlock vault');
+    // The chooser offers the passkey, the pair and the passphrase; pick the last.
+    dialog.options.body.chosen = 'recovery';
+    return { button: { accept: false } };
+  });
+  await commands
+    .get('passkey:vault-unlock')
+    .execute({ nonce: 'n7', method: 'choose' });
+  expect(mockApi.unlockRecovery).toHaveBeenCalledWith('recovery words');
+  expect(answers()).toEqual([{ nonce: 'n7', ok: true }]);
+
+  // No method: a passkey for this hostname is asked for directly.
+  mockApi.unlockPasskey = jest.fn().mockResolvedValue(vaultStatus());
+  Object.defineProperty(navigator, 'credentials', {
+    value: {
+      get: jest.fn().mockResolvedValue({
+        rawId: new Uint8Array([0, 1, 2]).buffer,
+        getClientExtensionResults: () => ({
+          prf: { results: { first: new Uint8Array([1]).buffer } }
+        })
+      })
+    },
+    configurable: true
+  });
+  await commands.get('passkey:vault-unlock').execute({ nonce: 'n8' });
+  expect(mockApi.unlockPasskey).toHaveBeenCalled();
+  expect(answers()).toEqual([
+    { nonce: 'n7', ok: true },
+    { nonce: 'n8', ok: true }
+  ]);
+});
+
+it('offers the chooser when the passkey for this hostname does not answer', async () => {
+  // The slot matches, but the passkey lives on another machine or was deleted:
+  // the ceremony fails and the chooser offers every way in.
+  const commands = await activate();
+  await mockPanel.refresh();
+  Object.defineProperty(navigator, 'credentials', {
+    value: {
+      get: jest.fn().mockRejectedValue(new DOMException('x', 'NotAllowedError'))
+    },
+    configurable: true
+  });
+  mockApi.unlockRecovery = jest.fn().mockResolvedValue(vaultStatus());
+  mockAskSecret.mockResolvedValue({ accepted: true, value: 'recovery words' });
+  mockLaunch.mockImplementation(async (dialog: any) => {
+    dialog.options.body.chosen = 'recovery';
+    return { button: { accept: false } };
+  });
+  await commands.get('passkey:vault-unlock').execute({ nonce: 'n9' });
+  expect(mockApi.unlockRecovery).toHaveBeenCalledWith('recovery words');
+  expect(answered()).toEqual({ nonce: 'n9', ok: true });
+});
+
+it('unlocks from the chooser with the passkey', async () => {
+  const commands = await activate();
+  mockApi.unlockPasskey = jest.fn().mockResolvedValue(vaultStatus());
+  Object.defineProperty(navigator, 'credentials', {
+    value: {
+      get: jest.fn().mockResolvedValue({
+        rawId: new Uint8Array([0, 1, 2]).buffer,
+        getClientExtensionResults: () => ({
+          prf: { results: { first: new Uint8Array([1]).buffer } }
+        })
+      })
+    },
+    configurable: true
+  });
+  mockLaunch.mockImplementation(async (dialog: any) => {
+    dialog.options.body.chosen = 'passkey';
+    return { button: { accept: false } };
+  });
+  await commands
+    .get('passkey:vault-unlock')
+    .execute({ nonce: 'n10', method: 'choose' });
+  expect(mockApi.unlockPasskey).toHaveBeenCalledWith('AAEC', 'AQ');
+  expect(answered()).toEqual({ nonce: 'n10', ok: true });
+});
+
+it('unlocks from the chooser with the unlock password and a code', async () => {
+  const commands = await activate();
+  const withMfa = {
+    ...vaultStatus(),
+    slots: [...vaultStatus().slots, { type: 'password' }],
+    authenticator: { created: '2026-10-02T10:00:00Z' }
+  };
+  mockApi.status.mockResolvedValue(withMfa);
+  mockApi.unlockPassword = jest.fn().mockResolvedValue(withMfa);
+  mockAskSecret.mockResolvedValue({ accepted: true, value: 'everyday' });
+  mockLaunch.mockImplementation(async (dialog: any) => {
+    const body = dialog.options.body;
+    if ('chosen' in body) {
+      body.chosen = 'mfa';
+      return { button: { accept: false } };
+    }
+    body.code.value = '123456';
+    return { button: { accept: true } };
+  });
+  await commands
+    .get('passkey:vault-unlock')
+    .execute({ nonce: 'n11', method: 'choose' });
+  expect(mockApi.unlockPassword).toHaveBeenCalledWith('everyday', '123456');
+  expect(answered()).toEqual({ nonce: 'n11', ok: true });
+});
+
+/** A browser that creates a passkey and answers the PRF request for it. */
+function creatingBrowser(): void {
+  Object.defineProperty(navigator, 'credentials', {
+    value: {
+      get: jest.fn().mockResolvedValue({
+        rawId: new Uint8Array([9]).buffer,
+        getClientExtensionResults: () => ({
+          prf: { results: { first: new Uint8Array([1]).buffer } }
+        })
+      }),
+      create: jest.fn().mockResolvedValue({ rawId: new Uint8Array([9]).buffer })
+    },
+    configurable: true
+  });
+}
+
+const NAMING = async (dialog: any): Promise<any> => ({
+  button: {
+    accept: ['Name the new passkey', 'Confirm the new passkey'].includes(
+      dialog.options.title
+    )
+  }
+});
+
+it('sets the vault up from a command: the passphrase, then a passkey, and answers ok', async () => {
+  const commands = await activate();
+  creatingBrowser();
+  mockApi.status.mockResolvedValue({
+    ...vaultStatus(),
+    initialized: false,
+    slots: []
+  });
+  mockApi.init = jest.fn().mockResolvedValue(undefined);
+  mockAskSecret.mockResolvedValue({ accepted: true, value: 'recovery words' });
+  mockLaunch.mockImplementation(NAMING);
+
+  await commands.get(SETUP_COMMAND).execute({ nonce: 's1' });
+  expect(mockAskSecret.mock.calls[0][0]).toBe(
+    'Choose a recovery passphrase and store it offline - it is the only way in without a passkey.'
+  );
+  expect(mockApi.init).toHaveBeenCalledWith('recovery words');
+  expect(mockApi.addPasskey.mock.calls[0][1]).toEqual({
+    current: 'recovery words'
+  });
+  expect(answered()).toEqual({ nonce: 's1', ok: true });
+});
+
+it('adds only the passkey when the vault already exists without one', async () => {
+  const commands = await activate();
+  creatingBrowser();
+  mockApi.status.mockResolvedValue({
+    ...vaultStatus(),
+    slots: [{ type: 'recovery' }]
+  });
+  mockApi.init = jest.fn();
+  mockAskSecret.mockResolvedValue({ accepted: true, value: 'recovery words' });
+  mockLaunch.mockImplementation(NAMING);
+
+  await commands.get(SETUP_COMMAND).execute({ nonce: 's2' });
+  expect(mockApi.init).not.toHaveBeenCalled();
+  expect(mockAskSecret.mock.calls[0][0]).toBe(
+    'Enter the current recovery passphrase'
+  );
+  expect(mockApi.addPasskey.mock.calls[0][1]).toEqual({
+    current: 'recovery words'
+  });
+  expect(answered()).toEqual({ nonce: 's2', ok: true });
+});
+
+it('answers without a dialog when the vault and its passkey are already there', async () => {
+  const commands = await activate();
+  mockApi.init = jest.fn();
+  await commands.get(SETUP_COMMAND).execute({ nonce: 's3' });
+  expect(mockAskSecret).not.toHaveBeenCalled();
+  expect(mockApi.init).not.toHaveBeenCalled();
+  expect(mockApi.addPasskey).not.toHaveBeenCalled();
+  expect(answered()).toEqual({ nonce: 's3', ok: true });
+});
+
+it('posts a cancelled set-up step to the command, naming the step', async () => {
+  const commands = await activate();
+  mockApi.status.mockResolvedValue({
+    ...vaultStatus(),
+    initialized: false,
+    slots: []
+  });
+  mockAskSecret.mockResolvedValue({ accepted: false, value: null });
+  await commands.get(SETUP_COMMAND).execute({ nonce: 's4' });
+  expect(answered()).toEqual({
+    nonce: 's4',
+    ok: false,
+    error:
+      'the recovery passphrase step was cancelled - run the command again to continue the vault set-up'
+  });
 });
 
 it('opens the Settings Editor at the vault settings, searched by the schema title', async () => {

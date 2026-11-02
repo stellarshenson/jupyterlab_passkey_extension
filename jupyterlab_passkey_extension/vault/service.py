@@ -413,7 +413,7 @@ class VaultService:
                 raise Conflict(f"an entry named {name!r} already exists")
             now = store._now()
             entries.append({"name": name, **{k: fields.get(k, "") for k in FIELDS},
-                            "created": now, "updated": now})
+                            "created": now, "updated": now, "used": now})
 
         store.update_entries(store.vault_path(), self._dek(), change)
 
@@ -555,7 +555,8 @@ class VaultService:
                     continue
                 now = store._now()
                 entries.append({"name": name, **{k: fields.get(k, "") for k in FIELDS},
-                                "created": dates.get("created", now), "updated": dates.get("updated", now)})
+                                "created": dates.get("created", now), "updated": dates.get("updated", now),
+                                "used": now})
                 names.add(name)
                 added += 1
             return {"added": added, "skipped": skipped}

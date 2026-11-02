@@ -388,7 +388,7 @@ def test_passphrase_prints_a_reference_never_the_value(relay_dir, capsys, monkey
 
     monkeypatch.setattr(cli, "_trigger", fake_trigger)
 
-    rc = cli.cmd_passphrase(_ns(prompt="Recovery passphrase", once=False, timeout=1.0))
+    rc = cli.cmd_passphrase(_ns(prompt="Recovery passphrase", twice=False, timeout=1.0))
 
     out = capsys.readouterr().out
     assert rc == 0
@@ -411,7 +411,7 @@ def test_passphrase_removes_the_secret_when_its_reference_cannot_be_written(rela
         "cli._trigger = lambda c, a, l, m: "
         "(pathlib.Path(%r) / (a['nonce'] + '.pass')).write_text('hunter2');"
         "cli._wait = lambda *a, **kw: None;"
-        "sys.exit(cli.cmd_passphrase(argparse.Namespace(prompt=None, once=False, timeout=1.0)))"
+        "sys.exit(cli.cmd_passphrase(argparse.Namespace(prompt=None, twice=False, timeout=1.0)))"
         % (str(REPO_ROOT), str(relay_dir))
     )
     with open("/dev/full", "w") as full:
@@ -431,7 +431,7 @@ def test_passphrase_started_with_stdout_closed_removes_the_secret(relay_dir, mon
     )
     monkeypatch.setattr(sys, "stdout", None)
     with pytest.raises(SystemExit, match="the secret was removed"):
-        cli.cmd_passphrase(_ns(prompt=None, once=False, timeout=1.0))
+        cli.cmd_passphrase(_ns(prompt=None, twice=False, timeout=1.0))
     assert not list(relay_dir.glob("*.pass"))
 
 
@@ -443,7 +443,7 @@ def test_passphrase_passes_the_prompt_through(relay_dir, monkeypatch, no_wait):
         (relay_dir / f"{args_obj['nonce']}.pass").write_text("x")
 
     monkeypatch.setattr(cli, "_trigger", fake_trigger)
-    cli.cmd_passphrase(_ns(prompt="Recovery passphrase", once=False, timeout=1.0))
+    cli.cmd_passphrase(_ns(prompt="Recovery passphrase", twice=False, timeout=1.0))
 
     assert seen["prompt"] == "Recovery passphrase"
 
@@ -458,13 +458,14 @@ def test_passphrase_leaves_the_prompt_out_when_not_given(relay_dir, monkeypatch,
         (relay_dir / f"{args_obj['nonce']}.pass").write_text("x")
 
     monkeypatch.setattr(cli, "_trigger", fake_trigger)
-    cli.cmd_passphrase(_ns(prompt=None, once=False, timeout=1.0))
+    cli.cmd_passphrase(_ns(prompt=None, twice=False, timeout=1.0))
 
     assert "prompt" not in seen
     assert "once" not in seen
+    assert "twice" not in seen
 
 
-def test_passphrase_once_asks_for_a_single_entry(relay_dir, monkeypatch, no_wait):
+def test_passphrase_asks_once_by_default(relay_dir, monkeypatch, no_wait):
     seen = {}
 
     def fake_trigger(command_id, args_obj, label, message):
@@ -472,9 +473,38 @@ def test_passphrase_once_asks_for_a_single_entry(relay_dir, monkeypatch, no_wait
         (relay_dir / f"{args_obj['nonce']}.pass").write_text("x")
 
     monkeypatch.setattr(cli, "_trigger", fake_trigger)
-    cli.cmd_passphrase(_ns(prompt=None, once=True, timeout=1.0))
+    cli.cmd_passphrase(_ns(prompt=None, twice=False, timeout=1.0))
 
-    assert seen["once"] is True
+    # One entry is the dialog's own default, toggle and all.
+    assert "once" not in seen
+    assert "twice" not in seen
+
+
+def test_passphrase_twice_asks_for_two_entries(relay_dir, monkeypatch, no_wait):
+    seen = {}
+
+    def fake_trigger(command_id, args_obj, label, message):
+        seen.update(args_obj)
+        (relay_dir / f"{args_obj['nonce']}.pass").write_text("x")
+
+    monkeypatch.setattr(cli, "_trigger", fake_trigger)
+    cli.cmd_passphrase(_ns(prompt=None, twice=True, timeout=1.0))
+
+    assert seen["twice"] is True
+
+
+def test_passphrase_once_is_still_accepted_but_asks_nothing_extra(relay_dir, monkeypatch, no_wait):
+    seen = {}
+
+    def fake_trigger(command_id, args_obj, label, message):
+        seen.update(args_obj)
+        (relay_dir / f"{args_obj['nonce']}.pass").write_text("x")
+
+    monkeypatch.setattr(cli, "_trigger", fake_trigger)
+    cli.cmd_passphrase(_ns(prompt=None, once=True, twice=False, timeout=1.0))
+
+    assert "once" not in seen
+    assert "twice" not in seen
 
 
 COPY_SECRET = "s3cr3t-token-value"
@@ -1276,6 +1306,16 @@ def test_timeout_defaults_to_120_when_omitted(monkeypatch, relay_dir):
     assert seen["timeout"] == 120.0
 
 
+@pytest.mark.parametrize("flag", ["--once", "--twice"])
+def test_passphrase_accepts_once_and_twice(flag, monkeypatch, relay_dir):
+    # --once is carried for compatibility; --twice is the caller asking for two
+    # fields. Both must parse and run.
+    seen = {}
+    _drive_main(monkeypatch, ["passphrase", flag], seen)
+
+    assert seen["timeout"] == 120.0
+
+
 def test_wait_accepts_a_relay_that_lands_in_the_final_sleep(relay_dir):
     """A near-miss must be a success, not a lost ceremony.
 
@@ -1654,7 +1694,7 @@ def test_passphrase_on_keyctl_prints_a_keyctl_reference(capsys, monkeypatch, no_
     monkeypatch.setattr(cli, "_trigger", fake_trigger)
 
     try:
-        assert cli.cmd_passphrase(_ns(prompt="Recovery passphrase", once=False, timeout=1.0)) == 0
+        assert cli.cmd_passphrase(_ns(prompt="Recovery passphrase", twice=False, timeout=1.0)) == 0
         out = capsys.readouterr().out
         assert SECRET not in out
         assert out.strip() == f"keyctl:jlab-passkey:{seen['nonce']}.pass"

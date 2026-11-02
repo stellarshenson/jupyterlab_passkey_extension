@@ -40,6 +40,7 @@ dynamic = ["version", "description", "authors", "urls", "keywords"]
 
 [project.scripts]
 jupyterlab-passkey = "jupyterlab_passkey_extension.cli:main"
+git-credential-jupyterlab-passkey = "jupyterlab_passkey_extension.vault.gitcred:main"
 
 [project.optional-dependencies]
 dev = [
@@ -110,3 +111,9 @@ before-publish-assets = ["""python -c "import pathlib, pypiserver; [f.write_text
 
 [tool.check-wheel-contents]
 ignore = ["W002"]
+
+[tool.pytest.ini_options]
+# `make test` runs a bare `pytest` from the repository root, which otherwise also
+# collects the scratch copies of test files that workflow runs leave under tmp/ and
+# fails on their duplicate module names.
+testpaths = ["jupyterlab_passkey_extension/tests"]

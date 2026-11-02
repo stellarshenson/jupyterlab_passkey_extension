@@ -105,7 +105,12 @@ const plugin: JupyterFrontEndPlugin<void> = {
             once: {
               type: 'boolean',
               description:
-                'true asks the value once, with no field to confirm it.'
+                'Accepted for compatibility; one entry is the default.'
+            },
+            twice: {
+              type: 'boolean',
+              description:
+                'true asks the value twice, with a field to confirm it.'
             }
           },
           required: ['nonce']

@@ -56,11 +56,13 @@ async function openVault(page: any): Promise<void> {
 
 async function submitSecret(page: any, value: string, twice: boolean) {
   const dialog = page.locator('.jp-Dialog');
+  const fields = dialog.locator('input[type="password"]');
   // Typing starts in the passphrase field, not on the Submit button.
-  await expect(dialog.locator('input[type="password"]').nth(0)).toBeFocused();
-  await dialog.locator('input[type="password"]').nth(0).fill(value);
+  await expect(fields.nth(0)).toBeFocused();
+  await fields.nth(0).fill(value);
   if (twice) {
-    await dialog.locator('input[type="password"]').nth(1).fill(value);
+    await dialog.getByRole('checkbox', { name: 'Type it twice' }).check();
+    await fields.nth(1).fill(value);
   }
   await dialog.getByRole('button', { name: 'Submit' }).click();
 }
@@ -483,7 +485,8 @@ test('an entry opens read-only in a popup, and its password shows only after a p
   const row = panel(page).locator('.jp-PasskeyVaultPanel-rowLine', {
     hasText: 'github/api'
   });
-  await expect(row).toHaveText('github/apimenever');
+  // Adding counts as a use, so a fresh entry is not dimmed as never used.
+  await expect(row).toHaveText('github/apimenow');
   // The filter box is filled with the panel's background, as the search field of
   // the AI assistants panel, not with the colour of a dialog input.
   await panel(page).getByRole('button', { name: 'Filter entries' }).click();
@@ -638,7 +641,27 @@ test('the entry dialog is wide with a tall Notes, and Edit shows the same fields
   // Typing starts in Name, not on the Save button.
   await expect(dialog.getByLabel('Name', { exact: true })).toBeFocused();
   await page.keyboard.type('github/api');
-  await dialog.getByRole('button', { name: 'Save' }).click();
+  // One password field by default; the toggle adds the confirm field, and Save
+  // stays shut until the pair agrees.
+  const password = dialog.getByLabel('Password', { exact: true });
+  const save = dialog.getByRole('button', { name: 'Save' });
+  const twice = dialog.getByRole('checkbox', { name: 'Type it twice' });
+  await expect(twice).not.toBeChecked();
+  await expect(password).toBeVisible();
+  await expect(dialog.locator('input[type="password"]').nth(1)).toBeHidden();
+  await twice.check();
+  const confirmPassword = dialog.locator('input[type="password"]').nth(1);
+  await expect(confirmPassword).toBeVisible();
+  await expect(confirmPassword).toHaveAttribute(
+    'placeholder',
+    'Confirm password'
+  );
+  await password.fill('s3cret-value');
+  await confirmPassword.fill('s3cret-typo');
+  await expect(save).toBeDisabled();
+  await confirmPassword.fill('s3cret-value');
+  await expect(save).toBeEnabled();
+  await save.click();
 
   await panel(page)
     .locator('.jp-PasskeyVaultPanel-rowLine', { hasText: 'github/api' })
@@ -860,6 +883,7 @@ async function startMfa(page: any): Promise<string> {
   await expect(dialog.locator('.jp-Dialog-header')).toHaveText(MFA_TITLE);
   const fields = dialog.locator('input[type="password"]');
   await fields.nth(0).fill(UNLOCK_PASSWORD);
+  await dialog.getByRole('checkbox', { name: 'Type it twice' }).check();
   await fields.nth(1).fill(UNLOCK_PASSWORD);
   await dialog.getByRole('button', { name: 'Submit' }).click();
   await appDialog(page).code.waitFor({ timeout: 20000 });
@@ -888,14 +912,20 @@ test('a password and an authenticator app are added in one flow, and the two unl
   const row = method(page, 'mfa');
   await expect(row).toHaveCount(0);
 
-  // The flow's first step: the password twice. Submit stays off until both fields
-  // agree and hold the 12 characters the setting asks.
+  // The flow's first step: one password field, with the "Type it twice" opt-in.
+  // Submit stays off until the pair agrees and holds the 12 characters asked.
   await addMethod(page, 'mfa');
   await expect(dialog.locator('.jp-Dialog-header')).toHaveText(MFA_TITLE);
   const fields = dialog.locator('input[type="password"]');
   const submit = dialog.getByRole('button', { name: 'Submit' });
   const status = dialog.locator('.jp-PassphraseDialog-status');
+  const twice = dialog.getByRole('checkbox', { name: 'Type it twice' });
+  await expect(fields.nth(0)).toBeVisible();
+  await expect(fields.nth(1)).toBeHidden();
   await expect(fields.nth(0)).toHaveAttribute('placeholder', 'Password');
+  await expect(twice).not.toBeChecked();
+  await twice.check();
+  await expect(fields.nth(1)).toBeVisible();
   await expect(fields.nth(1)).toHaveAttribute(
     'placeholder',
     'Confirm password'
@@ -1289,12 +1319,12 @@ test('a revealed or externally read entry shows its use without a manual refresh
   const age = (name: string) =>
     row(name).locator('.jp-PasskeyVaultPanel-rowAge');
 
-  // Both adds are still unused, so they take the stale dim and not the recent class.
-  await expect(row('reveal/one')).not.toHaveClass(/jp-mod-recentlyActive/);
-  await expect(row('reveal/one')).toHaveClass(/jp-mod-stale/);
+  // Adding counts as a use, so both rows start recent and undimmed.
+  await expect(row('reveal/one')).toHaveClass(/jp-mod-recentlyActive/);
+  await expect(row('reveal/one')).not.toHaveClass(/jp-mod-stale/);
   await expect(
     row('reveal/one').locator('.jp-PasskeyVaultPanel-rowName')
-  ).toHaveCSS('opacity', '0.65');
+  ).toHaveCSS('opacity', '1');
 
   // Create vault sent a proof just now, so the reveal window is open and the eye asks
   // nothing. Nothing below presses Refresh: the row must follow on its own.

@@ -2,6 +2,27 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.0] - 2026-11-02
+
+### Added
+
+- One secret field by default on every secret-setting surface, with an "Type it twice" confirm the user can tick; `jupyterlab-passkey passphrase` asks once and takes `--twice`
+- `git-credential-jupyterlab-passkey`, a git credential helper that answers from the vault and follows gitcredentials(7)
+- `vault git install` and `vault git uninstall` to manage the helper in the global or repository git config
+- `vault git migrate` to import git's plaintext credential store, naming entries `git/<username>@<host>[:<port>][/<path>]`
+- A browser set-up a git request raises when no vault exists: the recovery passphrase, then a passkey, resumable after a cancel
+- A `BUMP` level in the Makefile, so a release can publish without moving the version
+
+### Changed
+
+- A missing vault offers set-up at a terminal before the command runs, and the git helper offers it in the browser
+- `vault git migrate --remove-source` removes the plaintext files only when every line was imported, and retires the global `store` helper that would rewrite them
+
+### Fixed
+
+- A newly added or imported entry is stamped used, so it no longer reads "never"
+- The unlock chooser appears after a failed passkey unlock, a helper call without git on PATH exits with one line instead of a traceback, and a scheme-less URL entry matches its host
+
 ## [1.1.80] - 2026-10-31
 
 ### Changed

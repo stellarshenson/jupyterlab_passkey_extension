@@ -209,6 +209,13 @@ The passphrase value must reach a tool outside this extension. The CLI prints a 
   - log: 2026-07-18T00:00:00Z @kj criterion added
   - log: 2026-09-26T14:28:39Z @kj edited importance added "LOW"; test added "read the docs/cli-reference.md passphrase examples"; test-tags added "MANUAL"; evidence added "docs/cli-reference.md lines 78-97 show both reference forms and a consumer `case` on the scheme; read 2026-09-26"
   - log: 2026-09-27T01:31:17Z @kj edited evidence "docs/cli-reference.md lines 78-97 show both reference forms and a consumer `case` on the scheme; read 2026-09-26" -> "docs/cli-reference.md passphrase section shows both reference forms and a consumer case on the scheme; read 2026-09-27"
+- [x] `ACC-PASS-262-ONCE-DEFAULT` **Passphrase asks once by default** - HIGH; `jupyterlab-passkey passphrase` asks for the secret once; `--twice` adds a confirm field for a self-typed password; the value handed back to the relay is unchanged
+  - evidence: this run pytest 537 passed, 0 failed: test_passphrase_asks_once_by_default (no once or twice sent), test_passphrase_twice_asks_for_two_entries (twice true), test_passphrase_once_is_still_accepted_but_asks_nothing_extra (--once sends neither), test_passphrase_accepts_once_and_twice; passphrase asks once by default, --twice asks twice, --once accepted
+  - test: plain passphrase asks one field; --twice asks two and blocks Submit on a mismatch
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-11-01T11:44:48Z @kj runPassphrase passes once=true unless --twice; cli.py gains the flag and the help line
+  - log: 2026-11-01T11:44:48Z @kj added
+  - log: 2026-11-01T13:25:43Z @kj closed
 
 ## Relay security properties `SECURE`
 
@@ -1040,7 +1047,7 @@ The `jupyterlab-passkey vault` subcommands
   - log: 2026-09-27T12:16:03Z @kj edited text "vault exec --env VAR=NAME[:FIELD] -- CMD becomes CMD (exec) with the values in its environment; signals and the exit status are CMD's own" -> "vault exec --env VAR=NAME[:FIELD] -- CMD becomes CMD (exec) with the values in its environment; signals and the exit status are CMD's own, and a SIGHUP ignored when the CLI started (nohup) stays ignored"; test "exec `sh -c 'test "$X" = value'`, assert exit 0" -> "replace os.execvpe: assert CMD and its arguments untouched, the values in its environment, SIGPIPE back to its default, SIGHUP back to how the process started (ignored under nohup)"
   - log: 2026-09-27T12:33:44Z @kj edited test "replace os.execvpe: assert CMD and its arguments untouched, the values in its environment, SIGPIPE back to its default, SIGHUP back to how the process started (ignored under nohup)" -> "replace os.execvpe: assert CMD and its arguments untouched, the values in its environment, SIGPIPE back to its default; a real python -m process started with SIGHUP default, then ignored: the command's SigIgn matches"
   - log: 2026-09-28T00:23:22Z @kj closed
-- [x] `ACC-VAULT-121` **Passkey and recovery management** - HIGH; vault passkey add, passkey rm --cred-id ID and recovery register, remove and replace slots; passkey add needs no unlock, the browser asks for the proof after the click - a passkey for its hostname, else the recovery passphrase; recovery asks for the current passphrase, then the new one twice
+- [x] `ACC-VAULT-121` **Passkey and recovery management** - HIGH; vault passkey add, passkey rm --cred-id ID and recovery register, remove and replace slots; passkey add needs no unlock, the browser asks for the proof after the click - a passkey for its hostname, else the recovery passphrase; recovery asks for the current passphrase, then the new one entered once in the browser with the Type it twice toggle and twice at a terminal
   - evidence: test_vault_cli.py test_passkey_list_and_remove, test_passkey_add_needs_no_unlock, test_recovery_replacement, test_recovery_needs_the_current_passphrase_not_an_unlock; jest vault-plugin.spec.ts 'proves a registration against the vault the server serves now, not the one this tab read'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: stub the ceremony, add then remove a passkey, assert the slot list each time
   - test-tags: UNIT
@@ -1050,6 +1057,7 @@ The `jupyterlab-passkey vault` subcommands
   - log: 2026-09-26T20:56:51Z @kj amended text "vault passkey add, vault passkey rm --cred-id ID and vault recovery register, remove and replace slots; vault recovery asks for the current recovery passphrase, then the new one twice" -> "HIGH; vault passkey add, vault passkey rm --cred-id ID and vault recovery register, remove and replace slots; vault passkey add needs no unlock, the browser asks for the recovery passphrase after the notification click; vault recovery asks for the current recovery passphrase, then the new one twice"
   - log: 2026-09-26T21:20:04Z @kj amended text "vault passkey add, vault passkey rm --cred-id ID and vault recovery register, remove and replace slots; vault passkey add needs no unlock, the browser asks for the recovery passphrase after the notification click; vault recovery asks for the current recovery passphrase, then the new one twice" -> "HIGH; vault passkey add, passkey rm --cred-id ID and recovery register, remove and replace slots; passkey add needs no unlock, the browser asks for the proof after the click - a passkey for its hostname, else the recovery passphrase; recovery asks for the current passphrase, then the new one twice"
   - log: 2026-09-28T00:23:22Z @kj closed
+  - log: 2026-11-01T17:46:51Z @kj amended text "vault passkey add, passkey rm --cred-id ID and recovery register, remove and replace slots; passkey add needs no unlock, the browser asks for the proof after the click - a passkey for its hostname, else the recovery passphrase; recovery asks for the current passphrase, then the new one twice" -> "vault passkey add, passkey rm --cred-id ID and recovery register, remove and replace slots; passkey add needs no unlock, the browser asks for the proof after the click - a passkey for its hostname, else the recovery passphrase; recovery asks for the current passphrase, then the new one entered once in the browser with the Type it twice toggle and twice at a terminal"; reason: names both entry paths: once in the browser with the Type it twice toggle, twice at a terminal
 - [x] `ACC-VAULT-122` **One-line errors** - MEDIUM; locked vault, missing entry, missing vault and no server each exit 1 with one line, never a traceback
   - evidence: test_vault_cli.py test_a_missing_vault_is_one_line, test_no_server_is_one_line, test_passkey_remove_needs_an_unlocked_vault, test_rm_and_missing_names; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: provoke each, assert exit 1 and one stderr line
@@ -1101,6 +1109,19 @@ The `jupyterlab-passkey vault` subcommands
   - test-tags: UNIT
   - log: 2026-10-03T17:10:49Z @kj added
   - log: 2026-10-03T17:12:45Z @kj closed
+- [x] `ACC-VAULT-266-ENSURE` **A missing vault is offered for set-up** - HIGH; a command that needs a vault that does not exist offers to create it: the same steps as vault init, a recovery passphrase typed once, then a passkey, then the command runs; declining exits with the no-vault error; a run with no terminal fails as now and never prompts
+  - evidence: pytest jupyterlab_passkey_extension/tests 532 passed, 0 failed; test_a_missing_vault_asks_once_and_creates_it_on_yes, test_a_missing_vault_is_left_alone_on_no, test_a_missing_vault_never_asks_without_a_terminal_on_stdout: a missing vault is offered once at a terminal, declining exits with the no-vault error, no terminal never prompts
+  - test: remove the vault file, run vault list at a terminal, answer yes, the vault is created
+  - test-tags: FUNCTIONAL
+  - log: 2026-11-01T11:45:01Z @kj added
+  - log: 2026-11-01T12:37:59Z @kj edited test "remove the vault file, run vault get on an entry, create the vault when asked, read the value" -> "remove the vault file, run vault list at a terminal, answer yes, the vault is created"
+  - log: 2026-11-01T12:38:01Z @kj closed
+- [x] `ACC-VAULT-268-UNLOCK-FIRST` **A read unlocks the vault itself** - HIGH; a command that needs a secret unlocks a locked vault in the same call, with the browser notification and passkey click; when no passkey can open it, it asks for the recovery passphrase or the unlock password and code instead of failing; no separate status or unlock call
+  - evidence: pytest jupyterlab_passkey_extension/tests 532 passed, 0 failed; test_a_vault_without_a_passkey_chooses_a_method_and_get_returns_the_value, test_get_on_a_locked_vault_unlocks_first, test_a_cancelled_chooser_exits_non_zero_without_a_secret: get unlocks in the same call, the chooser when no passkey can open it, one passkey step with one, cancel exits non-zero with no value
+  - test: lock the vault, run vault get on an entry, click the notification, read the value
+  - test-tags: FUNCTIONAL
+  - log: 2026-11-01T12:02:30Z @kj added
+  - log: 2026-11-01T12:38:01Z @kj closed
 
 ## Vault Python API `PYAPI`
 
@@ -1259,13 +1280,14 @@ The vault sidebar panel in JupyterLab
   - log: 2026-09-27T23:38:53Z @kj edited test-tags "E2E" -> "UNIT, E2E"
   - log: 2026-09-28T00:23:23Z @kj closed; reason: names each test that proves a many-case criterion
   - log: 2026-10-02T02:02:09Z @kj edited evidence "jest vault.spec.ts 'lists passkeys and removes one in two steps', 'stores the name chosen in the confirm step', 'registers a passkey with an existing passkey as the proof', 'registers with the recovery passphrase on a hostname with no passkey, asked before the browser creates one', 'creates nothing when the proof is not given', 'says the created passkey is unused when the registration is cancelled at the confirm step', 'says a refused proof left the created passkey unused', 'asks for an unlock only to remove passkeys on a locked vault'; Galata vault.spec.ts 'a passkey is registered with a passkey as the proof, or the recovery passphrase when this host has none'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108" -> "jest vault.spec.ts 'lists passkeys and removes one in two steps', 'stores the name chosen before the browser created the passkey', 'registers a passkey with an existing passkey as the proof', 'registers with the recovery passphrase on a hostname with no passkey, asked before the browser creates one'"
-- [x] `ACC-PANEL-139` **Recovery passphrase change** - MEDIUM; the cog view replaces the recovery passphrase after a proof - a passkey request when a passkey for this host exists, otherwise the current recovery passphrase - and the new one entered twice; a cancelled proof changes nothing
+- [x] `ACC-PANEL-139` **Recovery passphrase change** - MEDIUM; the cog view replaces the recovery passphrase after a proof - a passkey request when a passkey for this host exists, otherwise the current recovery passphrase - the new one entered once in the browser with the Type it twice toggle, twice at a terminal; a cancelled proof changes nothing
   - evidence: jest vault.spec.ts 'changes the recovery passphrase with a passkey as the proof', 'changes the recovery passphrase with the current one when the passkey does not answer', 'asks for the current passphrase as the proof when no passkey matches this host', 'says nothing changed when the recovery dialog is cancelled'; Galata vault.spec.ts 'the recovery passphrase is changed and then opens the vault'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: Galata: change it, lock, unlock with the new passphrase
   - test-tags: E2E
   - log: 2026-09-26T15:32:11Z @kj added
   - log: 2026-09-26T20:17:29Z @kj amended text "the cog view replaces the recovery passphrase after it is entered twice" -> "the cog view replaces the recovery passphrase after a proof - a passkey request when a passkey for this host exists, otherwise the current recovery passphrase - and the new one entered twice; a cancelled proof changes nothing"
   - log: 2026-09-28T00:23:23Z @kj closed; reason: names each test that proves a many-case criterion
+  - log: 2026-11-01T17:46:49Z @kj amended text "the cog view replaces the recovery passphrase after a proof - a passkey request when a passkey for this host exists, otherwise the current recovery passphrase - and the new one entered twice; a cancelled proof changes nothing" -> "the cog view replaces the recovery passphrase after a proof - a passkey request when a passkey for this host exists, otherwise the current recovery passphrase - the new one entered once in the browser with the Type it twice toggle, twice at a terminal; a cancelled proof changes nothing"
 - [x] `ACC-PANEL-140` **Settings link** - MEDIUM; the cog view shows the unlock duration and opens the Settings Editor at the vault settings
   - evidence: jest vault.spec.ts 'shows the unlock duration and opens the Settings Editor'; jest vault-plugin.spec.ts 'opens the Settings Editor at the vault settings, searched by the schema title'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: unit: click Open settings, assert the panel calls openSettings; the plugin opens settingeditor:open with the query Passkey Vault, the title in schema/vault.json
@@ -1774,6 +1796,13 @@ The vault sidebar panel in JupyterLab
   - mechanism: 2026-10-25T03:43:00Z @kj panel.ts: the reveal callback calls refresh() once revealPassword returns, and the 15 s tick redraws the row ages in place
   - log: 2026-10-25T03:43:00Z @kj added
   - log: 2026-10-25T05:16:39Z @kj closed: verified with the last-used freshness work
+- [x] `ACC-PANEL-261-SECRET-ONCE` **One secret field by default** - HIGH; the entry form, vault creation and the unlock password ask once by default; a control beside the field reveals a confirm field, and with it Save or Submit waits until both agree; a generated or pasted secret never asks twice
+  - evidence: this run jest 285 passed: passphrase.spec 'opens one password field with the toggle, and the length rule gates while it is off', 'gates Submit on a match when the toggle is ticked, and restores the one-field rule when unticked'; vault.spec EntryForm 'saves with one password field when Type it twice is off, and gates Save on a match when it is on'; Galata 46 passed: 'passphrase takes one entry by default, and the toggle asks for a second': one field by default, opt-in Type it twice confirm for a self-typed password
+  - test: add an entry with one field, then with the confirm opt-in and a mismatch; create a vault
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-11-01T11:44:47Z @kj the form grows a toggle that adds a confirm field and gates Save until both agree
+  - log: 2026-11-01T11:44:47Z @kj added
+  - log: 2026-11-01T13:25:41Z @kj closed; reason: evidence names the jest cases, the Galata test and the behaviour, as the closure requires
 
 ## Vault settings `CONFIG`
 
@@ -1904,6 +1933,12 @@ What the README and the CLI reference say about the vault
   - test-tags: MANUAL
   - log: 2026-10-03T17:11:18Z @kj added
   - log: 2026-10-03T17:13:53Z @kj closed
+- [x] `ACC-VDOCS-269-GIT-HOWTO` **Skill states how to make the vault git's helper** - MEDIUM; the agent skill carries a how-to for making the vault git's credential helper: the set-up command (migrate, or install alone), the check that proves it (`git config --get-all credential.helper` and `git credential fill`), and the undo (`vault git uninstall`); every command and flag it names exists in the CLI help
+  - evidence: Git credentials section names set-up (migrate, install), the check (git config --get-all, git credential fill) and undo (uninstall); every command and flag present in jupyterlab-passkey vault git/install/migrate --help; quick_validate prints Skill is valid!
+  - test: run each command in the skill's Git credentials section with --help, then quick_validate on the skill dir
+  - test-tags: MANUAL
+  - log: 2026-11-01T14:32:29Z @kj added
+  - log: 2026-11-01T14:43:13Z @kj closed
 
 ## Vault authenticator app `TOTP`
 
@@ -2049,4 +2084,51 @@ What the lint check asks of the frontend: described commands, labels read throug
   - log: 2026-10-03T20:54:44Z @kj closed
 
 
+
+## Git credential helper `GIT`
+
+The vault as git's credential helper: the protocol, the install and the unlock
+
+- log: 2026-11-01T11:44:51Z @kj category created
+
+- [x] `ACC-GIT-263-CREDENTIAL` **Helper follows the git credential protocol** - HIGH; `git-credential-jupyterlab-passkey` follows gitcredentials(7): get reads protocol, host, path and username on stdin and writes the username and password of the vault entry whose URL matches the host; store and erase exit non-zero so git never writes; no match exits non-zero with the tried entries
+  - evidence: pytest test_vault_git.py 20 passed, full suite 557 passed: test_get_answers_the_entry_for_the_host, test_a_path_attribute_picks_the_longest_prefix, test_the_port_is_part_of_the_host, test_no_match_names_the_candidates, test_an_ambiguous_match_names_the_candidates, test_store_and_erase_write_nothing; get writes username and password for the host, path picks the longest prefix, no match and ambiguity exit 1 naming entries, store and erase write nothing
+  - test: pytest test_vault_git.py: test_get_answers_the_entry_for_the_host, test_a_path_attribute_picks_the_longest_prefix, test_the_port_is_part_of_the_host, test_no_match_names_the_candidates, test_an_ambiguous_match_names_the_candidates, test_store_and_erase_write_nothing
+  - test-tags: FUNCTIONAL
+  - log: 2026-11-01T11:44:51Z @kj added
+  - log: 2026-11-01T14:12:05Z @kj edited test "printf 'protocol=https\nhost=github.com\n' | git-credential-jupyterlab-passkey get" -> "pytest test_vault_git.py: test_get_answers_the_entry_for_the_host, test_a_path_attribute_picks_the_longest_prefix, test_the_port_is_part_of_the_host, test_no_match_names_the_candidates, test_an_ambiguous_match_names_the_candidates, test_store_and_erase_write_nothing"
+  - log: 2026-11-01T14:12:08Z @kj closed
+- [x] `ACC-GIT-264-INSTALL` **Helper installs into git config** - HIGH; `jupyterlab-passkey vault git install` sets credential.helper in the global git config to this helper and uninstall removes it; running install twice leaves one line; credential.<url>.helper stays available for per-host scoping
+  - evidence: pytest test_vault_git.py 20 passed, full suite 557 passed: test_install_and_uninstall_are_idempotent, test_install_keeps_the_other_helpers_behind_ours, test_uninstall_removes_every_one_of_ours_and_leaves_the_others, test_uninstall_local_acts_on_the_repository_config; install twice leaves one helper line, uninstall removes it and reports not set, other helpers stay, --local acts on the repository config
+  - test: pytest test_vault_git.py: test_install_and_uninstall_are_idempotent, test_install_keeps_the_other_helpers_behind_ours, test_uninstall_removes_every_one_of_ours_and_leaves_the_others, test_uninstall_local_acts_on_the_repository_config
+  - test-tags: FUNCTIONAL
+  - log: 2026-11-01T11:44:54Z @kj added
+  - log: 2026-11-01T14:12:10Z @kj edited test "install, read back git config --global --get credential.helper, install again, uninstall" -> "pytest test_vault_git.py: test_install_and_uninstall_are_idempotent, test_install_keeps_the_other_helpers_behind_ours, test_uninstall_removes_every_one_of_ours_and_leaves_the_others, test_uninstall_local_acts_on_the_repository_config"
+  - log: 2026-11-01T14:12:12Z @kj closed
+- [x] `ACC-GIT-265-UNLOCK` **Locked vault unlocks from the helper** - HIGH; a locked vault is unlocked first from the same notification and passkey click the other commands use; a call nobody answers exits non-zero after the timeout and names the wait; the helper never prints the secret on failure
+  - evidence: pytest test_vault_git.py 20 passed, full suite 557 passed: test_a_locked_vault_unlocks_once_and_answers (one unlock browser step then the password), test_a_locked_vault_that_times_out_names_the_wait (exit 1, 120s named, no secret), test_the_helper_answers_git_credential_fill (real git credential fill over HTTP); the helper never prints the secret on failure
+  - test: pytest test_vault_git.py: test_a_locked_vault_unlocks_once_and_answers, test_a_locked_vault_that_times_out_names_the_wait, test_the_helper_answers_git_credential_fill
+  - test-tags: FUNCTIONAL
+  - log: 2026-11-01T11:44:55Z @kj added
+  - log: 2026-11-01T14:12:15Z @kj edited test "lock the vault, run git credential fill against the helper, click the notification, read the answer" -> "pytest test_vault_git.py: test_a_locked_vault_unlocks_once_and_answers, test_a_locked_vault_that_times_out_names_the_wait, test_the_helper_answers_git_credential_fill"
+  - log: 2026-11-01T14:12:17Z @kj closed
+- [x] `ACC-GIT-267-MIGRATE` **Git's plaintext store migrates into the vault** - HIGH; `jupyterlab-passkey vault git migrate` turns every line of git's plaintext store into an entry named `git/<username>@<host>[:<port>][/<path>]` (username only when the line carries one), installs the helper; --remove-source removes the files only when nothing was skipped, retiring the store helper value that read them; --dry-run lists names; no secret printed
+  - evidence: pytest test_vault_git.py 20 passed, full suite 557 passed: test_migrate_creates_entries_and_skips_existing, test_migrate_dry_run_writes_nothing, test_migrate_reads_the_home_store_then_the_xdg_store, test_migrate_names_include_the_port, test_migrate_accepts_the_equals_file_spelling; entries carry url, username, password and category git, a rerun skips existing names, --dry-run lists names and hosts and writes nothing, no secret printed
+  - test: pytest test_vault_git.py: test_migrate_creates_entries_and_skips_existing, test_migrate_dry_run_writes_nothing, test_migrate_reads_the_home_store_then_the_xdg_store, test_migrate_names_include_the_port, test_migrate_accepts_the_equals_file_spelling
+  - test-tags: FUNCTIONAL
+  - log: 2026-11-01T11:46:09Z @kj added
+  - log: 2026-11-01T14:12:22Z @kj amended text "`jupyterlab-passkey vault git migrate` turns every line of git's plaintext credential store (~/.git-credentials, or the file credential.helper names) into a vault entry with its url, username and password, then installs the helper; --keep leaves the plaintext file, --dry-run lists what would be written; no secret is printed" -> "`jupyterlab-passkey vault git migrate` turns each line of git's plaintext credential store (~/.git-credentials, or the file credential.helper names) into a vault entry with url, username and password, then installs the helper unless --no-install; --remove-source asks at a terminal before removing the plaintext file, --dry-run lists what would be written; no secret is printed"; reason: the body must name the --remove-source flag the implementation has, not the --keep flag it never had
+  - log: 2026-11-01T14:12:24Z @kj edited test "run git migrate --dry-run against a store file with two lines, then migrate, then git credential fill for the host" -> "pytest test_vault_git.py: test_migrate_creates_entries_and_skips_existing, test_migrate_dry_run_writes_nothing, test_migrate_reads_the_home_store_then_the_xdg_store, test_migrate_names_include_the_port, test_migrate_accepts_the_equals_file_spelling"
+  - log: 2026-11-01T14:12:26Z @kj closed
+  - log: 2026-11-01T14:23:04Z @kj amended text "`jupyterlab-passkey vault git migrate` turns each line of git's plaintext credential store (~/.git-credentials, or the file credential.helper names) into a vault entry with url, username and password, then installs the helper unless --no-install; --remove-source asks at a terminal before removing the plaintext file, --dry-run lists what would be written; no secret is printed" -> "`jupyterlab-passkey vault git migrate` turns every line of git's plaintext credential store (~/.git-credentials, or the file credential.helper names) into a vault entry with url, username and password, then installs the helper; the store stays unless --remove-source is given; --dry-run lists what would be written; no secret is printed"
+  - log: 2026-11-01T16:18:17Z @kj amended text "`jupyterlab-passkey vault git migrate` turns every line of git's plaintext credential store (~/.git-credentials, or the file credential.helper names) into a vault entry with url, username and password, then installs the helper; the store stays unless --remove-source is given; --dry-run lists what would be written; no secret is printed" -> "\`jupyterlab-passkey vault git migrate\` turns every line of git's plaintext credential store (~/.git-credentials, or the file credential.helper names) into a vault entry with url, username and password, then installs the helper; the store stays unless --remove-source is given and every line was imported; --dry-run lists what would be written; no secret is printed"; reason: the removal condition is now: only when every line was imported, so a skipped credential is never deleted
+  - log: 2026-11-01T16:18:30Z @kj amended text "\`jupyterlab-passkey vault git migrate\` turns every line of git's plaintext credential store (~/.git-credentials, or the file credential.helper names) into a vault entry with url, username and password, then installs the helper; the store stays unless --remove-source is given and every line was imported; --dry-run lists what would be written; no secret is printed" -> "`jupyterlab-passkey vault git migrate` turns every line of git's plaintext credential store (~/.git-credentials, or the file credential.helper names) into a vault entry with url, username and password, then installs the helper; the store stays unless --remove-source is given and every line was imported; --dry-run lists what would be written; no secret is printed"; reason: repair the escaped backticks from the previous amendment; the text is otherwise unchanged
+  - log: 2026-11-01T16:31:05Z @kj amended text "`jupyterlab-passkey vault git migrate` turns every line of git's plaintext credential store (~/.git-credentials, or the file credential.helper names) into a vault entry with url, username and password, then installs the helper; the store stays unless --remove-source is given and every line was imported; --dry-run lists what would be written; no secret is printed" -> "`jupyterlab-passkey vault git migrate` turns every line of git's plaintext store into an entry named `git/<username>@<host>[:<port>][/<path>]` (username only when the line carries one), installs the helper; --remove-source removes the files only when nothing was skipped, retiring the store helper value that read them; --dry-run lists names; no secret printed"
+- [x] `ACC-GIT-270-FIRST-SETUP` **Git's first request sets the vault up** - HIGH; git's first credential request with no vault starts the set-up in the browser: the recovery passphrase dialog, then a passkey; the command continues once the vault is ready; a cancelled step exits non-zero naming it, and the next attempt resumes at the step that is missing
+  - evidence: pytest test_vault_git.py 4 passed: test_no_vault_sets_up_in_the_browser_then_answers (no vault raises one setup step then answers), test_a_vault_without_a_passkey_adds_only_the_passkey (a vault without a passkey adds only the passkey), test_a_cancelled_set_up_names_the_step_and_prints_no_secret (cancel names the step, exits non-zero, prints no secret), test_a_second_run_after_a_cancel_completes (the rerun completes); jest vault-plugin.spec.ts 16 passed: sets the vault up from a command: the passphrase, then a passkey, and answers ok
+  - test: pytest test_vault_git.py: test_no_vault_sets_up_in_the_browser_then_answers, test_a_vault_without_a_passkey_adds_only_the_passkey, test_a_cancelled_set_up_names_the_step_and_prints_no_secret, test_a_second_run_after_a_cancel_completes
+  - test-tags: FUNCTIONAL
+  - log: 2026-11-01T14:33:15Z @kj added
+  - log: 2026-11-01T15:35:53Z @kj edited test "remove the vault, run git credential fill through the helper, complete the two browser steps, read the answer; then cancel at the passkey step and rerun" -> "pytest test_vault_git.py: test_no_vault_sets_up_in_the_browser_then_answers, test_a_vault_without_a_passkey_adds_only_the_passkey, test_a_cancelled_set_up_names_the_step_and_prints_no_secret, test_a_second_run_after_a_cancel_completes"
+  - log: 2026-11-01T15:35:56Z @kj closed; reason: the evidence must name four pytest cases and the jest case
 

@@ -12,14 +12,17 @@ import getpass
 import json
 import os
 import secrets
+import shlex
 import signal
 import subprocess
 import sys
+import urllib.parse
 
 from .. import cli as _cli
 from .. import relay
 from .client import (
     REGISTER_COMMAND,
+    SETUP_COMMAND,
     Vault,
     VaultClientError,
     VaultLocked,
@@ -44,12 +47,13 @@ def _minutes(minutes):
 
 
 def _read_secret(a, prompt, twice):
-    """A secret from the browser dialog, a hidden prompt, or stdin - never argv."""
+    """A secret from the browser dialog, a hidden prompt, or stdin - never argv.
+
+    `twice` governs the blind terminal prompt, which has no control to offer; the
+    dialog offers the "Type it twice" checkbox."""
     if a.in_browser:
         nonce = secrets.token_urlsafe(24)
-        args = {"nonce": nonce, "prompt": prompt}
-        if not twice:
-            args["once"] = True
+        args = {"nonce": nonce, "prompt": prompt, "once": True}
         _cli._trigger(_cli.PASSPHRASE_COMMAND, args, "Enter secret", f"{prompt} - click to open the dialog.")
         try:
             _cli._wait(nonce, "pass", a.timeout, "the button was never clicked, or the dialog "
@@ -199,6 +203,10 @@ def cmd_get(a, vault):
 
 
 def cmd_add(a, vault):
+    # The set-up offer runs before the secret is asked, so it is typed once.
+    s = vault.status()
+    if not s["initialized"]:
+        raise VaultClientError(no_vault(s["path"]))
     password = _new_password(a)
     vault._unlocked(lambda: request("POST", "entries", {"name": a.name, "fields": {**_fields(a), "password": password}}))
     _cli._say(f"added {a.name}")
@@ -206,6 +214,10 @@ def cmd_add(a, vault):
 
 
 def cmd_edit(a, vault):
+    # The set-up offer runs before the secret is asked, so it is typed once.
+    s = vault.status()
+    if not s["initialized"]:
+        raise VaultClientError(no_vault(s["path"]))
     fields = _fields(a)
     if a.password or a.generate:
         fields["password"] = _new_password(a)
@@ -389,6 +401,7 @@ def cmd_recovery(a, vault):
         raise SystemExit(_say_status(s))
     # The server replaces it only with a proof: here, the current passphrase.
     current = _read_secret(a, "Current recovery passphrase", twice=False)
+    # The dialog offers the "Type it twice" toggle; the blind prompt asks twice.
     passphrase = _read_secret(a, "New recovery passphrase", twice=True)
     request("POST", "recovery", {"recovery": passphrase, "proof": {"current": current}})
     _cli._say("recovery passphrase replaced; store the new one offline")
@@ -415,12 +428,246 @@ def cmd_rotate(a, vault):
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# git's credential helper
+# --------------------------------------------------------------------------- #
+
+GIT_HELPER = "jupyterlab-passkey"
+
+
+def _git(*args):
+    try:
+        return subprocess.run(["git", *args], capture_output=True, text=True)
+    except FileNotFoundError:
+        raise SystemExit("git is not on PATH")
+
+
+def _git_failed(done):
+    return f"git config failed: {done.stderr.strip() or f'exit {done.returncode}'}"
+
+
+def _set_helpers(scope, values):
+    """Make credential.helper hold exactly these values in order; unset it when empty."""
+    if not values:
+        done = _git("config", scope, "--unset-all", "credential.helper")
+        if done.returncode == 5:
+            return
+    else:
+        done = _git("config", scope, "--replace-all", "credential.helper", values[0])
+        for value in values[1:]:
+            if done.returncode:
+                break
+            done = _git("config", scope, "--add", "credential.helper", value)
+    if done.returncode:
+        raise SystemExit(_git_failed(done))
+
+
+def _install_helper(local):
+    scope = "--local" if local else "--global"
+    others = [value for value in _git_values(scope, "--get-all", "credential.helper")
+              if value != GIT_HELPER]
+    # An empty value resets git's helper list, discarding every helper before it: ours
+    # goes after the last reset, else git would never run it.
+    after = max((index + 1 for index, value in enumerate(others) if not value), default=0)
+    _set_helpers(scope, [*others[:after], GIT_HELPER, *others[after:]])
+    where = "repository" if local else "global"
+    _cli._say(f"set credential.helper = {GIT_HELPER} first in the {where} git config")
+
+
+def cmd_git_install(a, vault):
+    _install_helper(a.local)
+    return 0
+
+
+def cmd_git_uninstall(a, vault):
+    scope = "--local" if a.local else "--global"
+    where = "repository" if a.local else "global"
+    values = _git_values(scope, "--get-all", "credential.helper")
+    kept = [value for value in values if value != GIT_HELPER]
+    if len(kept) == len(values):
+        _cli._say(f"credential.helper = {GIT_HELPER} is not set in the {where} git config")
+        return 0
+    _set_helpers(scope, kept)
+    _cli._say(f"removed credential.helper = {GIT_HELPER} from the {where} git config")
+    return 0
+
+
+def _git_values(*args):
+    done = _git("config", *args)
+    if done.returncode not in (0, 1):
+        raise SystemExit(_git_failed(done))
+    return done.stdout.splitlines()
+
+
+def _store_files(value):
+    """The files one credential.helper value makes git's `store` helper read: its
+    --file, or the home and XDG stores a bare `store` reads."""
+    words = shlex.split(value)
+    if words[:1] != ["store"]:
+        return []
+    files = []
+    for index, word in enumerate(words[1:], 1):
+        if word == "--file" and index + 1 < len(words):
+            files.append(words[index + 1])
+        elif word.startswith("--file="):
+            files.append(word.partition("=")[2])
+    if not files:
+        xdg = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+        files = ["~/.git-credentials", os.path.join(xdg, "git", "credentials")]
+    return [os.path.expanduser(path) for path in files]
+
+
+def _store_paths():
+    """The files git's `store` helper reads, in the order git reads them."""
+    paths = [path for value in _git_values("--get-all", "credential.helper")
+             for path in _store_files(value)]
+    if not paths:
+        paths = _store_files("store")
+    return list(dict.fromkeys(paths))
+
+
+def _drop_store_helpers(paths):
+    """Delete from the global git config every store value that reads one of these
+    files, and say so; a value in another scope is left for the caller to check."""
+    values = _git_values("--global", "--get-all", "credential.helper")
+    kept = [value for value in values if not set(_store_files(value)) & set(paths)]
+    if len(kept) == len(values):
+        return
+    _set_helpers("--global", kept)
+    dropped = [value for value in dict.fromkeys(values) if value not in kept]
+    _cli._say("removed credential.helper = " + ", ".join(dropped)
+              + " from the global git config")
+
+
+def _store_entries(path):
+    """The store's lines as vault entries; a bad line names its number, never its text,
+    which carries a password."""
+    items = []
+    with open(path, encoding="utf-8") as stream:
+        for number, line in enumerate(stream, 1):
+            line = line.strip()
+            if not line:
+                continue
+            split = urllib.parse.urlsplit(line)
+            if not split.scheme or not split.hostname:
+                raise SystemExit(f"{path}, line {number}: expected scheme://user:password@host[/path]")
+            try:
+                split.port
+            except ValueError:
+                raise SystemExit(f"{path}, line {number}: expected scheme://user:password@host[/path]")
+            userinfo, _, netloc = split.netloc.rpartition("@")
+            username, _, password = userinfo.partition(":")
+            username = urllib.parse.unquote(username)
+            host = netloc.lower()
+            items.append({
+                "name": f"git/{username}@{host}{split.path}" if username
+                        else f"git/{host}{split.path}",
+                "url": urllib.parse.urlunsplit((split.scheme, netloc, split.path, "", "")),
+                "username": username,
+                "password": urllib.parse.unquote(password),
+                "category": "git",
+            })
+    return items
+
+
+def cmd_git_migrate(a, vault):
+    paths = _store_paths()
+    found = [path for path in paths if os.path.exists(path)]
+    if not found:
+        raise SystemExit(f"no git credential store at {', '.join(paths)}")
+    items = [item for path in found for item in _store_entries(path)]
+    for path in found:
+        _cli._say(f"read {path}")
+    if a.dry_run:
+        for item in items:
+            print(f"{item['name']}\t{urllib.parse.urlsplit(item['url']).hostname or ''}")
+        return 0
+    result = vault._unlocked(lambda: request("POST", "import", {"entries": items}))
+    added, skipped = result["added"], result["skipped"]
+    sources = ", ".join(found)
+    _cli._say(f"added {added} " + ("entry" if added == 1 else "entries") + f" from {sources}"
+              + (f"; skipped {len(skipped)} that exist: {', '.join(skipped)}" if skipped else ""))
+    removed = False
+    readers = []
+    if a.remove_source and skipped:
+        _cli._say(f"kept git's plaintext store at {sources}: "
+                  "the skipped lines already have a vault entry, so their passwords "
+                  "were not imported")
+    elif a.remove_source and _terminal():
+        answer = input(f"Remove git's plaintext store at {sources}? [y/N] ")
+        if answer.strip().lower() in ("y", "yes"):
+            # A store helper still configured would write the files back in plaintext.
+            _drop_store_helpers(found)
+            readers = [value for value in _git_values("--get-all", "credential.helper")
+                       if set(_store_files(value)) & set(found)]
+            if readers:
+                _cli._say(f"kept git's plaintext store at {sources}: credential.helper = "
+                          + ", ".join(readers) + " in another git config still reads it")
+            else:
+                for path in found:
+                    os.remove(path)
+                _cli._say(f"removed git's plaintext store at {sources}")
+                removed = True
+        else:
+            _cli._say(f"kept git's plaintext store at {sources}")
+    elif a.remove_source:
+        _cli._say(f"no terminal to ask - left git's plaintext store at {sources}")
+    if not removed and not skipped and not readers:
+        _cli._say("remove git's plaintext store with: rm "
+                  + " ".join(shlex.quote(path) for path in found))
+    if not a.no_install:
+        _install_helper(False)
+    return 0
+
+
+def _missing_vault(error):
+    """The path of a vault a command found missing, or None for any other error."""
+    head, sep, tail = str(error).partition(" - run `jupyterlab-passkey vault init`")
+    if sep and not tail and head.startswith("no vault at "):
+        return head[len("no vault at "):]
+    return None
+
+
+def _terminal():
+    """Both ends are a terminal, so a question can be asked and answered."""
+    return (sys.stdin is not None and sys.stdin.isatty()
+            and sys.stdout is not None and sys.stdout.isatty())
+
+
+def ensure_vault(vault, call):
+    """Run `call`; a missing vault is offered for set-up at a terminal, then call runs
+    again. Declining, or no terminal, raises the original refusal."""
+    try:
+        return call()
+    except VaultClientError as e:
+        path = _missing_vault(e)
+        if path is None or not _terminal():
+            raise
+        answer = input(f"No vault at {path}. Create it now? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            raise
+        # `init` with the defaults its flags give, for the helpers it shares.
+        cmd_init(argparse.Namespace(in_browser=False, no_passkey=False, label=None,
+                                    timeout=vault.timeout), vault)
+        return call()
+
+
+def setup_in_browser():
+    """Set the vault up from the browser: one notification whose page creates the
+    recovery passphrase and then a passkey, skipping each step the vault already has.
+    A cancelled or failed step arrives as one line naming it."""
+    # A new passkey takes a proof, so the wait is the one init takes.
+    browser_step(SETUP_COMMAND, {}, "Set up vault",
+                 "create the vault and its passkey - click to open the set-up steps.",
+                 REGISTER_TIMEOUT)
+
+
 def run(a):
     vault = Vault(timeout=a.timeout)
     try:
         if a.debug:
             _cli._say(vault.status()["holder"]["debug"])
-        return a.vault_func(a, vault)
+        return ensure_vault(vault, lambda: a.vault_func(a, vault))
     except VaultLocked:
         raise SystemExit("the vault is locked - run `jupyterlab-passkey vault unlock`")
     except VaultClientError as e:
@@ -480,7 +727,9 @@ server side - the Jupyter server reads these, not this CLI; set them where it st
         p.add_argument("--in-browser", action="store_true",
                        help="type the secret in a JupyterLab dialog instead of this terminal")
 
-    unlocks_first = "A locked vault is unlocked first: a notification to click, then the passkey."
+    unlocks_first = ("A locked vault is unlocked first: a notification to click, then the passkey,"
+                     " or the chooser of the passkey, the unlock password and a code, and the"
+                     " recovery passphrase when no passkey can open it.")
 
     p = add("init", "create the vault: a recovery passphrase, then a passkey", cmd_init, registering,
             description="""
@@ -502,10 +751,12 @@ unlock the vault for the unlock_minutes setting of the server's configuration fi
 (default 30 minutes), for every client:
 this CLI, the Python Vault class and the panel. With a passkey: a notification to click,
 then the passkey prompt in the tab. A passkey works only in a tab opened at the hostname it
-was added at, or a subdomain of it; a tab at an IP address cannot use one. --password
-asks the unlock password, then a code of the authenticator app: the two are one unlock
-method, added together in the panel's cog view; status says whether the vault has it.
-Both are typed, so --password runs at a terminal or with --in-browser, not from a pipe.
+was added at, or a subdomain of it. In a tab with no such passkey, or at an IP address, the
+same notification opens a chooser: the passkey when it can be used, the unlock password and
+a code, or the recovery passphrase. --password asks the unlock password, then a code of the
+authenticator app: the two are one unlock method, added together in the panel's cog view;
+status says whether the vault has it. Both are typed, so --password runs at a terminal or
+with --in-browser, not from a pipe.
 """,
             examples=("jupyterlab-passkey vault unlock",
                       "jupyterlab-passkey vault unlock --password --in-browser",
@@ -554,8 +805,8 @@ command, use exec; to give it to the user, use copy or show.
 
     new_password = f"""
 The password comes from a hidden prompt typed twice, from stdin, from a JupyterLab dialog
-with --in-browser (the value twice; Submit stays disabled until both match, Cancel exits
-1), or from --generate; never from an option. --generate makes {GENERATE_LENGTH} characters by default,
+with --in-browser (one field with a "Type it twice" checkbox; Submit stays disabled until
+both match when ticked, Cancel exits 1), or from --generate; never from an option. --generate makes {GENERATE_LENGTH} characters by default,
 without l I 1 | O 0, quotes, backslash, backtick and space.
 {unlocks_first}
 """
@@ -655,6 +906,92 @@ with a TOTP secret is named and not imported: the vault has no field for it.
     p.add_argument("--pass-cli", action="store_true", help="import every entry of the pass-cli vault")
     in_browser(p)
 
+    g = vs.add_parser(
+        "git", help="make the vault git's credential helper",
+        description="""
+give git its credentials from the vault. `install` points the global git config's
+credential.helper at git-credential-jupyterlab-passkey, `uninstall` removes that line,
+and `migrate` copies git's plaintext credential store into the vault, one entry per
+line, then installs the helper unless --no-install. The helper follows gitcredentials(7):
+git asks by protocol, host, path and username, and the one matching entry answers with
+its username and password. git never writes to the vault. A locked vault is unlocked
+first from the same notification and passkey click as the other commands.
+""",
+        epilog="""
+examples:
+  jupyterlab-passkey vault git install
+  jupyterlab-passkey vault git migrate --dry-run
+  jupyterlab-passkey vault git migrate --no-install
+  jupyterlab-passkey vault git uninstall
+""".strip("\n"),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    gs = g.add_subparsers(dest="git_op", required=True, metavar="GIT_COMMAND")
+
+    waiting = argparse.ArgumentParser(add_help=False)
+    waiting.add_argument(
+        "--timeout", type=float, default=_cli.CLICK_TIMEOUT, metavar="SECONDS",
+        help=f"how long to wait for the unlock in the browser before giving up and exiting 1 "
+             f"(default {_cli.CLICK_TIMEOUT:.0f})")
+
+    def add_git(name, help_, fn, parents, description, examples):
+        p = gs.add_parser(name, help=help_, description=description.strip("\n"),
+                          epilog="examples:\n" + "\n".join(f"  {line}" for line in examples),
+                          parents=parents, formatter_class=argparse.RawDescriptionHelpFormatter)
+        p.set_defaults(vault_func=fn)
+        return p
+
+    p = add_git(
+        "install", "point git's credential.helper at this helper", cmd_git_install, instant,
+        """
+put credential.helper = jupyterlab-passkey first in the global git config, so git runs
+git-credential-jupyterlab-passkey for every credential request; the other helper values
+stay behind it in their order. Running it again leaves one of ours. --local writes the
+repository's config instead. credential.<url>.helper stays available for per-host
+scoping. Never waits.
+""",
+        ("jupyterlab-passkey vault git install",
+         "jupyterlab-passkey vault git install --local"))
+    p.add_argument("--local", action="store_true",
+                   help="write the repository config, not the global one")
+
+    p = add_git(
+        "uninstall", "remove that line from the global git config", cmd_git_uninstall, instant,
+        """
+remove every credential.helper = jupyterlab-passkey from the global git config and keep
+the other helper values in their order. When the line is not there the command succeeds
+and says so. --local acts on the repository config instead. Never waits.
+""",
+        ("jupyterlab-passkey vault git uninstall",
+         "jupyterlab-passkey vault git uninstall --local"))
+    p.add_argument("--local", action="store_true",
+                   help="write the repository config, not the global one")
+
+    p = add_git(
+        "migrate", "copy git's plaintext credential store into the vault", cmd_git_migrate,
+        [waiting, debugp],
+        f"""
+read the files git's store helper reads - credential.helper "store --file <path>" or
+"store --file=<path>", else ~/.git-credentials and $XDG_CONFIG_HOME/git/credentials
+(default $HOME/.config/git/credentials), both of them - and add one vault entry per
+line, named git/<username>@<host>[:<port>][/<path>] (git/<host>... when the line has
+no username) with url, username, password and category git. Every file read is
+reported. An existing name is skipped, never overwritten. Then install the helper
+unless --no-install. --dry-run prints the names and hosts and writes nothing. Never
+prints a password. Prints the source files;
+--remove-source asks first, at a terminal, removes the files only when nothing was
+skipped, and leaves them when there is no terminal.
+{unlocks_first}
+""",
+        ("jupyterlab-passkey vault git migrate --dry-run",
+         "jupyterlab-passkey vault git migrate --remove-source"))
+    p.add_argument("--dry-run", action="store_true", help="print the entries without writing")
+    p.add_argument("--no-install", action="store_true", help="do not install the helper")
+    p.add_argument("--remove-source", action="store_true",
+                   help="remove the plaintext store, once every line is imported, after "
+                        "a yes typed at a terminal; also unset the global credential.helper "
+                        "= store value that would rewrite it")
+
     pk = vs.add_parser("passkey", help="add, list or remove passkeys",
                        description="add, list or remove the vault's passkeys")
     pks = pk.add_subparsers(dest="passkey_op", required=True, metavar="PASSKEY_COMMAND")
@@ -695,11 +1032,12 @@ remove a passkey; the vault must be unlocked. The cred_id comes from passkey lis
         ("jupyterlab-passkey vault passkey rm --cred-id <cred_id>",))
     p.add_argument("--cred-id", required=True, metavar="B64URL", help="the passkey's cred_id, as passkey list prints it")
 
-    p = add("recovery", "replace the recovery passphrase: the current one, then the new one twice",
+    p = add("recovery", "replace the recovery passphrase: the current one, then the new one",
             cmd_recovery,
             description="""
-replace the recovery passphrase: the current one, then the new one twice. Needs a
-terminal or --in-browser, because it reads two secrets. Store the new one offline.
+replace the recovery passphrase: the current one, then the new one - typed twice at a
+terminal, one field with a toggle in the browser. Needs a terminal or --in-browser,
+because it reads two secrets. Store the new one offline.
 """,
             examples=("jupyterlab-passkey vault recovery --in-browser",))
     in_browser(p)

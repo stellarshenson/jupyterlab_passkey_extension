@@ -1,5 +1,10 @@
-# Makefile for Jupyterlab extensions version 1.46
+# Makefile for Jupyterlab extensions version 1.47
 # changelog:
+#   1.47 - increment_version takes a BUMP level: none leaves the version unchanged,
+#          patch (the default) raises the last number, minor raises the middle number
+#          and sets the last to 0, major raises the first number and sets the rest to
+#          0; any other level exits 1. Until now the target raised the last number
+#          only, so a minor release took a hand edit. Requested on 2026-11-01.
 #   1.46 - increment_version also writes the new version into package-lock.json, in
 #          its top-level `version` and in `packages[""].version`, when the project
 #          has that file, and publish stages it in the metadata commit. 1.41 stopped
@@ -160,6 +165,9 @@ NODE := $(NODEENV)/bin/node
 NPM := $(NODEENV)/bin/npm
 export PATH := $(NODEENV)/bin:$(PATH)
 
+# Which part of the version `increment_version` raises: none, patch, minor or major.
+BUMP ?= patch
+
 # Read the current version from package.json using the project-local node only.
 # Deliberately lazy (`=`, not `:=`): a parse-time read happens before check_dependencies
 # has created the nodeenv, and an ambient node on PATH would silently mask that.
@@ -184,7 +192,17 @@ increment_version: check_dependencies
 		exit 1; \
 	fi; \
 	echo "Current version: $$CURRENT_VERSION"; \
-	NEW_VERSION="$${CURRENT_VERSION%.*}.$$(( $${CURRENT_VERSION##*.} + 1 ))"; \
+	MAJOR="$${CURRENT_VERSION%%.*}"; \
+	REST="$${CURRENT_VERSION#*.}"; \
+	MINOR="$${REST%%.*}"; \
+	PATCH="$${REST#*.}"; \
+	case "$(BUMP)" in \
+		none) NEW_VERSION="$$CURRENT_VERSION" ;; \
+		patch) NEW_VERSION="$$MAJOR.$$MINOR.$$((PATCH + 1))" ;; \
+		minor) NEW_VERSION="$$MAJOR.$$((MINOR + 1)).0" ;; \
+		major) NEW_VERSION="$$((MAJOR + 1)).0.0" ;; \
+		*) echo "increment_version: BUMP must be none, patch, minor or major" >&2; exit 1 ;; \
+	esac; \
 	sed -i "s/\"version\": \"$$CURRENT_VERSION\"/\"version\": \"$$NEW_VERSION\"/" package.json; \
 	if ! grep -q "\"version\": \"$$NEW_VERSION\"" package.json; then \
 		echo "increment_version: package.json still reports $$CURRENT_VERSION - not bumped" >&2; \

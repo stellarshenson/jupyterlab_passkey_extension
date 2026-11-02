@@ -82,9 +82,9 @@ describe('runPassphrase', () => {
   it('relays the passphrase when both fields match', async () => {
     acceptWith('hunter2-correct', 'hunter2-correct');
 
-    await expect(runPassphrase({ nonce: NONCE }, serverSettings)).resolves.toBe(
-      true
-    );
+    await expect(
+      runPassphrase({ nonce: NONCE, twice: true }, serverSettings)
+    ).resolves.toBe(true);
 
     expect(mockRequestAPI).toHaveBeenCalledTimes(1);
     const [endpoint, settings, init] = mockRequestAPI.mock.calls[0];
@@ -100,18 +100,18 @@ describe('runPassphrase', () => {
   it('relays nothing when the two fields differ', async () => {
     acceptWith('hunter2-correct', 'hunter2-typo');
 
-    await expect(runPassphrase({ nonce: NONCE }, serverSettings)).resolves.toBe(
-      false
-    );
+    await expect(
+      runPassphrase({ nonce: NONCE, twice: true }, serverSettings)
+    ).resolves.toBe(false);
     expect(mockRequestAPI).not.toHaveBeenCalled();
   });
 
   it('relays nothing when the passphrase is empty', async () => {
     acceptWith('', '');
 
-    await expect(runPassphrase({ nonce: NONCE }, serverSettings)).resolves.toBe(
-      false
-    );
+    await expect(
+      runPassphrase({ nonce: NONCE, twice: true }, serverSettings)
+    ).resolves.toBe(false);
     expect(mockRequestAPI).not.toHaveBeenCalled();
   });
 
@@ -125,9 +125,9 @@ describe('runPassphrase', () => {
       return { button: { accept: false } };
     });
 
-    await expect(runPassphrase({ nonce: NONCE }, serverSettings)).resolves.toBe(
-      false
-    );
+    await expect(
+      runPassphrase({ nonce: NONCE, twice: true }, serverSettings)
+    ).resolves.toBe(false);
 
     expect(mockRequestAPI).toHaveBeenCalledTimes(1);
     expect(mockRequestAPI.mock.calls[0][0]).toBe('passphrase');
@@ -140,7 +140,7 @@ describe('runPassphrase', () => {
     acceptWith('a-passphrase', 'a-passphrase');
 
     await runPassphrase(
-      { nonce: NONCE, prompt: 'Recovery passphrase' },
+      { nonce: NONCE, prompt: 'Recovery passphrase', twice: true },
       serverSettings
     );
 
@@ -155,7 +155,7 @@ describe('runPassphrase', () => {
 
   it('offers no exit but Cancel and Submit', async () => {
     acceptWith('a-passphrase', 'a-passphrase');
-    await runPassphrase({ nonce: NONCE }, serverSettings);
+    await runPassphrase({ nonce: NONCE, twice: true }, serverSettings);
 
     const opts = dialogOptions();
     // hasClose would add a close button AND dismiss on an outside click, which
@@ -177,9 +177,9 @@ describe('runPassphrase', () => {
         })
     );
 
-    await expect(runPassphrase({ nonce: NONCE }, serverSettings)).resolves.toBe(
-      false
-    );
+    await expect(
+      runPassphrase({ nonce: NONCE, twice: true }, serverSettings)
+    ).resolves.toBe(false);
     expect(mockReject).toHaveBeenCalledTimes(1);
   });
 
@@ -195,7 +195,7 @@ describe('runPassphrase', () => {
             resolve({ button: { accept: false } });
           })
       );
-      await runPassphrase({ nonce: NONCE }, serverSettings);
+      await runPassphrase({ nonce: NONCE, twice: true }, serverSettings);
       expect(mockReject).not.toHaveBeenCalled();
     } finally {
       mockAttached = true;
@@ -217,13 +217,13 @@ describe('runPassphrase', () => {
           resolve({ button: { accept: false } });
         })
     );
-    await runPassphrase({ nonce: NONCE }, serverSettings);
+    await runPassphrase({ nonce: NONCE, twice: true }, serverSettings);
     expect(mockReject).not.toHaveBeenCalled();
   });
 
   it('stops listening for Escape once the dialog is done', async () => {
     acceptWith('a-passphrase', 'a-passphrase');
-    await runPassphrase({ nonce: NONCE }, serverSettings);
+    await runPassphrase({ nonce: NONCE, twice: true }, serverSettings);
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     // A leaked listener would reject a dialog that is no longer on screen.
@@ -246,17 +246,18 @@ describe('runPassphrase', () => {
       return { button: { accept: false } };
     });
 
-    await runPassphrase({ nonce: NONCE }, serverSettings);
+    await runPassphrase({ nonce: NONCE, twice: true }, serverSettings);
   });
 
-  it('titles the dialog and prompts for a passphrase by default', async () => {
+  it('with twice, prompts for a passphrase twice and offers no toggle to turn it off', async () => {
     acceptWith('a-passphrase', 'a-passphrase');
-    await runPassphrase({ nonce: NONCE }, serverSettings);
+    await runPassphrase({ nonce: NONCE, twice: true }, serverSettings);
 
     expect(dialogOptions().title).toBe('Passphrase');
     expect(dialogOptions().body.node.textContent).toContain(
       'Enter the passphrase twice'
     );
+    expect(dialogOptions().body.twice).toBeNull();
   });
 
   it('reports match state only once the confirm field has content, without resizing', async () => {
@@ -279,7 +280,7 @@ describe('runPassphrase', () => {
       return { button: { accept: false } };
     });
 
-    await runPassphrase({ nonce: NONCE }, serverSettings);
+    await runPassphrase({ nonce: NONCE, twice: true }, serverSettings);
   });
 
   it('announces match state through a live region that is always in the a11y tree', async () => {
@@ -308,7 +309,7 @@ describe('runPassphrase', () => {
       return { button: { accept: false } };
     });
 
-    await runPassphrase({ nonce: NONCE }, serverSettings);
+    await runPassphrase({ nonce: NONCE, twice: true }, serverSettings);
   });
 
   it('rewrites the live region only on a real transition, not once per keystroke', async () => {
@@ -350,7 +351,7 @@ describe('runPassphrase', () => {
       return { button: { accept: false } };
     });
 
-    await runPassphrase({ nonce: NONCE }, serverSettings);
+    await runPassphrase({ nonce: NONCE, twice: true }, serverSettings);
   });
 });
 
@@ -359,6 +360,41 @@ function fillOnce(body: any, value: string): void {
   body.first.value = value;
   body.first.dispatchEvent(new Event('input'));
 }
+
+/** Tick or untick the "Type it twice" box, as a click does. */
+function setTwice(body: any, on: boolean): void {
+  body.twice.checked = on;
+  body.twice.dispatchEvent(new Event('change'));
+}
+
+describe('askSecret for a new secret', () => {
+  it('opens one password field with the toggle, and the length rule gates while it is off', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      const body = opts.body;
+      expect(body.first.placeholder).toBe('Password');
+      expect(body.second.hidden).toBe(true);
+      // Nothing to confirm yet: only the length rule holds Submit shut.
+      expect(body.first.checkValidity()).toBe(false);
+      fillOnce(body, 'eleven char');
+      expect(body.first.validationMessage).toBe('Enter at least 12 characters');
+      expect(body.first.checkValidity()).toBe(false);
+      fillOnce(body, 'twelve chars');
+      expect(body.first.checkValidity()).toBe(true);
+
+      // Opting in asks for the same value again, under the same length rule.
+      setTwice(body, true);
+      expect(body.second.placeholder).toBe('Confirm password');
+      expect(body.second.checkValidity()).toBe(false);
+      fill(body, 'twelve chars', 'twelve chars');
+      expect(body.second.checkValidity()).toBe(true);
+      return { button: { accept: true } };
+    });
+
+    expect(
+      await askSecret('prompt', true, 'Set unlock password', { minLength: 12 })
+    ).toEqual({ accepted: true, value: 'twelve chars' });
+  });
+});
 
 describe('askSecret for a new unlock password', () => {
   it('names the fields a password, and keeps Submit off until both agree and are long enough', async () => {
@@ -400,19 +436,21 @@ describe('askSecret for a new unlock password', () => {
   });
 });
 
-describe('runPassphrase with once', () => {
-  it('relays a single entry, with no confirm field to match against', async () => {
+describe('runPassphrase with one entry by default', () => {
+  it('relays a single entry, with the confirm field out of play', async () => {
     mockLaunch.mockImplementation(async (opts: any) => {
       // The whole point: a secret pasted from a password manager is not typed
-      // twice, so there is nothing to confirm it against.
-      expect(opts.body.second).toBeNull();
-      fillOnce(opts.body, 'ghp_pasted_token');
+      // twice, so nothing confirms it against anything.
+      const body = opts.body;
+      expect(body.second.hidden).toBe(true);
+      expect(body.twice.checked).toBe(false);
+      fillOnce(body, 'ghp_pasted_token');
       return { button: { accept: true } };
     });
 
-    await expect(
-      runPassphrase({ nonce: NONCE, once: true }, serverSettings)
-    ).resolves.toBe(true);
+    await expect(runPassphrase({ nonce: NONCE }, serverSettings)).resolves.toBe(
+      true
+    );
 
     expect(JSON.parse(mockRequestAPI.mock.calls[0][2]!.body as string)).toEqual(
       {
@@ -426,7 +464,7 @@ describe('runPassphrase with once', () => {
     mockLaunch.mockImplementation(async (opts: any) => {
       const body = opts.body;
 
-      // With no confirm field the gate moves onto the only field there is.
+      // Out of play, the gate moves onto the only field there is.
       expect(body.first.checkValidity()).toBe(false);
 
       fillOnce(body, 'ghp_pasted_token');
@@ -438,19 +476,56 @@ describe('runPassphrase with once', () => {
       return { button: { accept: false } };
     });
 
-    await runPassphrase({ nonce: NONCE, once: true }, serverSettings);
+    await runPassphrase({ nonce: NONCE }, serverSettings);
   });
 
-  it('shows no match status, having nothing to report a match about', async () => {
+  it('keeps the status row out of the layout until the toggle is ticked', async () => {
     mockLaunch.mockImplementation(async (opts: any) => {
-      fillOnce(opts.body, 'ghp_pasted_token');
-      expect(
-        opts.body.node.querySelector('.jp-PassphraseDialog-status')
-      ).toBeNull();
+      const body = opts.body;
+      const status = body.node.querySelector('.jp-PassphraseDialog-status');
+      const toggle = body.twice.parentElement;
+      expect(toggle.textContent).toBe('Type it twice');
+      // No confirm field in play, so no empty row reserving height.
+      expect(status.hidden).toBe(true);
+      setTwice(body, true);
+      expect(status.hidden).toBe(false);
       return { button: { accept: false } };
     });
 
-    await runPassphrase({ nonce: NONCE, once: true }, serverSettings);
+    await runPassphrase({ nonce: NONCE }, serverSettings);
+  });
+
+  it('blocks Submit on a match when the toggle is ticked, and restores the one-field rule when unticked', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      const body = opts.body;
+
+      setTwice(body, true);
+      expect(body.second.hidden).toBe(false);
+      // Ticked: the pair must agree, and an empty confirm field is a mismatch.
+      expect(body.second.checkValidity()).toBe(false);
+
+      fillOnce(body, 'typed by hand');
+      expect(body.second.checkValidity()).toBe(false);
+
+      fill(body, 'typed by hand', 'typed by hand');
+      expect(body.second.checkValidity()).toBe(true);
+      expect(body.value).toBe('typed by hand');
+
+      // Unticked: the confirm value and its validity are cleared, and the only
+      // field gates again.
+      setTwice(body, false);
+      expect(body.second.hidden).toBe(true);
+      expect(body.second.value).toBe('');
+      expect(body.second.checkValidity()).toBe(true);
+      expect(body.first.checkValidity()).toBe(true);
+      expect(body.value).toBe('typed by hand');
+
+      return { button: { accept: true } };
+    });
+
+    await expect(runPassphrase({ nonce: NONCE }, serverSettings)).resolves.toBe(
+      true
+    );
   });
 
   it('titles the dialog and prompts for a secret, not a passphrase', async () => {
@@ -459,7 +534,7 @@ describe('runPassphrase with once', () => {
       return { button: { accept: false } };
     });
 
-    await runPassphrase({ nonce: NONCE, once: true }, serverSettings);
+    await runPassphrase({ nonce: NONCE }, serverSettings);
 
     expect(dialogOptions().title).toBe('Secret');
     expect(dialogOptions().body.node.textContent).toContain('Enter the secret');
@@ -472,7 +547,7 @@ describe('runPassphrase with once', () => {
     });
 
     await runPassphrase(
-      { nonce: NONCE, once: true, prompt: 'GitHub token' },
+      { nonce: NONCE, prompt: 'GitHub token' },
       serverSettings
     );
 
@@ -485,10 +560,24 @@ describe('runPassphrase with once', () => {
       return { button: { accept: false } };
     });
 
-    await runPassphrase({ nonce: NONCE, once: true }, serverSettings);
+    await runPassphrase({ nonce: NONCE }, serverSettings);
 
     const body = dialogOptions().body;
     expect(body.first.type).toBe('password');
     expect(body.first.autocomplete).toBe('new-password');
+  });
+
+  it('still accepts once for compatibility, with the same single field', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      const body = opts.body;
+      expect(body.second.hidden).toBe(true);
+      expect(body.twice.checked).toBe(false);
+      fillOnce(body, 'ghp_pasted_token');
+      return { button: { accept: true } };
+    });
+
+    await expect(
+      runPassphrase({ nonce: NONCE, once: true }, serverSettings)
+    ).resolves.toBe(true);
   });
 });

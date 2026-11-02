@@ -17,6 +17,7 @@ from .. import cli as _cli
 
 UNLOCK_COMMAND = "passkey:vault-unlock"
 REGISTER_COMMAND = "passkey:vault-register"
+SETUP_COMMAND = "passkey:vault-setup"
 REQUEST_TIMEOUT = 30
 
 
@@ -103,20 +104,19 @@ class Vault:
         if password is not None:
             return request("POST", "unlock", {"password": password, "code": code})
         s = self.status()
-        # Not a notification whose click can only answer that no passkey matches.
         if not s["initialized"]:
             raise VaultClientError(no_vault(s["path"]))
-        if not any(slot["type"] == "passkey" for slot in s["slots"]):
-            raise VaultClientError(
-                "the vault has no passkey - unlock with the recovery"
-                " passphrase: jupyterlab-passkey vault unlock --recovery"
-                + (", or with the unlock password and a code: jupyterlab-passkey vault unlock --password"
-                   if any(slot["type"] == "password" for slot in s["slots"]) else "")
+        if any(slot["type"] == "passkey" for slot in s["slots"]):
+            # The page falls back to its chooser when no passkey matches its hostname.
+            browser_step(
+                UNLOCK_COMMAND, {}, "Unlock vault",
+                "Unlock the vault with your passkey - click to approve.", self.timeout,
             )
-        browser_step(
-            UNLOCK_COMMAND, {}, "Unlock vault",
-            "Unlock the vault with your passkey - click to approve.", self.timeout,
-        )
+        else:
+            browser_step(
+                UNLOCK_COMMAND, {"method": "choose"}, "Unlock vault",
+                "Choose how to unlock the vault - click to approve.", self.timeout,
+            )
         return self.status()
 
     def lock(self):
