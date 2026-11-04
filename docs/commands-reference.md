@@ -57,21 +57,21 @@ keyctl unlink "$(keyctl search @u user "$DESC")" @u
 
 ## `passkey:passphrase`
 
-Prompts for a secret in a dialog and stages it **raw** - no JSON envelope, no trailing newline. Entered twice and staged only on a match by default; `once` asks for a single entry. The CLI prints the consumer a scheme-prefixed reference (`keyctl:jlab-passkey:<nonce>.pass` or `file:<path>`), never the value.
+Prompts for a secret in a dialog and stages it **raw** - no JSON envelope, no trailing newline. One entry by default; `twice` asks in two fields and stages only on a match. The CLI prints the consumer a scheme-prefixed reference (`keyctl:jlab-passkey:<nonce>.pass` or `file:<path>`), never the value.
 
-| Arg      | Required | Meaning                                                            |
-| -------- | -------- | ------------------------------------------------------------------ |
-| `nonce`  | yes      | relay key/filename; same guard as above                            |
-| `prompt` | no       | dialog prompt text; defaults per mode (see below)                  |
-| `once`   | no       | `true` asks once, with no confirm field - for a value being pasted |
+| Arg      | Required | Meaning                                                           |
+| -------- | -------- | ----------------------------------------------------------------- |
+| `nonce`  | yes      | relay key/filename; same guard as above                           |
+| `prompt` | no       | dialog prompt text; defaults per mode (see below)                 |
+| `twice`  | no       | `true` asks in two fields that must match - for a value being set |
 
 - **Path** - browser → server → kernel key or tmpfs; never the terminal, shell history, a process argument, or the bridge CLI
-- **Confirmation** - the two entries must match before anything is staged; `once` only requires non-empty
-- **Default prompt** - `Enter the passphrase twice`, or `Enter the secret` under `once`
+- **Confirmation** - with `twice` the two entries must match before anything is staged; one entry only has to be non-empty
+- **Default prompt** - `Enter the secret`, or `Enter the passphrase twice` under `twice`
 - **Cancel** - stages a `<nonce>.cancel` marker (no secret; 60s on keyctl) that a consumer can watch to stop waiting at once; a mismatch cannot be submitted
 - **Consumer** - a keyctl-aware consumer branches on the reference scheme: `keyctl pipe $(keyctl search @u user <desc>)` or read the `file:` path; the value never passes through the bridge
 
-Double entry catches a typo in a passphrase being **set**, where nothing else will - get it wrong and the mistake surfaces at the next unlock, by which time the right value is forgotten. It earns nothing for a token being **pasted** out of a password manager, which is what `once` is for.
+Double entry catches a typo in a passphrase being **set**, where nothing else will - get it wrong and the mistake surfaces at the next unlock, by which time the right value is forgotten. It earns nothing for a token being **pasted** out of a password manager, which is why one entry is the default.
 
 ## `passkey:copy`
 
@@ -104,14 +104,14 @@ Collects the code staged under the nonce - by a local client, or by the server f
 
 ## `passkey:vault-unlock` and `passkey:vault-register`
 
-The two vault passkey steps; `jupyterlab-passkey vault unlock` and `vault passkey add` raise them. The page runs the ceremony and sends the PRF straight to the vault endpoint, so the PRF never enters a relay. Only the outcome comes back: the page POSTs `{nonce, ok: true}` or `{nonce, ok: false, error}` to `result`, which stages it for the waiting CLI.
+The two vault passkey steps; `jupyterlab-passkey vault unlock` and `vault passkey add` raise them. The page runs the ceremony and sends the PRF straight to the vault endpoint, so the PRF never enters a relay. Only the outcome comes back: the page POSTs `{nonce, ok: true, method}` or `{nonce, ok: false, error}` to `result`, which stages it for the waiting CLI. `method` is the type of the slot `vault-register` stored, `passkey` or `password-passkey`, so the CLI names the method. `vault-unlock` POSTs only a failure: the CLI reads a success in vault status, which can end its wait before a post arrives, and nothing would collect that post.
 
-| Arg     | Required | Meaning                                                      |
-| ------- | -------- | ------------------------------------------------------------ |
-| `nonce` | no       | relay key for the outcome; without it nothing is posted back |
-| `label` | no       | `vault-register` only: the name offered for the passkey      |
+| Arg     | Required | Meaning                                                                                         |
+| ------- | -------- | ----------------------------------------------------------------------------------------------- |
+| `nonce` | no       | relay key for the outcome, for `vault-unlock` a failure only; without it nothing is posted back |
+| `label` | no       | `vault-register` only: the name offered for the passkey                                         |
 
-`vault-unlock` uses every passkey slot added for the tab's hostname. `vault-register` first gets the proof the server asks for a new slot - a request with a passkey added for the tab's hostname. When the hostname has none, that request gets no answer (the passkey is on another device, or lost) or the passkey gives no PRF, it asks a code of the authenticator app while the vault has one and is unlocked, or the recovery passphrase. On a tab at an IP address it asks for nothing and answers where to open JupyterLab. It then asks for the passkey's name in a dialog whose button is the click that lets the browser create the passkey, creates it, asks for a confirming click, evaluates a fresh PRF salt with `get`, and adds the slot.
+`vault-unlock` uses every passkey slot added for the tab's hostname. On an unlocked vault it asks nothing and posts nothing, and a click during a running unlock shares that run. A refusal after the passkey answered is posted as the outcome and opens no chooser. `vault-register` first gets the proof the server asks for a new slot - a request with a passkey added for the tab's hostname. When the hostname has none, that request gets no answer (the passkey is on another device, or lost) or the passkey gives no PRF, it asks the passkey of Password and passkey while the vault has one for this address and is unlocked, then a code of the authenticator app while the vault has one and is unlocked, or the recovery passphrase. On a tab at an IP address it asks for nothing and answers where to open JupyterLab. It then reads a server challenge (after a proof by the passkey of Password and passkey, which holds the live one, the page makes its own), asks for the passkey's name in a dialog whose button is the click that lets the browser create the passkey, creates it over that challenge, asks for a confirming click, evaluates a fresh PRF salt with `get` over the same challenge, and adds the slot. A passkey with no PRF goes on to the offer of Password and passkey and a new unlock password, with no further passkey prompt; the server checks its `create` with the WebAuthn registration steps and its `get` as the signature.
 
 ## Result shapes of `passkey:run`
 

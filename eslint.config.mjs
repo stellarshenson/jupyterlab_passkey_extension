@@ -14,6 +14,7 @@ export default defineConfig([
       '**/*.js',
       '**/*.d.ts',
       '.venv',
+      'tmp',
       'tests',
       '**/__tests__',
       'ui-tests'

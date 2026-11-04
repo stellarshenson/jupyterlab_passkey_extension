@@ -1,3 +1,5 @@
+import { Notification } from '@jupyterlab/apputils';
+
 import {
   addIcon,
   filterIcon,
@@ -28,15 +30,20 @@ import {
 } from './api';
 
 import {
+  ADD_MFA,
+  askNewPassword,
   askProof,
   askUnlockCode,
+  chooseFirstMethod,
   chooseUnlockMethod,
   confirmDelete,
   editEntry,
+  NEW_RECOVERY,
   registerMfa,
   registerWithProof,
   sentence,
   UnlockMethod,
+  unlockWithPair,
   viewEntry
 } from './dialogs';
 
@@ -45,7 +52,10 @@ import {
   ipAddressAdvice,
   isIpAddress,
   matchingSlots,
+  pairSlot,
+  passkeyAssertion,
   passkeyPrf,
+  shareUnlock,
   unlockWithPasskey,
   Unused
 } from './webauthn';
@@ -176,38 +186,26 @@ export interface IVaultPanelOptions {
   openSettings: () => void;
   /** The hostname passkeys are matched against; the tab's own by default. */
   host?: string;
+  /** Called with each state the panel reads and the time that read began. */
+  onRead?: (status: IStatus, since: number) => void;
 }
 
-/** An action's or a guard's banner line: `at` is when it was set. */
-type Message_ = {
-  kind: 'error' | 'warn' | 'info';
-  text: string;
-  at: number;
-  /** Kept when a read finds the vault changed: nothing else shows the outcome. */
-  keep?: boolean;
-} | null;
-
-/**
- * An action that did part of its work: reported as a warning, not an error. `unused`
- * when the rest left a passkey the browser made and the vault did not take.
- */
-class PartlyDone extends Error {
-  constructor(
-    message: string,
-    readonly unused: boolean
-  ) {
-    super(message);
-  }
-}
+/** The banner's line of a success or a hint: `at` is when it was set. */
+type Message_ = { text: string; at: number } | null;
 
 /** How long an armed two-step button ignores clicks: a double-click never confirms. */
 export const ARM_DELAY_MS = 500;
 
 /**
  * An action whose request got no answer, or got a refusal while its final read
- * failed: it may have landed.
+ * failed: it may have landed. The vault's state shows whether it did.
  */
-const NOT_CONFIRMED = 'Not confirmed by the vault';
+const NOT_CONFIRMED =
+  'Not confirmed by the vault - the server stopped answering; once it answers, the panel shows whether it was done';
+
+/** The same for a named action whose outcome the vault's state does not show. */
+const AGAIN =
+  'not confirmed by the vault - do it again once the server answers';
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -282,6 +280,7 @@ export class VaultPanel extends Widget {
     this._api = options.api;
     this._openSettings = options.openSettings;
     this._host = options.host ?? location.hostname;
+    this._onRead = options.onRead;
 
     this.id = 'jp-passkey-vault';
     this.addClass(C);
@@ -341,20 +340,14 @@ export class VaultPanel extends Widget {
     this._render();
   }
 
-  /**
-   * The vault state as last read. The unlock command reads it so the WebAuthn call
-   * is not behind a network read: some browsers let a click's user activation lapse.
-   */
-  get status(): IStatus | null {
-    return this._status;
-  }
-
   /** Re-read the state and, when unlocked, the entry list. */
   async refresh(): Promise<void> {
     const before = shape(this._status);
+    const since = Date.now();
     try {
       this._status = await this._api.status();
       this._readAt = Date.now();
+      this._onRead?.(this._status, since);
       this._entries = this._status.unlocked ? await this._api.entries() : [];
       this._entriesRead = true;
       this._readError = null;
@@ -413,9 +406,12 @@ export class VaultPanel extends Widget {
 
   /** Changed elsewhere (the CLI, another tab): a line about the old state is stale. */
   private _dropStale(): void {
-    if (!this._message?.keep) {
-      this._message = null;
-    }
+    this._message = null;
+  }
+
+  /** Read the state as the panel's own poll does, with the panel shown or hidden. */
+  poll(): Promise<void> {
+    return this._tick();
   }
 
   private async _tick(): Promise<void> {
@@ -433,9 +429,11 @@ export class VaultPanel extends Widget {
       return;
     }
     const before = shape(this._status);
+    const since = Date.now();
     try {
       this._status = await this._api.status();
       this._readAt = Date.now();
+      this._onRead?.(this._status, since);
       if (this._busy) {
         // An action began during the read: it reads and redraws when it ends.
         this._renderStatus();
@@ -460,10 +458,7 @@ export class VaultPanel extends Widget {
       return;
     }
     // A success line stays one full refresh period.
-    if (
-      this._message?.kind === 'info' &&
-      Date.now() - this._message.at >= REFRESH_MS
-    ) {
+    if (this._message && Date.now() - this._message.at >= REFRESH_MS) {
       this._message = null;
     }
     this._renderStatus();
@@ -498,7 +493,6 @@ export class VaultPanel extends Widget {
   private _sayProofFirst(s: IStatus): void {
     if (matchingSlots(s.slots, this._host).length > 0) {
       this._message = {
-        kind: 'info',
         text: 'First confirm with a passkey you already have',
         at: Date.now()
       };
@@ -509,11 +503,33 @@ export class VaultPanel extends Widget {
   /**
    * Clear the banner's line: the proof is in, or a step was done in this tab outside
    * the panel (a CLI's unlock or new passkey) - an action in this tab, which clears
-   * any line as the panel's own next action does.
+   * the line and the failure notification as the panel's own next action does.
    */
   clearLine(): void {
     this._message = null;
+    this._dismissFailure();
     this._renderBanner();
+  }
+
+  /**
+   * Report a failure as a notification with no timeout, in place of the panel's last
+   * one: amber (`warn`) or red. A line in the panel would follow the user into every
+   * view; the user dismisses a notification, and the next action does. Public for the
+   * refusal of a Password and passkey unlock a CLI raises in this tab, which the CLI
+   * may no longer wait for.
+   */
+  fail(text: string, warn: boolean): void {
+    this._dismissFailure();
+    this._failure = (warn ? Notification.warning : Notification.error)(text, {
+      autoClose: false
+    });
+  }
+
+  private _dismissFailure(): void {
+    if (this._failure !== null) {
+      Notification.dismiss(this._failure);
+      this._failure = null;
+    }
   }
 
   private _remaining(): number | null {
@@ -538,20 +554,19 @@ export class VaultPanel extends Widget {
   // -- actions --------------------------------------------------------------
 
   /**
-   * Run an action, report the outcome in the banner, then re-read. An action that
-   * resolves to `false` was cancelled, and reports nothing. One at a time: a second
-   * click while one runs is ignored - a second WebAuthn request would fail and
-   * report an error over the first one's success. `keep` names an action whose
-   * outcome the vault's state does not show (a passkey made, the recovery passphrase
-   * changed): its line outlives a change made elsewhere. `onlyUnused` keeps only a
-   * line about a passkey the browser made: the other outcomes of Create and of a new passkey show
-   * in the vault's passkey slots.
+   * Run an action, report the outcome, then re-read. Success shows `done` in the
+   * banner, or `done` of what the action resolved to; an action that resolves to
+   * `false` was cancelled, and reports nothing. A
+   * failure is a notification (`fail`), amber for a passkey the browser made but the
+   * vault did not take and for a dismissed passkey prompt (the user's choice), red
+   * otherwise. `unconfirmed` is its text when the request may have landed. One at a
+   * time: a second click while one runs is ignored - a second WebAuthn request would
+   * fail and report an error over the first one's success.
    */
   private async _act(
     action: () => Promise<unknown>,
-    done?: string,
-    keep?: string,
-    onlyUnused = false
+    done?: string | ((result: unknown) => string),
+    unconfirmed = NOT_CONFIRMED
   ): Promise<void> {
     if (this._busy) {
       return;
@@ -560,74 +575,57 @@ export class VaultPanel extends Widget {
     this.node.classList.add('jp-mod-busy');
     this.node.setAttribute('aria-busy', 'true');
     this._message = null;
+    this._dismissFailure();
     this._armed = null;
     let unanswered = false;
     let answered = false;
-    let unused = false;
+    let failure: { text: string; warn: boolean } | null = null;
     try {
       const result = await action();
       this._message =
         result !== false && done
-          ? { kind: 'info', text: done, at: Date.now() }
+          ? {
+              text: typeof done === 'string' ? done : done(result),
+              at: Date.now()
+            }
           : null;
     } catch (e) {
-      // Amber, not red: a step done in part, a passkey the browser made but the vault
-      // did not take, and a dismissed passkey prompt (the user's choice). A kept line
-      // can outlive the moment, so it names its action unless it says what it reports.
+      // A proof that fails leaves its hint (`_sayProofFirst`) with no request running.
+      this._message = null;
       unanswered = e instanceof NoAnswer;
-      unused = e instanceof Unused || (e instanceof PartlyDone && e.unused);
       answered = e instanceof VaultError && e.status > 0;
-      this._message =
-        e instanceof PartlyDone || e instanceof Unused
-          ? { kind: 'warn', text: e.message, at: Date.now() }
-          : {
-              kind: mapCeremonyError(e) === 'not-allowed' ? 'warn' : 'error',
-              text: keep
-                ? `${keep}: ${describeFailure(e)}`
-                : describeFailure(e),
-              at: Date.now()
-            };
-    }
-    if (this._message && keep && (!onlyUnused || unused)) {
-      this._message.keep = true;
+      failure = {
+        text: e instanceof VaultError ? e.short : describeFailure(e),
+        warn: e instanceof Unused || mapCeremonyError(e) === 'not-allowed'
+      };
     }
     try {
       // Read the new state while still busy: a tick in between would take the
       // action's own change for one made elsewhere and drop the line above.
       await this.refresh();
-      if (
-        (unanswered || (answered && this._readError !== null)) &&
-        this._message !== null
-      ) {
+      if (failure && (unanswered || (answered && this._readError !== null))) {
         // No answer came, or an answer came (maybe not the vault's: a proxy page) while
         // the server could not be read after it: the request may have landed. A failed
-        // read's own line says why. A refusal made in the page never left it. Create's
-        // line (`onlyUnused`) gets no next step and is not kept: the vault's state
-        // shows whether it landed.
-        this._message = {
-          ...this._message,
-          text: !keep
-            ? NOT_CONFIRMED
-            : onlyUnused
-              ? `${keep} not confirmed by the vault`
-              : `${keep} not confirmed by the vault - do it again once the server answers`,
-          keep: !onlyUnused
-        };
+        // read's own line says why. A refusal made in the page never left it.
+        failure.text = unconfirmed;
       }
     } finally {
       this._busy = false;
       this.node.classList.remove('jp-mod-busy');
       this.node.removeAttribute('aria-busy');
       this._render();
+      if (failure) {
+        this.fail(sentence(failure.text), failure.warn);
+      }
     }
   }
 
-  private _create(): Promise<void> {
+  private _create(s: IStatus): Promise<void> {
     return this._act(
       async () => {
         const { accepted, value } = await askSecret(
-          'Choose a recovery passphrase and store it offline - it is the only way in without a passkey.',
-          true,
+          NEW_RECOVERY,
+          2,
           'Create vault'
         );
         if (!accepted || value === null) {
@@ -637,46 +635,34 @@ export class VaultPanel extends Widget {
           await this._api.init(value);
         } catch (e) {
           // A lost answer: the vault may have been written all the same. A read
-          // settles it, and a vault that exists goes on to its passkey step.
-          const s =
+          // settles it, and a vault that exists goes on to the choice of a method.
+          const read =
             e instanceof NoAnswer
               ? await this._api.status().catch(() => null)
               : null;
-          if (!s?.initialized) {
+          if (!read?.initialized) {
             throw e;
           }
         }
-        if (isIpAddress(this._host)) {
-          return;
-        }
-        try {
-          // The passphrase just chosen is the proof the server asks for a new passkey.
-          const registered = await registerWithProof(
-            this._api,
-            { current: value },
-            '',
-            this._host
-          );
-          if (!registered) {
-            throw new VaultError(0, 'adding the passkey was cancelled');
-          }
-        } catch (e) {
-          throw new PartlyDone(
-            `Vault created, but no passkey was added (${describeFailure(e)}). Add one under Vault settings and security (the cog).`,
-            e instanceof Unused
-          );
-        }
+        await chooseFirstMethod(
+          this._api,
+          value,
+          s.settings.password_min_length,
+          this._host
+        );
       },
       'Vault created',
-      'Vault creation',
-      true
+      // Its state shows whether it landed: no advice to create again.
+      'Vault creation not confirmed by the vault - the server stopped answering; once it answers, the panel shows whether the vault exists'
     );
   }
 
   private _unlockPasskey(): Promise<void> {
     return this._act(async () => {
       // Only the locked view offers this, and it renders from a status already read.
-      await unlockWithPasskey(this._api, this._status as IStatus, this._host);
+      await shareUnlock(() =>
+        unlockWithPasskey(this._api, this._status as IStatus, this._host)
+      );
     });
   }
 
@@ -689,7 +675,7 @@ export class VaultPanel extends Widget {
     return this._act(async () => {
       const { accepted, value } = await askSecret(
         'Enter the unlock password',
-        true,
+        1,
         'Unlock vault'
       );
       if (!accepted || value === null) {
@@ -701,6 +687,11 @@ export class VaultPanel extends Widget {
         await this._api.unlockPassword(value, code);
       }
     });
+  }
+
+  /** Unlock with Password and passkey: the password, then the passkey. */
+  private _unlockPair(slot: ISlot): Promise<void> {
+    return this._act(() => unlockWithPair(this._api, slot));
   }
 
   /**
@@ -731,15 +722,26 @@ export class VaultPanel extends Widget {
     return this._act(
       async () => {
         this._sayProofFirst(s);
-        const proof = await askProof(s, this._host, 'Add passkey', true);
+        const proof = await askProof(
+          this._api,
+          s,
+          this._host,
+          'Add passkey',
+          true
+        );
         this.clearLine();
         return (
           proof !== null && registerWithProof(this._api, proof, '', this._host)
         );
       },
-      'Passkey added',
-      'Adding the passkey',
-      true
+      // A passkey with no PRF is stored as Password and passkey.
+      stored =>
+        stored === 'password-passkey'
+          ? 'Password and passkey added'
+          : 'Passkey added',
+      // Only a failed read before the browser's `create` reaches this text, so no
+      // passkey was made and a retry cannot add a second one.
+      `Adding the passkey ${AGAIN}`
     );
   }
 
@@ -749,29 +751,22 @@ export class VaultPanel extends Widget {
    * because the request checks it and a code stays right for less than a minute.
    */
   private _addMfa(s: IStatus): Promise<void> {
-    const title = 'Add password and authenticator app';
     return this._act(
       async () => {
-        const minLength = s.settings.password_min_length;
-        const { accepted, value } = await askSecret(
-          `Enter the new unlock password, at least ${minLength} characters`,
-          true,
-          title,
-          { minLength }
-        );
-        if (!accepted || value === null) {
+        const password = await askNewPassword(s.settings.password_min_length);
+        if (password === null) {
           return false;
         }
         this._sayProofFirst(s);
-        const proof = await askProof(s, this._host, title, true);
+        const proof = await askProof(this._api, s, this._host, ADD_MFA, true);
         this.clearLine();
         return (
           proof !== null &&
-          registerMfa(this._api, value, proof, this._host, title)
+          registerMfa(this._api, password, proof, this._host, ADD_MFA)
         );
       },
       'Password and authenticator app added',
-      'Adding the password and authenticator app'
+      `Adding the password and authenticator app ${AGAIN}`
     );
   }
 
@@ -780,6 +775,7 @@ export class VaultPanel extends Widget {
       async () => {
         this._sayProofFirst(s);
         const proof = await askProof(
+          this._api,
           s,
           this._host,
           'Change recovery passphrase',
@@ -791,7 +787,7 @@ export class VaultPanel extends Widget {
         }
         const { accepted, value } = await askSecret(
           'Enter the new recovery passphrase, and store it offline',
-          true,
+          2,
           'Change recovery passphrase'
         );
         if (!accepted || value === null) {
@@ -800,7 +796,7 @@ export class VaultPanel extends Widget {
         await this._api.replaceRecovery(value, proof);
       },
       'Recovery passphrase changed',
-      'Recovery passphrase change'
+      `Recovery passphrase change ${AGAIN}`
     );
   }
 
@@ -813,7 +809,13 @@ export class VaultPanel extends Widget {
     return this._act(
       async () => {
         this._sayProofFirst(s);
-        const proof = await askProof(s, this._host, 'Rotate data key', false);
+        const proof = await askProof(
+          this._api,
+          s,
+          this._host,
+          'Rotate data key',
+          false
+        );
         this.clearLine();
         if (proof === null) {
           return false;
@@ -821,7 +823,7 @@ export class VaultPanel extends Widget {
         await this._api.rotate(proof);
       },
       'Data key rotated',
-      'Data key rotation'
+      `Data key rotation ${AGAIN}`
     );
   }
 
@@ -829,7 +831,7 @@ export class VaultPanel extends Widget {
     return this._act(async () => {
       const { accepted, value } = await askSecret(
         'Enter the recovery passphrase',
-        true,
+        1,
         'Unlock vault'
       );
       if (accepted && value !== null) {
@@ -879,7 +881,7 @@ export class VaultPanel extends Widget {
         }
       },
       undefined,
-      `Change to ${entry.name}`
+      `Change to ${entry.name} ${AGAIN}`
     );
   }
 
@@ -899,6 +901,16 @@ export class VaultPanel extends Widget {
     const choice = await viewEntry(entry, {
       proven: () => this._api.proven,
       passkey: async () => {
+        const pair =
+          matchingSlots(status.slots, this._host).length === 0
+            ? pairSlot(status.slots)
+            : undefined;
+        if (pair) {
+          // No dialog for the click: a failure opens the row of typed proofs.
+          return {
+            assertion: await passkeyAssertion(pair, await this._api.challenge())
+          };
+        }
         const { credId, prf } = await passkeyPrf(status, this._host);
         return { cred_id: credId, prf };
       },
@@ -925,11 +937,7 @@ export class VaultPanel extends Widget {
     // The entry as last read: it may have changed while the popup was open.
     const current = this._entries.find(e => e.name === entry.name);
     if (!current && this._entriesRead) {
-      this._message = {
-        kind: 'warn',
-        text: `${entry.name} was deleted elsewhere`,
-        at: Date.now()
-      };
+      this.fail(`${entry.name} was deleted elsewhere.`, true);
       this._render();
       return;
     }
@@ -949,11 +957,7 @@ export class VaultPanel extends Widget {
     if ((this._remaining() ?? 0) > 0) {
       return false;
     }
-    this._message = {
-      kind: 'warn',
-      text: 'The vault locked - unlock it, then try again',
-      at: Date.now()
-    };
+    this.fail('The vault locked - unlock it, then try again.', true);
     this._render();
     return true;
   }
@@ -1036,7 +1040,7 @@ export class VaultPanel extends Widget {
       if (this._view === 'settings') {
         this._renderSettings(s);
       } else if (!s.initialized) {
-        this._renderCreate();
+        this._renderCreate(s);
       } else if (!s.unlocked) {
         this._renderLocked(s);
       } else {
@@ -1055,7 +1059,6 @@ export class VaultPanel extends Widget {
   private _renderBanner(): void {
     const shown = JSON.stringify([
       this._view === 'main' ? this._status?.holder.notice : null,
-      this._message?.kind,
       this._message?.text,
       this._message?.at,
       this._readError
@@ -1074,7 +1077,7 @@ export class VaultPanel extends Widget {
     }
     if (this._message) {
       const line = el('div', `${C}-message`, this._message.text);
-      line.dataset.kind = this._message.kind;
+      line.dataset.kind = 'info';
       this._banner.appendChild(line);
     }
     if (this._readError) {
@@ -1144,14 +1147,14 @@ export class VaultPanel extends Widget {
     }
   }
 
-  private _renderCreate(): void {
+  private _renderCreate(s: IStatus): void {
     const section = el('div', `${C}-empty`);
     if (isIpAddress(this._host)) {
       // Said before the passphrase is typed: here the vault gets no passkey.
       section.appendChild(el('p', `${C}-hint`, sentence(ipAddressAdvice())));
     }
     section.appendChild(
-      this._button('Create vault', () => this._create(), true)
+      this._button('Create vault', () => this._create(s), true)
     );
     this._body.appendChild(section);
   }
@@ -1159,18 +1162,35 @@ export class VaultPanel extends Widget {
   private _renderLocked(s: IStatus): void {
     const section = el('div', `${C}-empty`);
     const usable = matchingSlots(s.slots, this._host).length > 0;
+    const pair = pairSlot(s.slots);
+    // Password and passkey added at another port or scheme of this host: a passkey
+    // with no PRF added here would end in the refusal of a second one.
+    const elsewhere = s.slots.find(
+      x => x.type === 'password-passkey' && x.rp_id === this._host
+    );
     if (usable) {
       section.appendChild(
         this._button('Unlock with passkey', () => this._unlockPasskey(), true)
       );
-    } else {
+    } else if (!pair) {
       section.appendChild(
         el(
           'p',
           `${C}-hint`,
           isIpAddress(this._host)
             ? sentence(ipAddressAdvice(s.slots))
-            : `No passkey was added for ${this._host}. Add one under Vault settings and security (the cog) with the recovery passphrase.`
+            : elsewhere
+              ? `Password and passkey was added at ${elsewhere.origin}. Open JupyterLab at that address to unlock with it.`
+              : `No passkey was added for ${this._host}. Add one under Vault settings and security (the cog) with the recovery passphrase.`
+        )
+      );
+    }
+    if (pair) {
+      section.appendChild(
+        this._button(
+          'Unlock with password and passkey',
+          () => this._unlockPair(pair),
+          !usable
         )
       );
     }
@@ -1231,6 +1251,8 @@ export class VaultPanel extends Widget {
     )) {
       const group = groups.get(category) as IEntry[];
       const expanded = !this._collapsed.has(category);
+      // A section, as in the cog view, so the category ends with the divider line.
+      const section = el('div', `${C}-section`);
       // A header collapses its category, as in the AI assistants panels.
       const header = el('button', `${C}-sectionHeader`);
       header.type = 'button';
@@ -1250,12 +1272,13 @@ export class VaultPanel extends Widget {
         saveCollapsed(this._collapsed);
         this._renderList();
       });
-      this._list.appendChild(header);
+      section.appendChild(header);
       if (expanded) {
         for (const e of group) {
-          this._list.appendChild(this._row(e));
+          section.appendChild(this._row(e));
         }
       }
+      this._list.appendChild(section);
     }
   }
 
@@ -1374,6 +1397,27 @@ export class VaultPanel extends Widget {
               'mfa',
               () => this._api.removeMfa(),
               'Password and authenticator app removed'
+            )
+          )
+        );
+      }
+      for (const slot of s.slots.filter(x => x.type === 'password-passkey')) {
+        const detail = [
+          'Added',
+          ...dayAndMinute(slot.created),
+          slot.label ?? ''
+        ];
+        methods.appendChild(
+          this._method(
+            'pair',
+            'Password and passkey',
+            slot.origin === location.origin
+              ? detail
+              : [...detail, `on ${slot.origin}`],
+            remove(
+              'pair',
+              () => this._api.removePasskey(slot.cred_id as string),
+              'Password and passkey removed'
             )
           )
         );
@@ -1551,6 +1595,7 @@ export class VaultPanel extends Widget {
   private readonly _api: VaultApi;
   private readonly _openSettings: () => void;
   private readonly _host: string;
+  private readonly _onRead?: (status: IStatus, since: number) => void;
   private readonly _lockButton: HTMLButtonElement;
   private readonly _addButton: HTMLButtonElement;
   private readonly _filterButton: HTMLButtonElement;
@@ -1573,6 +1618,8 @@ export class VaultPanel extends Widget {
   private _armedAt = 0;
   private _busy = false;
   private _message: Message_ = null;
+  /** The id of the notification of the last failed action, until it is dismissed. */
+  private _failure: string | null = null;
   /** Why the last read failed; the next successful read clears it. */
   private _readError: string | null = null;
   private _timer: number | null = null;

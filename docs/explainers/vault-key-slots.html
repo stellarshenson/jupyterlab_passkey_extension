@@ -255,7 +255,7 @@ pre .c{color:var(--muted)}
       <text class="s-s s-ink" x="651" y="438" text-anchor="middle">AES-GCM(VK, each item)</text>
       <text class="s-s s-muted" x="390" y="482" text-anchor="middle">Only salts, verifiers, public keys and ciphertext live on the server. Passwords, KEKs and VK never leave your device.</text>
     </svg>
-    <figcaption>Each unlock method has its own key-encryption key (KEK) and its own slot. A slot holds a small key pair. Its private key is sealed with the method's KEK, and a copy of the vault key is sealed to its public key. That second layer is what makes clean rotation possible later on.</figcaption>
+    <figcaption>Each unlock method has its own key-encryption key (KEK) and its own slot. A slot holds a small key pair. Its private key is sealed with the method's KEK, and a copy of the vault key is sealed to its public key. That second layer is what makes clean rotation possible later on. A second unlock password can pair with a passkey that has no PRF. It has its own slot and follows the middle column, with a passkey signature in the place of the code.</figcaption>
   </figure>
 </section>
 
@@ -290,13 +290,27 @@ pre .c{color:var(--muted)}
         <li><div><code class="f">s = SHA-256("WebAuthn PRF" ‖ 0x00 ‖ prfSalt)</code><code class="f">P = HMAC-SHA-256(credSecret, s)</code><span class="w">Computed inside the authenticator (CTAP2 hmac-secret). Same credential and salt always give the same P.</span></div></li>
         <li><div><code class="f">KEK₃ = HKDF(P, "slot-kek")</code><span class="w">Deterministic, so it can wrap a key. Without the physical device and its PIN or biometric, no one can compute it.</span></div></li>
         <li><div><code class="f">sig = ECDSA(credPriv, server challenge)</code><span class="w">The login proof. The server keeps the credential public key, never a secret.</span></div></li>
-        <li><div><code class="f">slot3.encPriv = AES-GCM(KEK₃, slotPriv₃)</code><span class="w">A passkey without PRF support can log you in, but it cannot unlock an encrypted vault.</span></div></li>
+        <li><div><code class="f">slot3.encPriv = AES-GCM(KEK₃, slotPriv₃)</code><span class="w">A passkey without PRF gives no repeatable secret, so it cannot wrap this slot. It can still be the server check of an unlock password, as the next card shows.</span></div></li>
+      </ol>
+    </article>
+    <article class="method" style="--c:var(--unlock)">
+      <header><h3>Unlock password + passkey (no PRF)</h3><span>The passkey is a server check. It adds nothing to the encryption.</span></header>
+      <ol>
+        <li><div><code class="f">salt₄ = random 16 B   (new slot, new password)</code><span class="w">This pair has its own password. The password of the app pair does not change.</span></div></li>
+        <li><div><code class="f">S₄ = Argon2id(unlockPw, salt₄)</code><span class="w">The password alone opens this slot, as in the app pair.</span></div></li>
+        <li><div><code class="f">challenge = random 32 B   (server, one use)</code><span class="w">Kept in the server's memory for 10 minutes.</span></div></li>
+        <li><div><code class="f">sig = ECDSA(credPriv, authData ‖ SHA-256(clientData))</code><span class="w">The server checks it with the credential public key, kept as the COSE key the passkey gave at registration and sealed under the data key in the vault. The signature changes with every challenge, so it cannot wrap a key.</span></div></li>
+        <li><div><span class="w">Only for a valid signature does the server keep the vault key. A copied file skips this check: the password alone decrypts it.</span></div></li>
       </ol>
     </article>
   </div>
   <div class="callout">
     <h3>Why the authenticator code can't be part of the key</h3>
     <p class="prose">A TOTP code changes every 30 seconds, so it cannot wrap anything long-lived. To check it, the server must also hold the seed, so any key derived from the seed would be available to the server or to anyone who breaches it. The code therefore guards the <i>door</i>, meaning who may download slot 2, and adds nothing to the <i>lock</i>. That distinction decides the threat table below: an attacker with a copy of the server data skips the door and attacks the lock offline with the stolen password.</p>
+  </div>
+  <div class="callout">
+    <h3>Why a passkey with no PRF can't be part of the key</h3>
+    <p class="prose">A signature covers a new challenge at every use, so its bytes change and it cannot wrap anything long-lived. A PRF output is the same at every use, which is why it can. A passkey with no PRF therefore does what a code does: the server checks it before it keeps the vault key. An attacker with a copy of the file and the password does not meet that check.</p>
   </div>
 </section>
 
@@ -385,9 +399,10 @@ pre .c{color:var(--muted)}
       <tbody>
         <tr><td>Your unlock password only</td><td><span class="pill y">locked out</span> They were already stopped at the code check. Removal makes the password worthless.</td><td><span class="pill y">locked out</span> Not needed.</td><td>Nothing. Pick a new unlock password.</td></tr>
         <tr><td>Password + one phished code (logged in once)</td><td><span class="pill y">no new logins</span> But that session gave them VK and the plaintext they viewed.</td><td><span class="pill y">future data safe</span> VK they hold no longer matches the server.</td><td>Change the actual passwords stored in the vault that they could have read.</td></tr>
-        <tr><td>Password + a copy of server data (breach, backup, device cache)</td><td><span class="pill n">no effect offline</span> Their copy still holds the old slot. Code check doesn't apply offline. They get VK.</td><td><span class="pill p">old copy still open</span> Later copies are safe. The copy they hold stays readable forever.</td><td>Change stored secrets. Rotation cannot reach data the attacker already has.</td></tr>
+        <tr><td>Password + a copy of server data (breach, backup, device cache)</td><td><span class="pill n">no effect offline</span> Their copy still holds the old slot. Neither the code check nor the passkey check applies offline. They get VK.</td><td><span class="pill p">old copy still open</span> Later copies are safe. The copy they hold stays readable forever.</td><td>Change stored secrets. Rotation cannot reach data the attacker already has.</td></tr>
         <tr><td>VK itself (malware on an unlocked device)</td><td><span class="pill n">no effect</span> Slots only guard VK, and they have it.</td><td><span class="pill y">future data safe</span></td><td>Clean the device first, then rotate, or the new key leaks too.</td></tr>
         <tr><td>Your passkey device, locked</td><td><span class="pill y">locked out</span> PRF output needs the device and its PIN or biometric. Remove the slot to be sure.</td><td><span class="pill y">locked out</span> Not needed unless the device was unlocked and used.</td><td>Revoke the passkey at the provider too.</td></tr>
+        <tr><td>Your passkey device with no PRF, and no password</td><td><span class="pill y">locked out</span> The password decrypts; the passkey alone opens no slot. On a vault that is already unlocked it does prove a new unlock method, as a code does.</td><td><span class="pill y">locked out</span> When the vault stayed locked. The rotation also stops an old copy of this slot from proving again.</td><td>Remove this method. When the vault may have been unlocked meanwhile, also remove every unlock method you did not add and change the recovery passphrase.</td></tr>
       </tbody>
     </table>
   </div>

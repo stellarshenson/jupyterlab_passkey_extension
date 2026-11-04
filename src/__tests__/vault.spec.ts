@@ -13,6 +13,14 @@ const mockViewEntry = jest.fn();
 const mockConfirmDelete = jest.fn();
 const mockChoose = jest.fn();
 const mockLaunch = jest.fn();
+// Each notification gets its own id, as JupyterLab's do.
+const mockWarning: jest.Mock = jest.fn(
+  () => `warn-${mockWarning.mock.calls.length}`
+);
+const mockError: jest.Mock = jest.fn(
+  () => `error-${mockError.mock.calls.length}`
+);
+const mockDismiss = jest.fn();
 jest.mock('../passphrase', () => ({
   askSecret: (...a: any[]) => mockAskSecret(...a),
   launchWithEscape: (...a: any[]) => mockLaunch(...a)
@@ -44,19 +52,29 @@ jest.mock('@jupyterlab/apputils', () => ({
     reject(): void {
       this.rejected = true;
     }
+  },
+  Notification: {
+    warning: (...a: any[]) => mockWarning(...a),
+    error: (...a: any[]) => mockError(...a),
+    dismiss: (...a: any[]) => mockDismiss(...a)
   }
 }));
 
 /**
- * Answer the dialogs the code under test opens itself, by title: accept or not, or
- * the label of the button pressed. `code` is typed into a dialog that asks a code.
+ * Answer the dialogs the code under test opens itself, by title: accept or not, the
+ * label of the button pressed, or for the method chooser the methods pressed in turn,
+ * then Escape. `code` is typed into a dialog that asks a code.
  */
 function answerDialogs(
-  accept: Record<string, boolean | string>,
+  accept: Record<string, boolean | string | string[]>,
   code = ''
 ): void {
   mockLaunch.mockImplementation(async (dialog: any) => {
     const answer = accept[dialog.options.title] ?? false;
+    if (Array.isArray(answer)) {
+      dialog.options.body.chosen = answer.shift() ?? null;
+      return { button: { accept: false } };
+    }
     if (dialog.options.body?.code) {
       dialog.options.body.code.value = code;
     }
@@ -88,8 +106,25 @@ jest.mock('@jupyterlab/ui-components', () => {
   };
 });
 
-import { IStatus, NoAnswer, Proof, VaultError } from '../vault/api';
-import { askProof, EntryForm, EntryView, registerMfa } from '../vault/dialogs';
+import { ServerConnection } from '@jupyterlab/services';
+import {
+  ISlot,
+  IStatus,
+  NoAnswer,
+  Proof,
+  VaultApi,
+  VaultError
+} from '../vault/api';
+import {
+  askProof,
+  EntryForm,
+  EntryView,
+  registerMfa,
+  registerWithProof,
+  sentence,
+  unlockWithChoice,
+  unlockWithPair
+} from '../vault/dialogs';
 import { setTranslator } from '../trans';
 import {
   ARM_DELAY_MS,
@@ -105,11 +140,106 @@ import {
   describeFailure,
   ipAddressAdvice,
   matchingSlots,
+  pairSlot,
   registerPasskey,
   unlockWithPasskey
 } from '../vault/webauthn';
+import { b64urlToBuf } from '../passkey-util';
 
 const HOST = 'lab.example.com';
+/** A server challenge: 32 bytes, base64url. */
+const CHALLENGE = 'Y2hhbGxlbmdlLWNoYWxsZW5nZS1jaGFsbGVuZ2UtMzI';
+
+/** What a lost answer or a 5xx of the request that adds an unlock method says. */
+const MAYBE_ADDED =
+  'the server did not confirm the new unlock method - it may have been added; check under Vault settings and security (the cog)';
+
+/**
+ * What an action the vault did not confirm says: the reason, then where its outcome
+ * shows. Create's points at whether the vault exists, with no advice to create again.
+ */
+const NOT_CONFIRMED =
+  'Not confirmed by the vault - the server stopped answering; once it answers, the panel shows whether it was done.';
+const CREATE_NOT_CONFIRMED =
+  'Vault creation not confirmed by the vault - the server stopped answering; once it answers, the panel shows whether the vault exists.';
+
+/** The line of a declined Password and passkey: what happened, then the ways in. */
+const NO_PRF =
+  'passkey not added, no PRF - use another passkey or Password and authenticator app';
+
+/** A refusal of a slot request too long to fit a notification with the unused passkey. */
+const TOO_MANY_CODES =
+  'too many wrong codes - codes are refused until the vault is unlocked with a passkey or the recovery passphrase';
+
+/**
+ * The error the real `VaultApi` makes of an answer that is not the vault's: the
+ * Jupyter server's 403 after a hub logout, or its 404 with no vault routes.
+ */
+async function notTheVault(code: 403 | 404): Promise<VaultError> {
+  const spy = jest.spyOn(ServerConnection, 'makeRequest').mockResolvedValue({
+    ok: false,
+    status: code,
+    text: async () => ''
+  } as any);
+  try {
+    return await new VaultApi({ baseUrl: 'http://host/' } as any)
+      .lock()
+      .catch(e => e);
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+/** `text` as a regular expression that matches only itself. */
+const literally = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * A failure after the browser created a passkey that no slot holds: the reason, then
+ * the passkey named by its creation time, to the second.
+ */
+const unused = (why: string) =>
+  new RegExp(
+    `^${literally(why)}; delete the unused passkey dated \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2} UTC$`
+  );
+
+/** The answer of a passkey with no PRF to a `get`, and that answer as it is sent. */
+const signed = () => ({
+  rawId: new Uint8Array([9]).buffer,
+  response: {
+    clientDataJSON: new Uint8Array([1]).buffer,
+    authenticatorData: new Uint8Array([2]).buffer,
+    signature: new Uint8Array([3]).buffer
+  },
+  getClientExtensionResults: () => ({})
+});
+const ASSERTION = {
+  cred_id: 'CQ',
+  client_data: 'AQ',
+  authenticator_data: 'Ag',
+  signature: 'Aw'
+};
+/** The answer of `noPrfBrowser`'s `create` as it is sent. */
+const REGISTRATION = { client_data: 'BA', attestation_object: 'BQ' };
+
+/**
+ * A browser whose passkey has no PRF: `create` gives its client data and attestation
+ * object, `get` signs.
+ */
+function noPrfBrowser(): { create: jest.Mock; get: jest.Mock } {
+  const create = jest.fn().mockResolvedValue({
+    rawId: new Uint8Array([9]).buffer,
+    response: {
+      clientDataJSON: new Uint8Array([4]).buffer,
+      attestationObject: new Uint8Array([5]).buffer
+    }
+  });
+  const get = jest.fn().mockImplementation(async () => signed());
+  Object.defineProperty(navigator, 'credentials', {
+    value: { get, create },
+    configurable: true
+  });
+  return { create, get };
+}
 
 function status(over: Partial<IStatus> = {}): IStatus {
   return {
@@ -215,6 +345,23 @@ const ENTRIES = [
   }
 ];
 
+/** The status with no vault yet. */
+function NEW_VAULT(): any {
+  return status({
+    initialized: false,
+    unlocked: false,
+    remaining: null,
+    slots: []
+  });
+}
+
+/** The names of the buttons of a method chooser. */
+function methodNames(body: HTMLElement): (string | null)[] {
+  return Array.from(body.querySelectorAll('button')).map(
+    choice => (choice.firstChild as HTMLElement).textContent
+  );
+}
+
 function fakeApi(over: Record<string, any> = {}): any {
   return {
     status: jest.fn().mockResolvedValue(status()),
@@ -235,6 +382,10 @@ function fakeApi(over: Record<string, any> = {}): any {
     addMfa: jest.fn().mockResolvedValue(undefined),
     removeMfa: jest.fn().mockResolvedValue(undefined),
     rotate: jest.fn().mockResolvedValue(undefined),
+    checkRecovery: jest.fn().mockResolvedValue(undefined),
+    challenge: jest.fn().mockResolvedValue(CHALLENGE),
+    unlockPair: jest.fn().mockResolvedValue(status()),
+    addPair: jest.fn().mockResolvedValue(undefined),
     proven: false,
     ...over
   };
@@ -292,6 +443,38 @@ function lines(panel: VaultPanel): [string | undefined, string | null][] {
   return Array.from(
     panel.node.querySelectorAll<HTMLElement>('.jp-PasskeyVaultPanel-message')
   ).map(l => [l.dataset.kind, l.textContent]);
+}
+
+/** What a JupyterLab notification shows of a message (`createContent` in jlab_core). */
+const TOAST_LIMIT = 140;
+
+/**
+ * The notifications raised and not dismissed since, oldest first, each as its colour
+ * and its text. Every one has no timeout, and its text shows whole.
+ */
+function toasts(): [string, string][] {
+  const dismissed = new Set(mockDismiss.mock.calls.map(([id]) => id));
+  const raised = (kind: string, mock: jest.Mock) =>
+    mock.mock.calls.map(([text, options], i) => ({
+      kind,
+      text: text as string,
+      options,
+      id: mock.mock.results[i].value,
+      order: mock.mock.invocationCallOrder[i]
+    }));
+  return [...raised('warn', mockWarning), ...raised('error', mockError)]
+    .filter(t => !dismissed.has(t.id))
+    .sort((a, b) => a.order - b.order)
+    .map(t => {
+      expect(t.options).toEqual({ autoClose: false });
+      expect(t.text.length).toBeLessThanOrEqual(TOAST_LIMIT);
+      return [t.kind, t.text];
+    });
+}
+
+/** Forget the notifications raised so far, for a test that makes a second panel. */
+function clearToasts(): void {
+  [mockWarning, mockError, mockDismiss].forEach(m => m.mockClear());
 }
 
 /** A passkey that answers with credential AAEC and PRF CQkJ (both base64url). */
@@ -439,7 +622,9 @@ describe('registerPasskey', () => {
         return true;
       },
       { current: 'recovery words' },
-      HOST
+      HOST,
+      jest.fn(),
+      CHALLENGE
     );
     expect(order).toEqual(['create', 'confirm', 'get']);
     // No name chosen falls back to the hostname, which the confirm step shows.
@@ -476,7 +661,9 @@ describe('registerPasskey', () => {
         return true;
       },
       { current: 'pw' },
-      HOST
+      HOST,
+      jest.fn(),
+      CHALLENGE
     );
     expect(shown).toEqual(['Work laptop']);
     expect(api.addPasskey.mock.calls[0][0].label).toBe('Work laptop');
@@ -489,26 +676,172 @@ describe('registerPasskey', () => {
     );
   });
 
-  it('says the created passkey is unused when any step after create stops', async () => {
+  it('says the created passkey is unused when any step after create stops, by the time in its name', async () => {
     create.mockResolvedValue({ rawId: new Uint8Array([9]).buffer });
     const api = fakeApi();
-    // Named by the user name it was created with, which the passkey manager lists.
-    const unused = (why: string) =>
-      new RegExp(
-        `^${why}; the passkey your browser created \\("JupyterLab vault - [0-9: -]+ UTC - ${HOST}"\\) is unused - you can delete it in your passkey manager$`
-      );
     // Declined at the confirm step ...
-    await expect(
-      registerPasskey(api, 'x', async () => false, { current: 'pw' }, HOST)
-    ).rejects.toThrow(unused('adding the passkey was cancelled'));
+    const refused = registerPasskey(
+      api,
+      'x',
+      async () => false,
+      { current: 'pw' },
+      HOST,
+      jest.fn(),
+      CHALLENGE
+    );
+    await expect(refused).rejects.toThrow(
+      unused('adding the passkey was cancelled')
+    );
+    // The time the passkey manager lists in the name, so a same-day retry differs.
+    const user = create.mock.calls[0][0].publicKey.user.name as string;
+    const at = user.match(/ - (.+ UTC) - /)![1];
+    await expect(refused).rejects.toThrow(
+      `adding the passkey was cancelled; delete the unused passkey dated ${at}`
+    );
     // ... or the second passkey prompt dismissed.
     get.mockRejectedValue(new DOMException('x', 'NotAllowedError'));
     await expect(
-      registerPasskey(api, 'x', async () => true, { current: 'pw' }, HOST)
+      registerPasskey(
+        api,
+        'x',
+        async () => true,
+        { current: 'pw' },
+        HOST,
+        jest.fn(),
+        CHALLENGE
+      )
     ).rejects.toThrow(
       unused('the passkey request was cancelled or not allowed')
     );
     expect(api.addPasskey).not.toHaveBeenCalled();
+  });
+
+  it('cuts a long reason, never the time, in the line for a notification, and gives the CLI the whole reason', async () => {
+    create.mockResolvedValue({ rawId: new Uint8Array([9]).buffer });
+    get.mockResolvedValue({
+      rawId: new Uint8Array([9]).buffer,
+      getClientExtensionResults: () => ({
+        prf: { results: { first: new Uint8Array([1]).buffer } }
+      })
+    });
+    const api = fakeApi({
+      addPasskey: jest
+        .fn()
+        .mockRejectedValue(new VaultError(403, TOO_MANY_CODES))
+    });
+    const e = await registerPasskey(
+      api,
+      'x',
+      async () => true,
+      { code: '123456' },
+      HOST,
+      jest.fn(),
+      CHALLENGE
+    ).catch(x => x);
+    expect(e.message).toMatch(unused(TOO_MANY_CODES));
+    expect(e.short).toMatch(
+      /^too many wrong codes - .+…; delete the unused passkey dated \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$/
+    );
+    // The panel's full stop makes it 140.
+    expect(e.short).toHaveLength(139);
+  });
+
+  describe('the request to remove a passkey no slot holds', () => {
+    const signal = jest.fn();
+    beforeEach(() => {
+      Object.defineProperty(globalThis, 'PublicKeyCredential', {
+        value: { signalUnknownCredential: signal },
+        configurable: true
+      });
+      Object.defineProperty(navigator, 'credentials', {
+        value: { get, create },
+        configurable: true
+      });
+      create.mockResolvedValue({ rawId: new Uint8Array([9]).buffer });
+      get.mockResolvedValue({
+        rawId: new Uint8Array([9]).buffer,
+        getClientExtensionResults: () => ({
+          prf: { results: { first: new Uint8Array([1]).buffer } }
+        })
+      });
+    });
+    afterEach(() => {
+      delete (globalThis as any).PublicKeyCredential;
+      signal.mockReset();
+    });
+
+    const register = (api: any, confirm = true) =>
+      registerPasskey(
+        api,
+        'x',
+        async () => confirm,
+        { current: 'pw' },
+        HOST,
+        jest.fn(),
+        CHALLENGE
+      );
+
+    it('is sent when no slot request went out, and the line then leaves out the passkey', async () => {
+      signal.mockResolvedValue(undefined);
+      const api = fakeApi();
+      await expect(register(api, false)).rejects.toThrow(
+        /^adding the passkey was cancelled$/
+      );
+      expect(signal).toHaveBeenCalledWith({ rpId: HOST, credentialId: 'CQ' });
+      expect(api.addPasskey).not.toHaveBeenCalled();
+    });
+
+    it('is sent after a 4xx answer to the slot request, which stored nothing', async () => {
+      signal.mockResolvedValue(undefined);
+      const api = fakeApi({
+        addPasskey: jest
+          .fn()
+          .mockRejectedValue(new VaultError(403, 'wrong recovery passphrase'))
+      });
+      await expect(register(api)).rejects.toThrow(
+        /^wrong recovery passphrase$/
+      );
+      expect(signal).toHaveBeenCalledTimes(1);
+    });
+
+    it('is sent when Password and passkey is declined, and the line names the ways in', async () => {
+      signal.mockResolvedValue(undefined);
+      noPrfBrowser();
+      answerDialogs({
+        'Name the new passkey': true,
+        'Confirm the new passkey': true,
+        'Add password and passkey': 'Decline'
+      });
+      const api = fakeApi();
+      await expect(
+        registerWithProof(api, { current: 'pw' }, '', HOST)
+      ).rejects.toThrow(new RegExp(`^${literally(NO_PRF)}$`));
+      expect(signal).toHaveBeenCalledWith({ rpId: HOST, credentialId: 'CQ' });
+      expect(api.addPair).not.toHaveBeenCalled();
+    });
+
+    it('keeps the passkey in the line when the browser refuses the request', async () => {
+      signal.mockRejectedValue(new DOMException('x', 'SecurityError'));
+      await expect(register(fakeApi(), false)).rejects.toThrow(
+        unused('adding the passkey was cancelled')
+      );
+      expect(signal).toHaveBeenCalledTimes(1);
+    });
+
+    it.each<[string, unknown]>([
+      ['a lost answer', new NoAnswer()],
+      ['a 5xx answer', new VaultError(500, 'vault passkeys failed: OSError')]
+    ])(
+      'is never sent after %s to the slot request, which may have stored it',
+      async (_what, failure) => {
+        signal.mockResolvedValue(undefined);
+        const api = fakeApi({
+          addPasskey: jest.fn().mockRejectedValue(failure)
+        });
+        await expect(register(api)).rejects.toThrow(MAYBE_ADDED);
+        expect(signal).not.toHaveBeenCalled();
+      }
+    );
   });
 });
 
@@ -563,7 +896,7 @@ describe('VaultPanel', () => {
     expect(button(panel, 'Create vault')).toBeTruthy();
   });
 
-  it('creates a vault: recovery passphrase twice, then a passkey', async () => {
+  it('creates a vault: recovery passphrase twice, the choice of a method, then a passkey', async () => {
     mockAskSecret.mockResolvedValue({
       accepted: true,
       value: 'recovery words'
@@ -582,69 +915,252 @@ describe('VaultPanel', () => {
       configurable: true
     });
     answerDialogs({
+      'Add unlock method': ['passkey'],
       'Name the new passkey': true,
       'Confirm the new passkey': true
     });
-    const api = fakeApi({
-      status: jest.fn().mockResolvedValue(
-        status({
-          initialized: false,
-          unlocked: false,
-          remaining: null,
-          slots: []
-        })
-      )
-    });
+    const api = fakeApi({ status: jest.fn().mockResolvedValue(NEW_VAULT()) });
     const panel = await panelWith(api);
     button(panel, 'Create vault').click();
     await flush();
     await flush();
     expect(mockAskSecret).toHaveBeenCalledWith(
-      expect.any(String),
-      true,
+      'Choose a recovery passphrase and store it offline - it opens the vault when no other unlock method can.',
+      2,
       'Create vault'
     );
     expect(api.init).toHaveBeenCalledWith('recovery words');
+    // The choice comes after the vault exists, and before any passkey is made.
+    expect(api.init.mock.invocationCallOrder[0]).toBeLessThan(
+      mockLaunch.mock.invocationCallOrder[0]
+    );
+    expect(methodNames(mockLaunch.mock.calls[0][0].options.body.node)).toEqual([
+      'Passkey',
+      'Password and authenticator app',
+      'Later'
+    ]);
     // The passphrase just chosen is the proof: no second prompt for it.
     expect(mockAskSecret).toHaveBeenCalledTimes(1);
     expect(api.addPasskey.mock.calls[0][1]).toEqual({
       current: 'recovery words'
     });
+    expect(lines(panel)).toEqual([['info', 'Vault created']]);
   });
 
-  it('says the vault has no passkey when the naming dialog is cancelled at creation', async () => {
-    mockAskSecret.mockResolvedValue({
-      accepted: true,
-      value: 'recovery words'
-    });
-    const create = jest.fn();
-    Object.defineProperty(navigator, 'credentials', {
-      value: { get: jest.fn(), create },
-      configurable: true
-    });
-    answerDialogs({});
-    const api = fakeApi({
-      status: jest.fn().mockResolvedValue(
-        status({
-          initialized: false,
-          unlocked: false,
-          remaining: null,
-          slots: []
-        })
-      )
-    });
+  it('adds the password and authenticator app at creation, with the passphrase as the proof', async () => {
+    mockAskSecret
+      .mockResolvedValueOnce({ accepted: true, value: 'recovery words' })
+      .mockResolvedValueOnce({ accepted: true, value: 'a long password' });
+    answerDialogs(
+      {
+        'Add unlock method': ['mfa'],
+        'Add password and authenticator app': true
+      },
+      '123456'
+    );
+    const api = fakeApi({ status: jest.fn().mockResolvedValue(NEW_VAULT()) });
     const panel = await panelWith(api);
     button(panel, 'Create vault').click();
     await flush();
     await flush();
-    expect(api.init).toHaveBeenCalledWith('recovery words');
-    expect(create).not.toHaveBeenCalled();
-    expect(lines(panel)).toEqual([
-      [
-        'warn',
-        'Vault created, but no passkey was added (adding the passkey was cancelled). Add one under Vault settings and security (the cog).'
-      ]
+    await flush();
+    expect(mockAskSecret).toHaveBeenCalledTimes(2);
+    expect(mockAskSecret.mock.calls[1]).toEqual([
+      'Enter the new unlock password, at least 12 characters',
+      2,
+      'Add password and authenticator app',
+      { minLength: 12 }
     ]);
+    expect(api.addMfa).toHaveBeenCalledWith(
+      'a long password',
+      expect.any(String),
+      '123456',
+      { current: 'recovery words' }
+    );
+    expect(lines(panel)).toEqual([['info', 'Vault created']]);
+    mockAskSecret.mockReset();
+  });
+
+  it.each([
+    ['Later', ['later']],
+    ['Escape', []]
+  ])(
+    'ends the creation on %s: the vault stays created and open, with no failure line',
+    async (_, pressed) => {
+      const create = jest.fn();
+      Object.defineProperty(navigator, 'credentials', {
+        value: { get: jest.fn(), create },
+        configurable: true
+      });
+      mockAskSecret.mockResolvedValue({
+        accepted: true,
+        value: 'recovery words'
+      });
+      answerDialogs({ 'Add unlock method': pressed });
+      const api = fakeApi({
+        status: jest
+          .fn()
+          .mockResolvedValueOnce(NEW_VAULT())
+          .mockResolvedValue(status({ slots: [{ type: 'recovery' }] }))
+      });
+      const panel = await panelWith(api);
+      button(panel, 'Create vault').click();
+      await flush();
+      await flush();
+      expect(api.init).toHaveBeenCalledTimes(1);
+      expect(mockLaunch).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
+      expect(api.addPasskey).not.toHaveBeenCalled();
+      expect(api.addMfa).not.toHaveBeenCalled();
+      expect(lines(panel)).toEqual([['info', 'Vault created']]);
+      mockAskSecret.mockReset();
+    }
+  );
+
+  describe('a method step of Create that stops', () => {
+    /**
+     * Create with `dialogs` answered. `typed` answers the new unlock password. Returns
+     * the line each opening of the choice showed, null for none.
+     */
+    const creating = async (
+      dialogs: Record<string, boolean | string | string[]>,
+      over: Record<string, any> = {},
+      typed = { accepted: true, value: 'a long password' } as {
+        accepted: boolean;
+        value: string | null;
+      }
+    ): Promise<{ api: any; panel: VaultPanel; notes: (string | null)[] }> => {
+      mockAskSecret
+        .mockResolvedValueOnce({ accepted: true, value: 'recovery words' })
+        .mockResolvedValueOnce(typed);
+      answerDialogs(dialogs, '123456');
+      const api = fakeApi({
+        status: jest.fn().mockResolvedValue(NEW_VAULT()),
+        ...over
+      });
+      const panel = await panelWith(api);
+      button(panel, 'Create vault').click();
+      await flush();
+      await flush();
+      await flush();
+      const notes = mockLaunch.mock.calls
+        .filter(([dialog]) => dialog.options.title === 'Add unlock method')
+        .map(([dialog]) => {
+          const first = dialog.options.body.node.firstChild;
+          return first.tagName === 'BUTTON' ? null : first.textContent;
+        });
+      return { api, panel, notes };
+    };
+
+    afterEach(() => {
+      mockAskSecret.mockReset();
+    });
+
+    it('opens the choice again when the naming dialog is cancelled', async () => {
+      const create = jest.fn();
+      Object.defineProperty(navigator, 'credentials', {
+        value: { get: jest.fn(), create },
+        configurable: true
+      });
+      const { api, panel, notes } = await creating({
+        'Add unlock method': ['passkey', 'later']
+      });
+      expect(notes).toEqual([null, 'Adding the passkey was cancelled.']);
+      expect(create).not.toHaveBeenCalled();
+      expect(api.init).toHaveBeenCalledTimes(1);
+      // The passphrase stays the proof: the second round asks no prompt for it.
+      expect(mockAskSecret).toHaveBeenCalledTimes(1);
+      expect(lines(panel)).toEqual([['info', 'Vault created']]);
+    });
+
+    it('opens the choice again when the passkey prompt is dismissed', async () => {
+      Object.defineProperty(navigator, 'credentials', {
+        value: {
+          get: jest.fn(),
+          create: jest
+            .fn()
+            .mockRejectedValue(new DOMException('x', 'NotAllowedError'))
+        },
+        configurable: true
+      });
+      const { notes, panel } = await creating({
+        'Add unlock method': ['passkey', 'later'],
+        'Name the new passkey': true
+      });
+      expect(notes).toEqual([
+        null,
+        'The passkey request was cancelled or not allowed.'
+      ]);
+      expect(lines(panel)).toEqual([['info', 'Vault created']]);
+    });
+
+    it('offers Password and passkey for a passkey with no PRF, names it unused when declined, and the other method works from there', async () => {
+      noPrfBrowser();
+      const { api, notes } = await creating({
+        'Add unlock method': ['passkey', 'mfa'],
+        'Name the new passkey': true,
+        'Confirm the new passkey': true,
+        'Add password and passkey': 'Decline',
+        'Add password and authenticator app': true
+      });
+      expect(notes).toEqual([
+        null,
+        expect.stringMatching(
+          /^Passkey not added, no PRF - use another passkey or Password and authenticator app; delete the unused passkey dated .+ UTC\.$/
+        )
+      ]);
+      expect(api.addPasskey).not.toHaveBeenCalled();
+      expect(api.addPair).not.toHaveBeenCalled();
+      expect(api.addMfa.mock.calls[0][3]).toEqual({
+        current: 'recovery words'
+      });
+    });
+
+    it('opens the choice again when the new unlock password is cancelled', async () => {
+      const { api, notes } = await creating(
+        { 'Add unlock method': ['mfa', 'later'] },
+        {},
+        { accepted: false, value: null }
+      );
+      expect(notes).toEqual([
+        null,
+        'Adding the password and authenticator app was cancelled.'
+      ]);
+      expect(api.addMfa).not.toHaveBeenCalled();
+      // A cancelled password ends the step before the app dialog opens.
+      expect(
+        mockLaunch.mock.calls.map(([dialog]) => dialog.options.title)
+      ).not.toContain('Add password and authenticator app');
+    });
+
+    it('opens the choice again when the app dialog is cancelled', async () => {
+      const { api, notes } = await creating({
+        'Add unlock method': ['mfa', 'later']
+      });
+      expect(notes).toEqual([
+        null,
+        'Adding the password and authenticator app was cancelled.'
+      ]);
+      expect(api.addMfa).not.toHaveBeenCalled();
+    });
+
+    it('opens the choice again with the reason when the server refuses the pair', async () => {
+      const { notes } = await creating(
+        {
+          'Add unlock method': ['mfa', 'later'],
+          'Add password and authenticator app': true
+        },
+        {
+          addMfa: jest
+            .fn()
+            .mockRejectedValue(new VaultError(403, 'wrong recovery passphrase'))
+        }
+      );
+      expect(notes).toEqual([
+        null,
+        'Wrong recovery passphrase; the entry your authenticator app added is unused - you can delete it in the app.'
+      ]);
+    });
   });
 
   it('draws the sidebar icon in the colour of the other icons only while a vault exists', async () => {
@@ -742,72 +1258,18 @@ describe('VaultPanel', () => {
     expect(text(panel)).toContain(
       'An IP address cannot hold a passkey - open JupyterLab by its hostname over HTTPS, or at localhost when it runs on this computer.'
     );
+    answerDialogs({ 'Add unlock method': ['later'] });
     button(panel, 'Create vault').click();
     await flush();
     await flush();
     expect(api.init).toHaveBeenCalledWith('recovery words');
     expect(create).not.toHaveBeenCalled();
-    expect(text(panel)).toContain('Vault created');
-  });
-
-  it('keeps the unused-passkey line when the read after the action fails', async () => {
-    // The server goes away between the browser's create and the registration.
-    Object.defineProperty(navigator, 'credentials', {
-      value: {
-        create: jest
-          .fn()
-          .mockResolvedValue({ rawId: new Uint8Array([9]).buffer }),
-        get: jest.fn().mockResolvedValue({
-          rawId: new Uint8Array([9]).buffer,
-          getClientExtensionResults: () => ({
-            prf: { results: { first: new Uint8Array([1]).buffer } }
-          })
-        })
-      },
-      configurable: true
-    });
-    answerDialogs({
-      'Name the new passkey': true,
-      'Confirm the new passkey': true
-    });
-    mockAskSecret.mockResolvedValue({
-      accepted: true,
-      value: 'recovery words'
-    });
-    const gone = new NoAnswer();
-    const api = fakeApi({
-      status: jest
-        .fn()
-        .mockResolvedValueOnce(
-          status({
-            initialized: false,
-            unlocked: false,
-            remaining: null,
-            slots: []
-          })
-        )
-        .mockRejectedValue(gone),
-      addPasskey: jest.fn().mockRejectedValue(gone)
-    });
-    const panel = await panelWith(api);
-    button(panel, 'Create vault').click();
-    await flush();
-    await flush();
-    await flush();
-    const line = panel.node.querySelector(
-      '.jp-PasskeyVaultPanel-message'
-    ) as HTMLElement;
-    expect(line.dataset.kind).toBe('warn');
-    expect(line.textContent).toContain(
-      'Vault created, but no passkey was added'
-    );
-    expect(line.textContent).toContain('is unused');
-    // The failed read is its own line, under the action's.
-    expect(lines(panel)[1]).toEqual([
-      'error',
-      'cannot reach the Jupyter server'
+    // Passkey is not offered: the other choices stay.
+    expect(methodNames(mockLaunch.mock.calls[0][0].options.body.node)).toEqual([
+      'Password and authenticator app',
+      'Later'
     ]);
-    mockAskSecret.mockReset();
+    expect(text(panel)).toContain('Vault created');
   });
 
   it('keeps the success line beside a read that fails after the action', async () => {
@@ -849,10 +1311,11 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(api.unlockPasskey).not.toHaveBeenCalled();
-    expect(lines(panel)).toEqual([
+    expect(lines(panel)).toEqual([]);
+    expect(toasts()).toEqual([
       [
         'error',
-        'the authenticator returned no PRF - this passkey cannot unlock the vault'
+        'The authenticator returned no PRF - this passkey cannot unlock the vault.'
       ]
     ]);
   });
@@ -865,7 +1328,7 @@ describe('VaultPanel', () => {
         .mockRejectedValue(
           new VaultError(
             403,
-            'the vault did not answer (HTTP 403) - reload the page to sign in again or start the server'
+            'the vault did not answer (HTTP 403) - reload the page or start the server'
           )
         )
     });
@@ -878,10 +1341,9 @@ describe('VaultPanel', () => {
     ).click();
     await flush();
     await flush();
-    expect(lines(panel)).toEqual([
-      ['error', 'Not confirmed by the vault'],
-      ['error', stopped]
-    ]);
+    // The failed read's line stays in the panel; the action's outcome is a notification.
+    expect(lines(panel)).toEqual([['error', stopped]]);
+    expect(toasts()).toEqual([['error', NOT_CONFIRMED]]);
   });
 
   it('keeps the reason of a refusal made in the page while the server cannot be read', async () => {
@@ -907,11 +1369,13 @@ describe('VaultPanel', () => {
     await flush();
     expect(api.unlockPasskey).not.toHaveBeenCalled();
     expect(lines(panel)).toEqual([
+      ['error', 'cannot reach the Jupyter server']
+    ]);
+    expect(toasts()).toEqual([
       [
         'error',
-        'the authenticator returned no PRF - this passkey cannot unlock the vault'
-      ],
-      ['error', 'cannot reach the Jupyter server']
+        'The authenticator returned no PRF - this passkey cannot unlock the vault.'
+      ]
     ]);
   });
 
@@ -935,12 +1399,12 @@ describe('VaultPanel', () => {
     button(panel, 'Unlock with passkey').click();
     await flush();
     await flush();
-    const [line] = lines(panel);
-    expect(line[0]).toBe('error');
-    expect(line[1]).toMatch(/^the passkey request failed/);
+    const [toast] = toasts();
+    expect(toast[0]).toBe('error');
+    expect(toast[1]).toMatch(/^The passkey request failed/);
   });
 
-  it('shows a failed Refresh under an older warning', async () => {
+  it('shows a failed Refresh in the panel and leaves an older warning in its notification', async () => {
     Object.defineProperty(navigator, 'credentials', {
       value: {
         get: jest
@@ -963,8 +1427,10 @@ describe('VaultPanel', () => {
     api.status.mockRejectedValue(new NoAnswer());
     await panel.refresh();
     expect(lines(panel)).toEqual([
-      ['warn', 'the passkey request was cancelled or not allowed'],
       ['error', 'cannot reach the Jupyter server']
+    ]);
+    expect(toasts()).toEqual([
+      ['warn', 'The passkey request was cancelled or not allowed.']
     ]);
   });
 
@@ -978,14 +1444,15 @@ describe('VaultPanel', () => {
     ).click();
     await flush();
     await flush();
-    const notDone = ['error', 'Not confirmed by the vault'];
+    const notDone = ['error', NOT_CONFIRMED];
     expect(lines(panel)).toEqual([
-      notDone,
       ['error', 'cannot reach the Jupyter server']
     ]);
+    expect(toasts()).toEqual([notDone]);
     api.status.mockResolvedValue(status());
     await panel.refresh();
-    expect(lines(panel)).toEqual([notDone]);
+    expect(lines(panel)).toEqual([]);
+    expect(toasts()).toEqual([notDone]);
   });
 
   it('shows the locked view with passkey and recovery unlock', async () => {
@@ -1045,10 +1512,9 @@ describe('VaultPanel', () => {
     button(panel, 'Unlock with passkey').click();
     await flush();
     await flush();
-    const line = panel.node.querySelector(
-      '.jp-PasskeyVaultPanel-message'
-    ) as HTMLElement;
-    expect(line.dataset.kind).toBe('warn');
+    expect(mockWarning).toHaveBeenCalledTimes(1);
+    expect(mockError).not.toHaveBeenCalled();
+    expect(lines(panel)).toEqual([]);
   });
 
   it('unlocks with the recovery passphrase', async () => {
@@ -1064,10 +1530,11 @@ describe('VaultPanel', () => {
     const panel = await panelWith(api);
     button(panel, 'Use recovery passphrase').click();
     await flush();
+    expect(mockAskSecret.mock.calls[0][1]).toBe(1);
     expect(api.unlockRecovery).toHaveBeenCalledWith('recovery words');
   });
 
-  it('keeps a refusal as a red line when the read after it succeeds', async () => {
+  it('reports a refusal as a red notification with no timeout, and no line in any view', async () => {
     mockAskSecret.mockResolvedValue({ accepted: true, value: 'wrong words' });
     const api = fakeApi({
       status: jest
@@ -1081,7 +1548,26 @@ describe('VaultPanel', () => {
     button(panel, 'Use recovery passphrase').click();
     await flush();
     await flush();
-    expect(lines(panel)).toEqual([['error', 'wrong recovery passphrase']]);
+    expect(toasts()).toEqual([['error', 'Wrong recovery passphrase.']]);
+    expect(lines(panel)).toEqual([]);
+    // A second refusal replaces the first notification: the next action dismisses it.
+    button(panel, 'Use recovery passphrase').click();
+    await flush();
+    await flush();
+    expect(mockError).toHaveBeenCalledTimes(2);
+    expect(toasts()).toEqual([['error', 'Wrong recovery passphrase.']]);
+    // The cog view and Refresh show no line either: the notification is not in the panel.
+    (
+      panel.node.querySelector(
+        'button[title="Vault settings and security"]'
+      ) as HTMLElement
+    ).click();
+    await panel.refresh();
+    expect(lines(panel)).toEqual([]);
+    expect(text(panel).toLowerCase()).not.toContain(
+      'wrong recovery passphrase'
+    );
+    expect(toasts()).toEqual([['error', 'Wrong recovery passphrase.']]);
   });
 
   it('shows state, time left and the holder in the status line', async () => {
@@ -1247,7 +1733,7 @@ describe('VaultPanel', () => {
     );
   });
 
-  it('keeps the not-confirmed line when the server returns with the vault locked by its restart, whichever read comes first', async () => {
+  it('keeps the not-confirmed notification when the server returns with the vault locked by its restart, whichever read comes first', async () => {
     for (const first of ['tick', 'refresh']) {
       const gone = new NoAnswer();
       const api = fakeApi({ lock: jest.fn().mockRejectedValue(gone) });
@@ -1268,13 +1754,15 @@ describe('VaultPanel', () => {
       } else {
         await panel.refresh();
       }
-      expect(lines(panel)).toEqual([['error', 'Not confirmed by the vault']]);
+      expect(lines(panel)).toEqual([]);
+      expect(toasts()).toEqual([['error', NOT_CONFIRMED]]);
       expect(text(panel)).toContain('Locked');
       panel.dispose();
+      clearToasts();
     }
   });
 
-  it('goes on to the passkey step when a read shows the vault that a lost Create answer wrote', async () => {
+  it('goes on to the choice of a method when a read shows the vault that a lost Create answer wrote', async () => {
     Object.defineProperty(navigator, 'credentials', {
       value: {
         create: jest
@@ -1290,6 +1778,7 @@ describe('VaultPanel', () => {
       configurable: true
     });
     answerDialogs({
+      'Add unlock method': ['passkey'],
       'Name the new passkey': true,
       'Confirm the new passkey': true
     });
@@ -1343,14 +1832,17 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(api.addPasskey).not.toHaveBeenCalled();
+    const notDone = ['error', CREATE_NOT_CONFIRMED];
     expect(lines(panel)).toEqual([
-      ['error', 'Vault creation not confirmed by the vault'],
       ['error', 'cannot reach the Jupyter server']
     ]);
-    // The server answers with the vault: its state shows the Create landed.
+    expect(toasts()).toEqual([notDone]);
+    // The server answers with the vault: its state shows the Create landed. A change
+    // read from the server dismisses no notification: the user does, or the next action.
     api.status.mockResolvedValue(status({ slots: [{ type: 'recovery' }] }));
     await (panel as any)._tick();
     expect(lines(panel)).toEqual([]);
+    expect(toasts()).toEqual([notDone]);
     mockAskSecret.mockReset();
   });
 
@@ -1379,9 +1871,8 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(create).not.toHaveBeenCalled();
-    expect(lines(panel)).toEqual([
-      ['error', 'Vault creation not confirmed by the vault']
-    ]);
+    expect(lines(panel)).toEqual([]);
+    expect(toasts()).toEqual([['error', CREATE_NOT_CONFIRMED]]);
     expect(button(panel, 'Create vault')).toBeTruthy();
     mockAskSecret.mockReset();
   });
@@ -1420,111 +1911,11 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(create).not.toHaveBeenCalled();
-    expect(lines(panel)).toEqual([
-      ['error', 'Vault creation: a vault already exists at ~/vault.json']
-    ]);
-    mockAskSecret.mockReset();
-  });
-
-  it('drops the line of a Create whose passkey step was dismissed once the vault changes', async () => {
-    Object.defineProperty(navigator, 'credentials', {
-      value: {
-        create: jest
-          .fn()
-          .mockRejectedValue(new DOMException('x', 'NotAllowedError')),
-        get: jest.fn()
-      },
-      configurable: true
-    });
-    answerDialogs({});
-    mockAskSecret.mockResolvedValue({
-      accepted: true,
-      value: 'recovery words'
-    });
-    const api = fakeApi({
-      status: jest
-        .fn()
-        .mockResolvedValueOnce(
-          status({
-            initialized: false,
-            unlocked: false,
-            remaining: null,
-            slots: []
-          })
-        )
-        .mockResolvedValue(status({ slots: [{ type: 'recovery' }] }))
-    });
-    const panel = await panelWith(api);
-    button(panel, 'Create vault').click();
-    await flush();
-    await flush();
-    await flush();
-    expect(lines(panel)).toEqual([
-      ['warn', expect.stringContaining('no passkey was added')]
-    ]);
-    // A passkey registered from another tab: the vault's slots show it.
-    api.status.mockResolvedValue(status());
-    await (panel as any)._tick();
     expect(lines(panel)).toEqual([]);
+    expect(toasts()).toEqual([
+      ['error', 'A vault already exists at ~/vault.json.']
+    ]);
     mockAskSecret.mockReset();
-  });
-
-  it('keeps the unused-passkey line when the server returns with the vault Create made, whichever read comes first', async () => {
-    for (const first of ['tick', 'refresh']) {
-      Object.defineProperty(navigator, 'credentials', {
-        value: {
-          create: jest
-            .fn()
-            .mockResolvedValue({ rawId: new Uint8Array([9]).buffer }),
-          get: jest.fn().mockResolvedValue({
-            rawId: new Uint8Array([9]).buffer,
-            getClientExtensionResults: () => ({
-              prf: { results: { first: new Uint8Array([1]).buffer } }
-            })
-          })
-        },
-        configurable: true
-      });
-      answerDialogs({
-        'Name the new passkey': true,
-        'Confirm the new passkey': true
-      });
-      mockAskSecret.mockResolvedValue({
-        accepted: true,
-        value: 'recovery words'
-      });
-      const gone = new NoAnswer();
-      const api = fakeApi({
-        status: jest
-          .fn()
-          .mockResolvedValueOnce(
-            status({
-              initialized: false,
-              unlocked: false,
-              remaining: null,
-              slots: []
-            })
-          )
-          .mockRejectedValue(gone),
-        addPasskey: jest.fn().mockRejectedValue(gone)
-      });
-      const panel = await panelWith(api);
-      button(panel, 'Create vault').click();
-      await flush();
-      await flush();
-      await flush();
-      api.status.mockResolvedValue(status());
-      if (first === 'tick') {
-        await (panel as any)._tick();
-      } else {
-        await panel.refresh();
-      }
-      expect(lines(panel)).toEqual([
-        ['warn', expect.stringContaining('is unused')]
-      ]);
-      panel.dispose();
-      mockAskSecret.mockReset();
-    }
   });
 
   it('reads at once when the browser tab is shown again', async () => {
@@ -1653,7 +2044,37 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(mockEditEntry).not.toHaveBeenCalled();
-    expect(lines(panel)).toEqual([['warn', 'nas/ugos was deleted elsewhere']]);
+    expect(lines(panel)).toEqual([]);
+    expect(toasts()).toEqual([['warn', 'nas/ugos was deleted elsewhere.']]);
+  });
+
+  it('shows one failure notification at a time: a refusal outside an action replaces the last one', async () => {
+    mockConfirmDelete.mockResolvedValue(true);
+    const api = fakeApi({
+      remove: jest
+        .fn()
+        .mockRejectedValue(new VaultError(500, 'vault remove failed: OSError'))
+    });
+    const panel = await panelWith(api);
+    const row = () =>
+      panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine') as HTMLElement;
+    mockViewEntry.mockResolvedValueOnce('delete');
+    row().click();
+    await flush();
+    await flush();
+    expect(toasts()).toEqual([['error', 'Vault remove failed: OSError.']]);
+    // Deleted from the CLI while its popup was open again: no action runs, and the
+    // guard's notification takes the place of the last one.
+    mockViewEntry.mockImplementationOnce(async () => {
+      api.entries.mockResolvedValue([ENTRIES[0], ENTRIES[1]]);
+      await panel.refresh();
+      return 'edit';
+    });
+    row().click();
+    await flush();
+    await flush();
+    expect(mockEditEntry).not.toHaveBeenCalled();
+    expect(toasts()).toEqual([['warn', 'nas/ugos was deleted elsewhere.']]);
   });
 
   it('opens Edit when the entries could not be read, not calling the entry deleted', async () => {
@@ -1686,11 +2107,13 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(lines(panel)).toEqual([
+      ['error', 'cannot reach the Jupyter server']
+    ]);
+    expect(toasts()).toEqual([
       [
         'error',
-        'Change to nas/ugos not confirmed by the vault - do it again once the server answers'
-      ],
-      ['error', 'cannot reach the Jupyter server']
+        'Change to nas/ugos not confirmed by the vault - do it again once the server answers.'
+      ]
     ]);
   });
 
@@ -1828,9 +2251,9 @@ describe('VaultPanel', () => {
       await flush();
       await flush();
       expect(mockEditEntry).not.toHaveBeenCalled();
-      expect(text(panel)).toContain(
-        'The vault locked - unlock it, then try again'
-      );
+      expect(toasts()).toEqual([
+        ['warn', 'The vault locked - unlock it, then try again.']
+      ]);
       // The locked view, with its unlock, not the list under a stale status line.
       expect(
         panel.node.querySelector('.jp-PasskeyVaultPanel-stateText')?.textContent
@@ -1857,16 +2280,17 @@ describe('VaultPanel', () => {
       await flush();
       await flush();
       expect(mockEditEntry).not.toHaveBeenCalled();
-      expect(text(panel)).toContain(
-        'The vault locked - unlock it, then try again'
-      );
+      expect(toasts()).toEqual([
+        ['warn', 'The vault locked - unlock it, then try again.']
+      ]);
+      expect(lines(panel)).toEqual([]);
       expect(button(panel, 'Unlock with passkey')).toBeTruthy();
     } finally {
       now.mockRestore();
     }
   });
 
-  it('drops the lock line when a read finds the vault unlocked elsewhere', async () => {
+  it('keeps the lock notification when a read finds the vault unlocked elsewhere, and the next action dismisses it', async () => {
     // 10 s left, then locked, then unlocked again from the CLI.
     const api = fakeApi({
       status: jest
@@ -1882,17 +2306,24 @@ describe('VaultPanel', () => {
         panel.node.querySelector('button[title="Add an entry"]') as HTMLElement
       ).click();
       await flush();
-      expect(text(panel)).toContain('The vault locked');
+      const locked = ['warn', 'The vault locked - unlock it, then try again.'];
+      expect(toasts()).toEqual([locked]);
       // `vault unlock` from the CLI; the notification's click reads again.
       await panel.refresh();
-      expect(text(panel)).not.toContain('The vault locked');
       expect(text(panel)).toContain('nas/ugos');
+      expect(toasts()).toEqual([locked]);
+      (
+        panel.node.querySelector('button[title="Add an entry"]') as HTMLElement
+      ).click();
+      await flush();
+      expect(mockEditEntry).toHaveBeenCalledTimes(1);
+      expect(toasts()).toEqual([]);
     } finally {
       now.mockRestore();
     }
   });
 
-  it('drops the lock line after a failed read, once the vault is unlocked elsewhere', async () => {
+  it('drops a failed read after the lock notification, once the vault is unlocked elsewhere', async () => {
     // The 15 s read first in one run, Refresh first in the other: each drop rule.
     for (const next of ['tick', 'refresh']) {
       const api = fakeApi({
@@ -1912,16 +2343,21 @@ describe('VaultPanel', () => {
           ) as HTMLElement
         ).click();
         await flush();
-        expect(text(panel)).toContain('The vault locked');
+        expect(toasts()).toEqual([
+          ['warn', 'The vault locked - unlock it, then try again.']
+        ]);
         // A Refresh while the server restarts, then `vault unlock` from the CLI.
         await panel.refresh();
-        expect(text(panel)).toContain('cannot reach the Jupyter server');
+        expect(lines(panel)).toEqual([
+          ['error', 'cannot reach the Jupyter server']
+        ]);
         await (next === 'tick' ? (panel as any)._tick() : panel.refresh());
         expect(lines(panel)).toEqual([]);
         expect(text(panel)).toContain('nas/ugos');
       } finally {
         now.mockRestore();
         panel.dispose();
+        clearToasts();
       }
     }
   });
@@ -1943,13 +2379,10 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(mockEditEntry).not.toHaveBeenCalled();
-    const line = panel.node.querySelector(
-      '.jp-PasskeyVaultPanel-message'
-    ) as HTMLElement;
-    expect(line.dataset.kind).toBe('warn');
-    expect(line.textContent).toBe(
-      'The vault locked - unlock it, then try again'
-    );
+    expect(lines(panel)).toEqual([]);
+    expect(toasts()).toEqual([
+      ['warn', 'The vault locked - unlock it, then try again.']
+    ]);
   });
 
   it("reveals through a passkey request, sending the server that request's PRF", async () => {
@@ -2041,36 +2474,6 @@ describe('VaultPanel', () => {
     await flush();
     expect(api.lock).toHaveBeenCalledTimes(1);
     expect(panel.node.classList).not.toContain('jp-mod-busy');
-  });
-
-  it('says the vault exists when the passkey step of Create fails', async () => {
-    mockAskSecret.mockResolvedValue({ accepted: true, value: 'pw' });
-    const api = fakeApi({
-      status: jest
-        .fn()
-        .mockResolvedValue(status({ initialized: false, unlocked: false }))
-    });
-    Object.defineProperty(navigator, 'credentials', {
-      value: {
-        get: jest.fn(),
-        create: jest
-          .fn()
-          .mockRejectedValue(new DOMException('x', 'NotAllowedError'))
-      },
-      configurable: true
-    });
-    const panel = await panelWith(api);
-    button(panel, 'Create vault').click();
-    await flush();
-    await flush();
-    expect(api.init).toHaveBeenCalledWith('pw');
-    expect(text(panel)).toContain('Vault created, but no passkey was added');
-    expect(text(panel)).toContain('the cog');
-    // The vault exists and is open: a warning, not an error.
-    expect(
-      (panel.node.querySelector('.jp-PasskeyVaultPanel-message') as HTMLElement)
-        .dataset.kind
-    ).toBe('warn');
   });
 
   it('says nothing was created when the Create dialog is cancelled', async () => {
@@ -2185,6 +2588,34 @@ describe('VaultPanel', () => {
         '@stellarshenson/jupyterlab-passkey-extension:vault:collapsed'
       )
     ).toBe('[]');
+  });
+
+  it('puts each category, the last and a collapsed one included, in its own section', async () => {
+    // A section ends with the divider line; its header and rows are inside it.
+    const sections = (panel: VaultPanel) =>
+      Array.from(
+        panel.node.querySelectorAll(
+          '.jp-PasskeyVaultPanel-list > .jp-PasskeyVaultPanel-section'
+        )
+      ).map(section =>
+        Array.from(section.children).map(child =>
+          child.classList.contains('jp-PasskeyVaultPanel-sectionHeader')
+            ? child.querySelector('.jp-PasskeyVaultPanel-sectionLabel')
+                ?.textContent
+            : child.querySelector('.jp-PasskeyVaultPanel-rowName')?.textContent
+        )
+      );
+    const panel = await panelWith(fakeApi());
+    expect(sections(panel)).toEqual([
+      ['home (1)', 'nas/ugos'],
+      ['infra (2)', 'github/api', 'gitlab/api']
+    ]);
+    (
+      panel.node.querySelectorAll(
+        'button.jp-PasskeyVaultPanel-sectionHeader'
+      )[1] as HTMLButtonElement
+    ).click();
+    expect(sections(panel)).toEqual([['home (1)', 'nas/ugos'], ['infra (2)']]);
   });
 
   it('shows every category expanded when the stored state is unreadable', async () => {
@@ -2450,7 +2881,7 @@ describe('VaultPanel', () => {
         )
       });
 
-    it('keeps the unused-passkey line of a refused registration when the vault is changed elsewhere', async () => {
+    it('keeps the unused-passkey notification of a refused registration when the vault is changed elsewhere', async () => {
       browser([]);
       mockLaunch.mockResolvedValue({ button: { accept: true } });
       const api = fakeApi({
@@ -2464,14 +2895,38 @@ describe('VaultPanel', () => {
       addMethod(panel, 'passkey');
       await flush();
       await flush();
-      const unused = ['warn', expect.stringContaining('is unused')];
-      expect(lines(panel)).toEqual([unused]);
+      const refused = [
+        'warn',
+        expect.stringMatching(
+          /^The passkey did not open the vault; delete the unused passkey dated .+ UTC\.$/
+        )
+      ];
+      expect(toasts()).toEqual([refused]);
+      expect(lines(panel)).toEqual([]);
       api.status.mockResolvedValue(status({ revision: 'changed-by-an-agent' }));
       await (panel as any)._tick();
-      expect(lines(panel)).toEqual([unused]);
+      expect(toasts()).toEqual([refused]);
     });
 
-    it('names the registration a dismissed create prompt stopped, and drops that line once the passkeys change', async () => {
+    it('says the passkey may have been added, never unused, when the registration gets no answer and the read after it fails', async () => {
+      browser();
+      mockLaunch.mockResolvedValue({ button: { accept: true } });
+      const gone = new NoAnswer();
+      const api = fakeApi({ addPasskey: jest.fn().mockRejectedValue(gone) });
+      const panel = await openCog(api);
+      api.status.mockRejectedValue(gone);
+      addMethod(panel, 'passkey');
+      await flush();
+      await flush();
+      await flush();
+      // The failed read is the panel's line; the action's outcome is a notification.
+      expect(lines(panel)).toEqual([
+        ['error', 'cannot reach the Jupyter server']
+      ]);
+      expect(toasts()).toEqual([['error', sentence(MAYBE_ADDED)]]);
+    });
+
+    it('reports a dismissed create prompt in amber, and keeps that notification once the passkeys change', async () => {
       const { create } = browser();
       create.mockRejectedValue(new DOMException('x', 'NotAllowedError'));
       mockLaunch.mockResolvedValue({ button: { accept: true } });
@@ -2480,11 +2935,12 @@ describe('VaultPanel', () => {
       addMethod(panel, 'passkey');
       await flush();
       await flush();
-      const line = [
+      const dismissed = [
         'warn',
-        'Adding the passkey: the passkey request was cancelled or not allowed'
+        'The passkey request was cancelled or not allowed.'
       ];
-      expect(lines(panel)).toEqual([line]);
+      expect(toasts()).toEqual([dismissed]);
+      expect(lines(panel)).toEqual([]);
       // Registered from the CLI in another tab: the cog's list shows the passkey.
       api.status.mockResolvedValue(
         status({
@@ -2502,7 +2958,7 @@ describe('VaultPanel', () => {
         })
       );
       await (panel as any)._tick();
-      expect(lines(panel)).toEqual([]);
+      expect(toasts()).toEqual([dismissed]);
     });
 
     it('says a recovery change whose answer was lost is not confirmed, though the server answers again', async () => {
@@ -2516,10 +2972,37 @@ describe('VaultPanel', () => {
       await flush();
       await flush();
       await flush();
-      expect(lines(panel)).toEqual([
+      expect(lines(panel)).toEqual([]);
+      expect(toasts()).toEqual([
         [
           'error',
-          'Recovery passphrase change not confirmed by the vault - do it again once the server answers'
+          'Recovery passphrase change not confirmed by the vault - do it again once the server answers.'
+        ]
+      ]);
+    });
+
+    it('says an unconfirmed passkey add, which stopped before the browser made a passkey, is not confirmed and can be done again', async () => {
+      const { create } = browser();
+      mockAskSecret.mockResolvedValue({
+        accepted: true,
+        value: 'recovery words'
+      });
+      const api = noPasskeyHere();
+      api.challenge.mockRejectedValue(new NoAnswer());
+      const panel = await openCog(api);
+      api.status.mockRejectedValue(new NoAnswer());
+      addMethod(panel, 'passkey');
+      for (let i = 0; i < 6; i++) {
+        await flush();
+      }
+      expect(create).not.toHaveBeenCalled();
+      expect(lines(panel)).toEqual([
+        ['error', 'cannot reach the Jupyter server']
+      ]);
+      expect(toasts()).toEqual([
+        [
+          'error',
+          'Adding the passkey not confirmed by the vault - do it again once the server answers.'
         ]
       ]);
     });
@@ -2587,8 +3070,10 @@ describe('VaultPanel', () => {
       ]);
       expect(mockAskSecret).toHaveBeenCalledWith(
         'Enter the current recovery passphrase',
-        true,
-        'Add passkey'
+        1,
+        'Add passkey',
+        undefined,
+        undefined
       );
       expect(api.addPasskey.mock.calls[0][1]).toEqual({
         current: 'recovery words'
@@ -2664,6 +3149,34 @@ describe('VaultPanel', () => {
       }
     });
 
+    it.each([
+      // The passkey's own failure, before any passphrase.
+      ['a passkey error', 'AbortError'],
+      // A dismissed passkey, then the recovery passphrase, whose check gets no answer.
+      ['a proof check with no answer', 'NotAllowedError']
+    ])(
+      'leaves no hint in the panel after a proof that fails with %s',
+      async (_cause, getError) => {
+        const { get, create } = browser();
+        get.mockRejectedValueOnce(new DOMException('x', getError));
+        mockAskSecret.mockResolvedValue({
+          accepted: true,
+          value: 'recovery words'
+        });
+        const api = fakeApi({
+          checkRecovery: jest.fn().mockRejectedValue(new NoAnswer())
+        });
+        const panel = await openCog(api);
+        addMethod(panel, 'passkey');
+        await flush();
+        await flush();
+        expect(create).not.toHaveBeenCalled();
+        expect(lines(panel)).toEqual([]);
+        expect(toasts().map(([kind]) => kind)).toEqual(['error']);
+        mockAskSecret.mockReset();
+      }
+    );
+
     it('names the passkey in its own dialog, then confirms it in a dialog with no field', async () => {
       browser();
       const bodies: Record<string, any> = {};
@@ -2715,11 +3228,15 @@ describe('VaultPanel', () => {
       await flush();
       await flush();
       expect(api.addPasskey).not.toHaveBeenCalled();
-      const line = panel.node.querySelector(
-        '.jp-PasskeyVaultPanel-message'
-      ) as HTMLElement;
-      expect(line.dataset.kind).toBe('warn');
-      expect(line.textContent).toContain('unused');
+      expect(lines(panel)).toEqual([]);
+      expect(toasts()).toEqual([
+        [
+          'warn',
+          expect.stringMatching(
+            /^Adding the passkey was cancelled; delete the unused passkey dated .+ UTC\.$/
+          )
+        ]
+      ]);
     });
 
     it('says a refused proof left the created passkey unused', async () => {
@@ -2737,12 +3254,228 @@ describe('VaultPanel', () => {
       addMethod(panel, 'passkey');
       await flush();
       await flush();
-      const line = panel.node.querySelector(
-        '.jp-PasskeyVaultPanel-message'
-      ) as HTMLElement;
-      expect(line.textContent).toMatch(
-        /^wrong recovery passphrase; the passkey your browser created \("JupyterLab vault - .+ UTC - .+"\) is unused - you can delete it in your passkey manager$/
+      expect(toasts()).toEqual([
+        [
+          'warn',
+          expect.stringMatching(
+            /^Wrong recovery passphrase; delete the unused passkey dated \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\.$/
+          )
+        ]
+      ]);
+    });
+
+    it('keeps the unused passkey in the notification when the reason is too long for both', async () => {
+      browser();
+      answerDialogs({
+        'Name the new passkey': true,
+        'Confirm the new passkey': true
+      });
+      mockAskSecret.mockResolvedValue({ accepted: true, value: 'words' });
+      const api = noPasskeyHere();
+      api.addPasskey = jest
+        .fn()
+        .mockRejectedValue(new VaultError(403, TOO_MANY_CODES));
+      const panel = await openCog(api);
+      addMethod(panel, 'passkey');
+      await flush();
+      await flush();
+      // toasts() also holds it to 140 characters.
+      expect(toasts()).toEqual([
+        [
+          'warn',
+          expect.stringMatching(
+            /^Too many wrong codes - .+…; delete the unused passkey dated \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\.$/
+          )
+        ]
+      ]);
+    });
+
+    it("shows the page's own line for an answer that is not the vault's whole, with the unused passkey", async () => {
+      browser();
+      answerDialogs({
+        'Name the new passkey': true,
+        'Confirm the new passkey': true
+      });
+      mockAskSecret.mockResolvedValue({ accepted: true, value: 'words' });
+      const forbidden = await notTheVault(403);
+      const api = noPasskeyHere();
+      api.addPasskey = jest.fn().mockRejectedValue(forbidden);
+      const panel = await openCog(api);
+      addMethod(panel, 'passkey');
+      await flush();
+      await flush();
+      // The reason as the notification starts it; toasts() holds it to 140 characters.
+      const reason = sentence(forbidden.message).slice(0, -1);
+      expect(toasts()).toEqual([
+        [
+          'warn',
+          expect.stringMatching(
+            new RegExp(
+              `^${literally(reason)}; delete the unused passkey dated \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2} UTC\\.$`
+            )
+          )
+        ]
+      ]);
+    });
+
+    it('shows its longest line whole in a notification: Password and passkey declined, the ways in, and the unused passkey', async () => {
+      noPrfBrowser();
+      answerDialogs({
+        'Name the new passkey': true,
+        'Confirm the new passkey': true,
+        'Add password and passkey': 'Decline'
+      });
+      mockAskSecret.mockResolvedValue({
+        accepted: true,
+        value: 'recovery words'
+      });
+      const api = noPasskeyHere();
+      const panel = await openCog(api);
+      addMethod(panel, 'passkey');
+      for (let i = 0; i < 6; i++) {
+        await flush();
+      }
+      expect(api.addPair).not.toHaveBeenCalled();
+      const [[kind, line], ...more] = toasts();
+      expect(more).toEqual([]);
+      expect(kind).toBe('warn');
+      // What happened, then the ways in, then the passkey to delete: a retry on the
+      // same authenticator would fail again, so none is advised.
+      expect(line).toMatch(
+        /^Passkey not added, no PRF - use another passkey or Password and authenticator app; delete the unused passkey dated \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\.$/
       );
+      expect(lines(panel)).toEqual([]);
+    });
+
+    describe('a wrong recovery passphrase', () => {
+      const PROMPT = 'Enter the current recovery passphrase';
+      const WRONG = new VaultError(403, 'wrong recovery passphrase');
+      const MFA = 'Add password and authenticator app';
+
+      /** Each proof dialog answers with the next of `typed`, null for Cancel. */
+      function answerProof(...typed: (string | null)[]): void {
+        mockAskSecret.mockImplementation(async (prompt: string) => {
+          if (prompt !== PROMPT) {
+            return { accepted: true, value: 'a new secret of some length' };
+          }
+          const value = typed.shift() ?? null;
+          return { accepted: value !== null, value };
+        });
+      }
+
+      /** Title and line of every proof dialog opened so far. */
+      const proofDialogs = () =>
+        mockAskSecret.mock.calls
+          .filter(call => call[0] === PROMPT)
+          .map(call => [call[2], call[4]]);
+
+      async function settle(): Promise<void> {
+        for (let i = 0; i < 6; i++) {
+          await flush();
+        }
+      }
+
+      afterEach(() => mockAskSecret.mockReset());
+
+      it.each<[string, (panel: VaultPanel) => void, string, number]>([
+        ['Add passkey', panel => addMethod(panel, 'passkey'), 'addPasskey', 1],
+        [MFA, panel => addMethod(panel, 'mfa'), 'addMfa', 0],
+        [
+          'Change recovery passphrase',
+          panel => button(panel, 'Change').click(),
+          'replaceRecovery',
+          0
+        ],
+        [
+          'Rotate data key',
+          panel => button(panel, 'Rotate data key').click(),
+          'rotate',
+          0
+        ]
+      ])(
+        '%s opens the same dialog with the line and goes on only with the right one',
+        async (title, start, finalRequest, creates) => {
+          const { get, create } = browser();
+          answerDialogs(
+            {
+              'Name the new passkey': true,
+              'Confirm the new passkey': true,
+              [MFA]: true
+            },
+            '123456'
+          );
+          const api = noPasskeyHere();
+          api.checkRecovery.mockRejectedValue(WRONG);
+          const panel = await openCog(api);
+
+          // Wrong, then Cancel: nothing past the proof ran, and no line is left.
+          answerProof('wrong', null);
+          start(panel);
+          await settle();
+          expect(proofDialogs()).toEqual([
+            [title, undefined],
+            [title, 'Wrong recovery passphrase']
+          ]);
+          expect(create).not.toHaveBeenCalled();
+          expect(get).not.toHaveBeenCalled();
+          expect(mockLaunch).not.toHaveBeenCalled();
+          expect(api[finalRequest]).not.toHaveBeenCalled();
+          expect(lines(panel)).toEqual([]);
+
+          // Wrong, then right: the final request carries the right one.
+          mockAskSecret.mockClear();
+          api.checkRecovery
+            .mockReset()
+            .mockRejectedValueOnce(WRONG)
+            .mockResolvedValue(undefined);
+          answerProof('wrong', 'right');
+          start(panel);
+          await settle();
+          expect(api.checkRecovery.mock.calls).toEqual([['wrong'], ['right']]);
+          expect(create).toHaveBeenCalledTimes(creates);
+          expect(api[finalRequest]).toHaveBeenCalledTimes(1);
+          expect(api[finalRequest].mock.lastCall).toContainEqual({
+            current: 'right'
+          });
+        }
+      );
+
+      it('gets its line on an authenticator with no PRF, whose flow never reaches a final request', async () => {
+        const { get, create } = browser();
+        get.mockResolvedValue({
+          rawId: new Uint8Array([9]).buffer,
+          getClientExtensionResults: () => ({})
+        });
+        const api = noPasskeyHere();
+        api.checkRecovery.mockRejectedValue(WRONG);
+        const panel = await openCog(api);
+        answerProof('wrong', null);
+        addMethod(panel, 'passkey');
+        await settle();
+        expect(proofDialogs()[1]).toEqual([
+          'Add passkey',
+          'Wrong recovery passphrase'
+        ]);
+        expect(create).not.toHaveBeenCalled();
+      });
+
+      it('stops on any other failure of the check, with its line and no second dialog', async () => {
+        const { create } = browser();
+        const api = noPasskeyHere();
+        api.checkRecovery.mockRejectedValue(
+          new VaultError(500, 'vault proof-check failed: disk')
+        );
+        const panel = await openCog(api);
+        answerProof('right');
+        addMethod(panel, 'passkey');
+        await settle();
+        expect(proofDialogs()).toHaveLength(1);
+        expect(create).not.toHaveBeenCalled();
+        expect(lines(panel)).toEqual([]);
+        expect(toasts()).toEqual([
+          ['error', 'Vault proof-check failed: disk.']
+        ]);
+      });
     });
 
     it('lists passkeys and removes one in two steps', async () => {
@@ -2822,15 +3555,13 @@ describe('VaultPanel', () => {
       await flush();
       await flush();
       await flush();
-      const refused = [
-        'error',
-        'Recovery passphrase change: the passkey did not open the vault'
-      ];
-      expect(lines(panel)).toEqual([refused]);
+      const refused = ['error', 'The passkey did not open the vault.'];
+      expect(toasts()).toEqual([refused]);
       // An agent edits an entry: nothing else would show the change was refused.
       api.status.mockResolvedValue(status({ revision: 'changed-by-an-agent' }));
       await (panel as any)._tick();
-      expect(lines(panel)).toEqual([refused]);
+      expect(toasts()).toEqual([refused]);
+      expect(lines(panel)).toEqual([]);
     });
 
     it('names the recovery change it could not confirm while the server is gone', async () => {
@@ -2847,11 +3578,13 @@ describe('VaultPanel', () => {
       await flush();
       await flush();
       expect(lines(panel)).toEqual([
+        ['error', 'cannot reach the Jupyter server']
+      ]);
+      expect(toasts()).toEqual([
         [
           'error',
-          'Recovery passphrase change not confirmed by the vault - do it again once the server answers'
-        ],
-        ['error', 'cannot reach the Jupyter server']
+          'Recovery passphrase change not confirmed by the vault - do it again once the server answers.'
+        ]
       ]);
     });
 
@@ -3038,7 +3771,7 @@ describe('VaultPanel', () => {
       await flush();
       expect(mockAskSecret).toHaveBeenCalledWith(
         expect.any(String),
-        true,
+        2,
         'Change recovery passphrase'
       );
       expect(api.replaceRecovery).toHaveBeenCalledWith('new words', {
@@ -3100,8 +3833,10 @@ describe('VaultPanel', () => {
       await flush();
       expect(mockAskSecret.mock.calls[0]).toEqual([
         'Enter the current recovery passphrase',
-        true,
-        'Change recovery passphrase'
+        1,
+        'Change recovery passphrase',
+        undefined,
+        undefined
       ]);
       expect(api.replaceRecovery).toHaveBeenCalledWith('new words', {
         current: 'old words'
@@ -3275,10 +4010,34 @@ describe('VaultPanel', () => {
       expect(mockLaunch).not.toHaveBeenCalled();
       expect(mockAskSecret).toHaveBeenCalledWith(
         'Enter the current recovery passphrase',
-        true,
-        'Rotate data key'
+        1,
+        'Rotate data key',
+        undefined,
+        undefined
       );
       expect(api.rotate).toHaveBeenCalledWith({ current: 'words' });
+    });
+
+    it('asks the proof of a rotation and of a recovery change inside the reveal window', async () => {
+      mockAskSecret.mockResolvedValue({ accepted: true, value: 'words' });
+      answerDialogs({});
+      const api = fakeApi({
+        proven: true,
+        status: jest
+          .fn()
+          .mockResolvedValue(status({ slots: [{ type: 'recovery' }] }))
+      });
+      const panel = await openCog(api);
+      button(panel, 'Rotate data key').click();
+      await flush();
+      await flush();
+      expect(api.rotate).toHaveBeenCalledWith({ current: 'words' });
+      button(panel, 'Change').click();
+      await flush();
+      await flush();
+      expect(api.replaceRecovery).toHaveBeenCalledWith('words', {
+        current: 'words'
+      });
     });
 
     it('offers rotation on an unlocked vault, and asks for an unlock when it is due and locked', async () => {
@@ -3613,16 +4372,12 @@ describe('VaultPanel', () => {
       Widget.attach(panel, document.body);
       MessageLoop.sendMessage(panel, Widget.Msg.AfterShow);
       await jest.advanceTimersByTimeAsync(0);
-      (panel as any)._message = {
-        kind: 'error',
-        text: 'the passkey request was cancelled or not allowed',
-        at: Date.now()
-      };
+      (panel as any)._message = { text: 'Data key rotated', at: Date.now() };
       (panel as any)._render();
-      // Unlocked from the CLI: the next tick sees it, and the old failure goes.
-      await jest.advanceTimersByTimeAsync(REFRESH_MS);
+      // Unlocked from the CLI: a read sees it, and the old line goes before it expires.
+      await panel.refresh();
       expect(text(panel)).toContain('Unlocked');
-      expect(text(panel)).not.toContain('cancelled or not allowed');
+      expect(lines(panel)).toEqual([]);
       panel.dispose();
     } finally {
       jest.useRealTimers();
@@ -3793,12 +4548,6 @@ describe('VaultPanel', () => {
 // --------------------------------------------------------------------------- //
 
 describe('EntryForm', () => {
-  /** Tick or untick the "Type it twice" box, as a click does. */
-  const tick = (form: EntryForm, on: boolean) => {
-    form.twice.checked = on;
-    form.twice.dispatchEvent(new Event('change'));
-  };
-
   it('never lets the browser autofill the password and fills it on Generate', async () => {
     const form = new EntryForm(async () => 'fresh-generated');
     expect(form.password.type).toBe('password');
@@ -3882,86 +4631,17 @@ describe('EntryForm', () => {
     ).toBeTruthy();
   });
 
-  it('saves with one password field when Type it twice is off, and gates Save on a match when it is on', () => {
-    const form = new EntryForm(async () => 'x');
-    expect(form.twice.checked).toBe(false);
-    expect(form.confirm.hidden).toBe(true);
-
-    form.password.value = 'typed by hand';
-    form.password.dispatchEvent(new Event('input'));
-    // Off: nothing is asked twice, and the confirm field holds no error.
-    expect(form.getValue().password).toBe('typed by hand');
-    expect(form.confirm.checkValidity()).toBe(true);
-
-    tick(form, true);
-    expect(form.confirm.hidden).toBe(false);
-    // On: the confirm field carries the custom validity that disables Save.
-    expect(form.confirm.checkValidity()).toBe(false);
-    form.confirm.value = 'typed by han';
-    form.confirm.dispatchEvent(new Event('input'));
-    expect(form.confirm.validationMessage).toBe(
-      'Enter the same password in both fields'
-    );
-    form.confirm.value = 'typed by hand';
-    form.confirm.dispatchEvent(new Event('input'));
-    expect(form.confirm.checkValidity()).toBe(true);
-
-    // Off again: the value and its validity are cleared, and Save is not held.
-    tick(form, false);
-    expect(form.confirm.hidden).toBe(true);
-    expect(form.confirm.value).toBe('');
-    expect(form.confirm.checkValidity()).toBe(true);
-  });
-
-  it('shuts Save again when Generate replaces a password the confirm field had matched', async () => {
-    const form = new EntryForm(async () => 'fresh-generated');
-    tick(form, true);
-    form.password.value = 'typed';
-    form.password.dispatchEvent(new Event('input'));
-    form.confirm.value = 'typed';
-    form.confirm.dispatchEvent(new Event('input'));
-    expect(form.confirm.checkValidity()).toBe(true);
-
-    form.generate.click();
-    await flush();
-
-    expect(form.password.value).toBe('fresh-generated');
-    expect(form.confirm.checkValidity()).toBe(false);
-  });
-
-  it('starts Edit unticked, and an empty password still keeps the current one', () => {
-    const form = new EntryForm(async () => 'x', ENTRIES[0]);
-    expect(form.twice.checked).toBe(false);
-    expect(form.confirm.hidden).toBe(true);
-    // Ticked over an empty field: an empty pair agrees, and no password is sent.
-    tick(form, true);
-    expect(form.confirm.checkValidity()).toBe(true);
-    expect(form.getValue()).not.toHaveProperty('password');
-  });
-
-  it('says under the field that the confirmation differs, and restores the help on a match', () => {
-    const form = new EntryForm(async () => 'x', ENTRIES[0]);
-    tick(form, true);
-    expect(form.confirm.getAttribute('aria-describedby')).toBe(
-      form.password.getAttribute('aria-describedby')
-    );
-    form.password.value = 'typed';
-    form.password.dispatchEvent(new Event('input'));
-    form.confirm.value = 'typed twice';
-    form.confirm.dispatchEvent(new Event('input'));
-    expect(form.confirm.checkValidity()).toBe(false);
-    expect(form.node.textContent).toContain(
-      'Enter the same password in both fields'
-    );
-    form.confirm.value = 'typed';
-    form.confirm.dispatchEvent(new Event('input'));
-    expect(form.confirm.checkValidity()).toBe(true);
-    expect(form.node.textContent).toContain(
-      'Save replaces the current password'
-    );
-    expect(form.node.textContent).not.toContain(
-      'Enter the same password in both fields'
-    );
+  it('asks the password in one field with nothing to tick, in Add and in Edit', () => {
+    for (const entry of [undefined, ENTRIES[0]]) {
+      const form = new EntryForm(async () => 'x', entry);
+      expect(form.node.querySelectorAll('input[type="password"]')).toHaveLength(
+        1
+      );
+      expect(form.node.querySelector('input[type="checkbox"]')).toBeNull();
+      form.password.value = 'typed by hand';
+      form.password.dispatchEvent(new Event('input'));
+      expect(form.getValue().password).toBe('typed by hand');
+    }
   });
 
   it('shows Edit with the same visible fields as Add, the name read-only, plus the keep-password help', () => {
@@ -4226,7 +4906,7 @@ describe('the password and authenticator app', () => {
     await settle();
     expect(mockAskSecret).toHaveBeenCalledWith(
       'Enter the unlock password',
-      true,
+      1,
       'Unlock vault'
     );
     // The code's dialog: one field, Cancel and Unlock.
@@ -4298,7 +4978,7 @@ describe('the password and authenticator app', () => {
     await settle();
     expect(mockAskSecret).toHaveBeenCalledWith(
       'Enter the new unlock password, at least 16 characters',
-      true,
+      2,
       ADD,
       { minLength: 16 }
     );
@@ -4338,6 +5018,60 @@ describe('the password and authenticator app', () => {
     expect(text(panel)).toContain('Password and authenticator app removed');
   });
 
+  it('shows the longest not-confirmed line whole in a notification', async () => {
+    fakePasskey();
+    mockAskSecret.mockResolvedValue({
+      accepted: true,
+      value: 'a long password'
+    });
+    const gone = new NoAnswer();
+    const api = fakeApi({
+      status: jest.fn().mockResolvedValue(status({ authenticator: null })),
+      addMfa: jest.fn().mockRejectedValue(gone)
+    });
+    const panel = await openCog(api);
+    answerDialogs({ [ADD]: true }, '222222');
+    api.status.mockRejectedValue(gone);
+    addMethod(panel, 'mfa');
+    await settle();
+    expect(toasts()).toEqual([
+      [
+        'error',
+        'Adding the password and authenticator app not confirmed by the vault - do it again once the server answers.'
+      ]
+    ]);
+  });
+
+  it.each([403, 404] as const)(
+    "keeps the app's unused entry whole in a notification after the page's own line for a %i that is not the vault's",
+    async code => {
+      fakePasskey();
+      mockAskSecret.mockResolvedValue({
+        accepted: true,
+        value: 'a long password'
+      });
+      const refused = await notTheVault(code);
+      const api = fakeApi({
+        status: jest.fn().mockResolvedValue(status({ authenticator: null })),
+        addMfa: jest.fn().mockRejectedValue(refused)
+      });
+      const panel = await openCog(api);
+      answerDialogs({ [ADD]: true }, '222222');
+      addMethod(panel, 'mfa');
+      await settle();
+      // toasts() holds it to 140 characters: the reason is cut, never the clause.
+      const [[kind, line], ...more] = toasts();
+      expect(more).toEqual([]);
+      expect(kind).toBe('error');
+      expect(line).toMatch(
+        /…; the entry your authenticator app added is unused - you can delete it in the app\.$/
+      );
+      expect(line).toHaveLength(TOAST_LIMIT);
+      const cut = line.slice(0, line.indexOf('…'));
+      expect(sentence(refused.message).startsWith(cut)).toBe(true);
+    }
+  );
+
   it('adds nothing when the password dialog, the proof or the app dialog is cancelled', async () => {
     const api = fakeApi({
       status: jest
@@ -4370,8 +5104,9 @@ describe('the password and authenticator app', () => {
   it('asks a passkey first; a code next when the action takes one; then the recovery passphrase', async () => {
     mockAskSecret.mockResolvedValue({ accepted: true, value: 'words' });
     const get = fakePasskey();
+    const api = fakeApi();
     expect(
-      await askProof(status({ authenticator: APP }), HOST, 'T', true)
+      await askProof(api, status({ authenticator: APP }), HOST, 'T', true)
     ).toEqual({ cred_id: 'AAEC', prf: 'CQkJ' });
     expect(mockLaunch).not.toHaveBeenCalled();
 
@@ -4379,24 +5114,28 @@ describe('the password and authenticator app', () => {
     // that take one (add passkey, add MFA, replace recovery), on an unlocked vault.
     const unlocked = status({ slots: NO_PASSKEY, authenticator: APP });
     answerDialogs({ T: true }, '123456');
-    expect(await askProof(unlocked, HOST, 'T', true)).toEqual({
+    expect(await askProof(api, unlocked, HOST, 'T', true)).toEqual({
       code: '123456'
     });
 
     // The code dialog offers the recovery passphrase instead.
     answerDialogs({ T: 'Use recovery passphrase' });
-    expect(await askProof(unlocked, HOST, 'T', true)).toEqual({
+    expect(await askProof(api, unlocked, HOST, 'T', true)).toEqual({
       current: 'words'
     });
     expect(mockAskSecret).toHaveBeenLastCalledWith(
       'Enter the current recovery passphrase',
-      true,
-      'T'
+      1,
+      'T',
+      undefined,
+      undefined
     );
 
     // A rotation passes no `code`: the same vault asks the passphrase at once.
     mockLaunch.mockClear();
-    expect(await askProof(unlocked, HOST, 'T')).toEqual({ current: 'words' });
+    expect(await askProof(api, unlocked, HOST, 'T')).toEqual({
+      current: 'words'
+    });
     expect(mockLaunch).not.toHaveBeenCalled();
 
     // A locked vault offers no code: a code proves only through an unlocked vault.
@@ -4406,24 +5145,60 @@ describe('the password and authenticator app', () => {
       unlocked: false,
       remaining: null
     });
-    expect(await askProof(locked, HOST, 'T', true)).toEqual({
+    expect(await askProof(api, locked, HOST, 'T', true)).toEqual({
       current: 'words'
     });
     expect(mockLaunch).not.toHaveBeenCalled();
 
     // Cancelled: null.
     answerDialogs({});
-    expect(await askProof(unlocked, HOST, 'T', true)).toBeNull();
+    expect(await askProof(api, unlocked, HOST, 'T', true)).toBeNull();
 
     // A passkey that does not answer leaves the code, and the prompt says why.
     get.mockRejectedValue(new DOMException('x', 'NotAllowedError'));
     answerDialogs({ T: true }, '123456');
     expect(
-      await askProof(status({ authenticator: APP }), HOST, 'T', true)
+      await askProof(api, status({ authenticator: APP }), HOST, 'T', true)
     ).toEqual({ code: '123456' });
     expect(mockLaunch.mock.lastCall[0].options.body.node.textContent).toBe(
       'No passkey answered - enter a code of the authenticator app instead'
     );
+  });
+
+  it.each<[string, VaultError]>([
+    ['a lost answer', new NoAnswer()],
+    ['a 5xx answer', new VaultError(500, 'vault proof-check failed: disk')],
+    [
+      "a 403 that is not the vault's",
+      new VaultError(403, 'the vault did not answer (HTTP 403)')
+    ],
+    ['a missing vault', new VaultError(400, 'no vault at /tmp/vault.json')]
+  ])('asks no second time after %s', async (_what, failure) => {
+    mockAskSecret
+      .mockResolvedValueOnce({ accepted: true, value: 'words' })
+      .mockResolvedValue({ accepted: false, value: null });
+    const api = fakeApi({
+      checkRecovery: jest.fn().mockRejectedValue(failure)
+    });
+    await expect(
+      askProof(api, status({ slots: NO_PASSKEY }), HOST, 'T')
+    ).rejects.toBe(failure);
+    expect(mockAskSecret).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks neither a passkey nor a code: a check would use the code up', async () => {
+    fakePasskey();
+    const api = fakeApi();
+    await askProof(api, status({ authenticator: APP }), HOST, 'T', true);
+    answerDialogs({ T: true }, '123456');
+    await askProof(
+      api,
+      status({ slots: NO_PASSKEY, authenticator: APP }),
+      HOST,
+      'T',
+      true
+    );
+    expect(api.checkRecovery).not.toHaveBeenCalled();
   });
 
   it('adds the app whose setup key the dialog shows, with the password; a wrong code opens it again with the same key', async () => {
@@ -4636,6 +5411,70 @@ describe('the dialog that offers the unlock methods', () => {
         true
       ]
     ]);
+  });
+
+  it('offers the set-up choice in order, with one line each, and Later in place of Cancel', async () => {
+    answerDialogs({});
+    await chooseUnlockMethod({ passkey: {}, mfa: {}, later: {} });
+    const dialog = mockLaunch.mock.calls[0][0];
+    expect(dialog.options.buttons).toEqual([]);
+    expect(options(dialog)).toEqual([
+      ['Passkey', 'Fingerprint, face, PIN or security key.', false],
+      [
+        'Password and authenticator app',
+        'A password, then a 6-digit code from your phone.',
+        false
+      ],
+      ['Later', 'Only the recovery passphrase opens the vault for now.', false]
+    ]);
+  });
+
+  it('returns Later when it is pressed', async () => {
+    mockLaunch.mockImplementation(async (dialog: any) => {
+      press(dialog, 'later');
+      return { button: { accept: false } };
+    });
+    expect(await chooseUnlockMethod({ mfa: {}, later: {} })).toBe('later');
+  });
+
+  it('shows the reason of a dialog opened again above the buttons, read with the focused one', async () => {
+    answerDialogs({});
+    await chooseUnlockMethod(
+      { mfa: {}, later: {} },
+      undefined,
+      'Adding the passkey was cancelled.'
+    );
+    const { body } = mockLaunch.mock.calls[0][0].options;
+    const line = body.node.firstChild;
+    expect(line.textContent).toBe('Adding the passkey was cancelled.');
+    expect(line.dataset.state).toBe('mismatch');
+    expect(
+      methods(mockLaunch.mock.calls[0][0])[0].getAttribute('aria-describedby')
+    ).toContain(line.id);
+  });
+
+  it('keeps the arrow keys from Dialog with no footer button, where they would throw', async () => {
+    const reached = async (states: any): Promise<boolean> => {
+      let hit = false;
+      mockLaunch.mockImplementation(async (dialog: any) => {
+        const body = dialog.options.body;
+        Widget.attach(body, document.body);
+        const reachedDialog = (): void => {
+          hit = true;
+        };
+        body.node.addEventListener('keydown', reachedDialog, true);
+        methods(dialog)[0].dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
+        );
+        body.dispose();
+        return { button: { accept: false } };
+      });
+      await chooseUnlockMethod(states);
+      return hit;
+    };
+    expect(await reached({ mfa: {}, later: {} })).toBe(false);
+    // With a Cancel button the arrow keys reach it, as Dialog intends.
+    expect(await reached({ passkey: {}, mfa: {} })).toBe(true);
   });
 
   it('lets Enter on a method press it instead of the default dialog button', async () => {
@@ -5132,4 +5971,850 @@ it('describes an entry in its row tooltip, one line per field and time that is s
     'Last used: never',
     'Created: 4d ago'
   ]);
+});
+
+// --------------------------------------------------------------------------- //
+// Password and passkey: an unlock password with a passkey that has no PRF
+// --------------------------------------------------------------------------- //
+
+describe('Password and passkey', () => {
+  const PAIR_SLOT = {
+    type: 'password-passkey' as const,
+    kdf: 'argon2id',
+    cred_id: 'CQ',
+    rp_id: 'localhost',
+    origin: location.origin,
+    label: 'Phone',
+    created: '2026-11-02T10:00:00Z'
+  };
+  const APP_SLOT = {
+    type: 'password' as const,
+    kdf: 'argon2id',
+    created: '2026-10-02T10:00:00Z'
+  };
+  const APP = { created: '2026-10-02T10:00:00Z' };
+  const challengeBytes = (options: any) => Array.from(options.challenge);
+  const CHALLENGE_BYTES = Array.from(new Uint8Array(b64urlToBuf(CHALLENGE)));
+  const MAYBE_EXACTLY = new RegExp(`^${literally(MAYBE_ADDED)}$`);
+
+  // clearAllMocks leaves the answers a test queued and did not use.
+  beforeEach(() => {
+    mockAskSecret.mockReset();
+    mockLaunch.mockReset();
+  });
+
+  /**
+   * Answer each dialog in turn: for a chooser the method to press, for a code dialog
+   * `Submit:<code>`, else the label of the button to press; none left is Escape.
+   */
+  function pressInTurn(...answers: string[]): void {
+    mockLaunch.mockImplementation(async (dialog: any) => {
+      const answer = answers.shift();
+      const body = dialog.options.body;
+      if (typeof body === 'object' && body && 'chosen' in body) {
+        body.chosen = answer ?? null;
+        return { button: { accept: false } };
+      }
+      const [label, code] = (answer ?? '').split(':');
+      if (code !== undefined) {
+        body.code.value = code;
+      }
+      return {
+        button: dialog.options.buttons.find((b: any) => b.label === label) ?? {
+          accept: false
+        }
+      };
+    });
+  }
+
+  const titles = () =>
+    mockLaunch.mock.calls.map(([dialog]: any[]) => dialog.options.title);
+
+  it('finds the slot only at the exact origin it was added at', () => {
+    const slots: any[] = [
+      { type: 'recovery' },
+      { ...PAIR_SLOT, origin: 'https://lab.example.com' }
+    ];
+    expect(pairSlot(slots, 'https://lab.example.com')?.cred_id).toBe('CQ');
+    expect(pairSlot(slots, 'https://lab.example.com:8443')).toBeUndefined();
+    expect(
+      pairSlot(
+        [{ type: 'passkey', cred_id: 'CQ', origin: 'https://lab.example.com' }],
+        'https://lab.example.com'
+      )
+    ).toBeUndefined();
+  });
+
+  describe('registration', () => {
+    it('hands a passkey with no PRF on with its registration and the signature of its one get, both over the server challenge read before the naming click', async () => {
+      const { create, get } = noPrfBrowser();
+      pressInTurn('Create passkey', 'Confirm passkey', 'Continue');
+      mockAskSecret.mockResolvedValueOnce({
+        accepted: true,
+        value: 'a long password'
+      });
+      const api = fakeApi();
+      await registerWithProof(
+        api,
+        { current: 'recovery words' },
+        'Phone',
+        HOST
+      );
+      // The challenge, the naming click, create, the confirming click, get.
+      const order = [
+        api.challenge.mock.invocationCallOrder[0],
+        mockLaunch.mock.invocationCallOrder[0],
+        create.mock.invocationCallOrder[0],
+        mockLaunch.mock.invocationCallOrder[1],
+        get.mock.invocationCallOrder[0]
+      ];
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+      expect(api.challenge).toHaveBeenCalledTimes(1);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(challengeBytes(create.mock.calls[0][0].publicKey)).toEqual(
+        CHALLENGE_BYTES
+      );
+      expect(challengeBytes(get.mock.calls[0][0].publicKey)).toEqual(
+        CHALLENGE_BYTES
+      );
+      // The server takes the public key from the registration, not from the page.
+      const sent = api.addPair.mock.calls[0][0];
+      expect(sent.registration).toEqual(REGISTRATION);
+      expect(sent).not.toHaveProperty('public_key');
+      expect(sent.assertion).toEqual(ASSERTION);
+      expect(api.addPasskey).not.toHaveBeenCalled();
+    });
+
+    it('asks one challenge at a PRF registration and sends no registration; an assertion proof asks none and is sent with the slot', async () => {
+      fakePasskey();
+      const create = jest
+        .fn()
+        .mockResolvedValue({ rawId: new Uint8Array([9]).buffer });
+      Object.assign(navigator.credentials, { create });
+      pressInTurn('Create passkey', 'Confirm passkey');
+      const api = fakeApi();
+      expect(await registerWithProof(api, { current: 'pw' }, '', HOST)).toBe(
+        'passkey'
+      );
+      expect(api.challenge).toHaveBeenCalledTimes(1);
+      expect(challengeBytes(create.mock.calls[0][0].publicKey)).toEqual(
+        CHALLENGE_BYTES
+      );
+      expect(Object.keys(api.addPasskey.mock.calls[0][0]).sort()).toEqual([
+        'cred_id',
+        'label',
+        'prf',
+        'prf_salt',
+        'rp_id'
+      ]);
+      api.challenge.mockClear();
+      mockLaunch.mockReset();
+      pressInTurn('Create passkey', 'Confirm passkey');
+      await registerWithProof(api, { assertion: ASSERTION }, '', HOST);
+      expect(api.challenge).not.toHaveBeenCalled();
+      expect(challengeBytes(create.mock.calls[1][0].publicKey)).not.toEqual(
+        CHALLENGE_BYTES
+      );
+      expect(api.addPasskey.mock.calls[1][1]).toEqual({ assertion: ASSERTION });
+    });
+
+    it('reports the passkey unused when the rest of the flow stops', async () => {
+      noPrfBrowser();
+      await expect(
+        registerPasskey(
+          fakeApi(),
+          'x',
+          async () => true,
+          { current: 'pw' },
+          HOST,
+          jest
+            .fn()
+            .mockRejectedValue(
+              new VaultError(0, 'adding the passkey was declined')
+            ),
+          CHALLENGE
+        )
+      ).rejects.toThrow(unused('adding the passkey was declined'));
+    });
+
+    it.each<[string, VaultError, RegExp]>([
+      [
+        'a refusal',
+        new VaultError(403, 'the passkey check failed or expired - try again'),
+        unused('the passkey check failed or expired - try again')
+      ],
+      ['a lost answer', new NoAnswer(), MAYBE_EXACTLY],
+      [
+        'a 5xx answer',
+        new VaultError(500, 'vault password-passkey failed: OSError'),
+        MAYBE_EXACTLY
+      ]
+    ])(
+      'reports %s of the last request as unused only for a 4xx answer',
+      async (_what, failure, said) => {
+        noPrfBrowser();
+        pressInTurn('Create passkey', 'Confirm passkey', 'Continue');
+        mockAskSecret.mockResolvedValueOnce({
+          accepted: true,
+          value: 'a long password'
+        });
+        const api = fakeApi({ addPair: jest.fn().mockRejectedValue(failure) });
+        await expect(
+          registerWithProof(api, { current: 'recovery words' }, 'Phone', HOST)
+        ).rejects.toThrow(said);
+      }
+    );
+
+    it('runs the offer, a new unlock password in two fields and one request, under one title, with one create and one get', async () => {
+      const { create, get } = noPrfBrowser();
+      pressInTurn('Create passkey', 'Confirm passkey', 'Continue');
+      mockAskSecret.mockResolvedValueOnce({
+        accepted: true,
+        value: 'a long password'
+      });
+      const api = fakeApi();
+      // The type of the slot stored, so the panel and the CLI name the method.
+      expect(
+        await registerWithProof(
+          api,
+          { current: 'recovery words' },
+          'Phone',
+          HOST
+        )
+      ).toBe('password-passkey');
+      expect(titles()).toEqual([
+        'Name the new passkey',
+        'Confirm the new passkey',
+        'Add password and passkey'
+      ]);
+      const offer = mockLaunch.mock.calls[2][0].options;
+      expect(offer.body).toBe(
+        'This passkey cannot hold the vault key, because it has no PRF. It can still be used with a new unlock password: the password decrypts the vault, and the server checks the passkey. A copy of the vault file opens with the password alone.'
+      );
+      expect(offer.buttons.map((b: any) => b.label)).toEqual([
+        'Decline',
+        'Continue'
+      ]);
+      expect(mockAskSecret).toHaveBeenCalledWith(
+        'Enter the new unlock password, at least 12 characters',
+        2,
+        'Add password and passkey',
+        { minLength: 12 }
+      );
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(api.addPair).toHaveBeenCalledWith(
+        {
+          password: 'a long password',
+          cred_id: 'CQ',
+          rp_id: HOST,
+          registration: REGISTRATION,
+          label: 'Phone',
+          assertion: ASSERTION
+        },
+        { current: 'recovery words' }
+      );
+      expect(api.addPasskey).not.toHaveBeenCalled();
+    });
+
+    it.each<[string, string[], { accepted: boolean; value: string | null }]>([
+      ['Decline', ['Decline'], { accepted: true, value: 'a long password' }],
+      ['a cancelled password', ['Continue'], { accepted: false, value: null }]
+    ])('sends nothing on %s', async (_what, offer, typed) => {
+      noPrfBrowser();
+      pressInTurn('Create passkey', 'Confirm passkey', ...offer);
+      mockAskSecret.mockResolvedValueOnce(typed);
+      const api = fakeApi();
+      await expect(
+        registerWithProof(api, { current: 'recovery words' }, 'Phone', HOST)
+      ).rejects.toThrow(unused(NO_PRF));
+      expect(api.addPair).not.toHaveBeenCalled();
+      expect(api.addPasskey).not.toHaveBeenCalled();
+    });
+
+    it('asks a code again before the last request, because the first one has expired; a passphrase is not asked again', async () => {
+      noPrfBrowser();
+      const withApp = status({
+        slots: [{ type: 'recovery' }, APP_SLOT],
+        authenticator: APP
+      });
+      pressInTurn(
+        'Create passkey',
+        'Confirm passkey',
+        'Continue',
+        'Submit:222222'
+      );
+      mockAskSecret.mockResolvedValueOnce({
+        accepted: true,
+        value: 'a long password'
+      });
+      const api = fakeApi({ status: jest.fn().mockResolvedValue(withApp) });
+      await registerWithProof(api, { code: '111111' }, 'Phone', HOST);
+      expect(titles()[3]).toBe('Add password and passkey');
+      expect(api.addPair.mock.calls[0][1]).toEqual({ code: '222222' });
+      // With the recovery passphrase, the last request takes the same proof.
+      mockLaunch.mockReset();
+      pressInTurn('Create passkey', 'Confirm passkey', 'Continue');
+      mockAskSecret.mockResolvedValueOnce({
+        accepted: true,
+        value: 'a long password'
+      });
+      await registerWithProof(
+        api,
+        { current: 'recovery words' },
+        'Phone',
+        HOST
+      );
+      expect(mockLaunch).toHaveBeenCalledTimes(3);
+      expect(api.addPair.mock.calls[1][1]).toEqual({
+        current: 'recovery words'
+      });
+    });
+
+    it('refuses before any dialog when the vault has the method already', async () => {
+      noPrfBrowser();
+      pressInTurn('Create passkey', 'Confirm passkey');
+      const api = fakeApi({
+        status: jest
+          .fn()
+          .mockResolvedValue(
+            status({ slots: [{ type: 'recovery' }, PAIR_SLOT] })
+          )
+      });
+      await expect(
+        registerWithProof(api, { current: 'recovery words' }, 'Phone', HOST)
+      ).rejects.toThrow(
+        unused(
+          'the vault already has a password and passkey - remove them first'
+        )
+      );
+      expect(titles()).toEqual([
+        'Name the new passkey',
+        'Confirm the new passkey'
+      ]);
+      expect(mockAskSecret).not.toHaveBeenCalled();
+      expect(api.addPair).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the proof', () => {
+    /** An unlocked vault with a PRF passkey for HOST, the pair here and the app pair. */
+    const all = () =>
+      status({
+        slots: [...status().slots, PAIR_SLOT, APP_SLOT],
+        authenticator: APP
+      });
+
+    /** A first passkey request that gives no PRF, then `then` for the pair's. */
+    function prfGivesNothing(then: () => Promise<any>): jest.Mock {
+      const get = jest
+        .fn()
+        .mockResolvedValueOnce({
+          rawId: new Uint8Array([0, 1, 2]).buffer,
+          getClientExtensionResults: () => ({})
+        })
+        .mockImplementationOnce(then);
+      Object.defineProperty(navigator, 'credentials', {
+        value: { get },
+        configurable: true
+      });
+      return get;
+    }
+
+    it('asks the passkey of Password and passkey after a PRF passkey that gave nothing, before a code', async () => {
+      const get = prfGivesNothing(async () => signed());
+      pressInTurn('Use passkey');
+      const api = fakeApi();
+      const proof = await askProof(api, all(), HOST, 'Add passkey', true);
+      expect(proof).toEqual({ assertion: ASSERTION });
+      const dialog = mockLaunch.mock.calls[0][0].options;
+      expect(dialog.title).toBe('Add passkey');
+      expect(dialog.body).toBe(
+        'This passkey cannot unlock the vault - confirm with the passkey of Password and passkey instead.'
+      );
+      expect(dialog.buttons.map((b: any) => b.label)).toEqual([
+        undefined,
+        'Use another proof',
+        'Use passkey'
+      ]);
+      // The challenge is read before the click that the passkey request follows.
+      expect(api.challenge.mock.invocationCallOrder[0]).toBeLessThan(
+        mockLaunch.mock.invocationCallOrder[0]
+      );
+      const options = get.mock.calls[1][0].publicKey;
+      expect(options.extensions).toBeUndefined();
+      expect(options.rpId).toBe('localhost');
+      expect(options.userVerification).toBe('required');
+      expect(
+        Array.from(new Uint8Array(options.allowCredentials[0].id))
+      ).toEqual([9]);
+      expect(challengeBytes(options)).toEqual(CHALLENGE_BYTES);
+    });
+
+    it('asks the passkey of Password and passkey on a vault with no PRF passkey for this hostname', async () => {
+      const { get } = noPrfBrowser();
+      pressInTurn('Use passkey');
+      const proof = await askProof(
+        fakeApi(),
+        status({ slots: [{ type: 'recovery' }, PAIR_SLOT] }),
+        HOST,
+        'Add passkey',
+        true
+      );
+      expect(proof).toEqual({ assertion: ASSERTION });
+      expect(mockLaunch.mock.calls[0][0].options.body).toBe(
+        'Confirm with the passkey of Password and passkey.'
+      );
+      // The one passkey request is the pair's: no PRF request comes before it.
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(get.mock.calls[0][0].publicKey.extensions).toBeUndefined();
+    });
+
+    it('moves on to the code with Use another proof, and after a dismissed prompt', async () => {
+      prfGivesNothing(async () => signed());
+      pressInTurn('Use another proof', 'Submit:123456');
+      expect(
+        await askProof(fakeApi(), all(), HOST, 'Add passkey', true)
+      ).toEqual({ code: '123456' });
+      prfGivesNothing(async () => {
+        throw new DOMException('x', 'NotAllowedError');
+      });
+      mockLaunch.mockReset();
+      pressInTurn('Use passkey', 'Submit:654321');
+      expect(
+        await askProof(fakeApi(), all(), HOST, 'Add passkey', true)
+      ).toEqual({ code: '654321' });
+      expect(mockLaunch.mock.calls[1][0].options.body.node.textContent).toBe(
+        'No passkey answered - enter a code of the authenticator app instead'
+      );
+    });
+
+    it('is not offered for a rotation, on a locked vault, or at another origin', async () => {
+      for (const [s, code] of [
+        [all(), false],
+        [{ ...all(), unlocked: false }, true],
+        [
+          status({
+            slots: [
+              { type: 'recovery' },
+              { ...PAIR_SLOT, origin: 'https://elsewhere' }
+            ]
+          }),
+          true
+        ]
+      ] as [IStatus, boolean][]) {
+        prfGivesNothing(async () => signed());
+        mockLaunch.mockReset();
+        mockAskSecret.mockResolvedValueOnce({ accepted: false, value: null });
+        const api = fakeApi();
+        await askProof(api, s, HOST, 'Rotate data key', code);
+        expect(api.challenge).not.toHaveBeenCalled();
+        expect(titles()).not.toContain('Rotate data key');
+      }
+    });
+  });
+
+  describe('unlock', () => {
+    const lockedWith = (slots: any[]) =>
+      status({ unlocked: false, remaining: null, slots });
+
+    it('offers it in the chooser only when the vault has it, and asks the password, then the passkey', async () => {
+      const { get } = noPrfBrowser();
+      pressInTurn('pair');
+      mockAskSecret.mockResolvedValueOnce({ accepted: true, value: 'pw' });
+      const api = fakeApi();
+      await unlockWithChoice(
+        api,
+        lockedWith([{ type: 'recovery' }, PAIR_SLOT]),
+        HOST
+      );
+      const body = mockLaunch.mock.calls[0][0].options.body.node;
+      expect(methodNames(body)).toEqual([
+        'Passkey',
+        'Password and authenticator app',
+        'Password and passkey',
+        'Recovery passphrase'
+      ]);
+      expect(
+        (body.querySelector('[data-method="pair"]') as HTMLButtonElement)
+          .disabled
+      ).toBe(false);
+      expect(mockAskSecret).toHaveBeenCalledWith(
+        'Enter the unlock password',
+        1,
+        'Unlock vault'
+      );
+      // The chooser is the one dialog: no Use passkey dialog follows the password.
+      expect(titles()).toEqual(['Unlock vault']);
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(get.mock.calls[0][0].publicKey.extensions).toBeUndefined();
+      expect(api.unlockPair).toHaveBeenCalledWith('pw', ASSERTION);
+      expect(api.unlockPassword).not.toHaveBeenCalled();
+      // A vault without the method sees the chooser it saw before.
+      mockLaunch.mockReset();
+      pressInTurn();
+      await expect(
+        unlockWithChoice(api, lockedWith([{ type: 'recovery' }]), HOST)
+      ).rejects.toThrow('the unlock was cancelled');
+      expect(
+        methodNames(mockLaunch.mock.calls[0][0].options.body.node)
+      ).toEqual([
+        'Passkey',
+        'Password and authenticator app',
+        'Recovery passphrase'
+      ]);
+    });
+
+    it('reads the challenge before the password dialog, makes no network read between its Submit and the passkey request, and the passkey signs it', async () => {
+      const { get } = noPrfBrowser();
+      mockAskSecret.mockResolvedValueOnce({ accepted: true, value: 'pw' });
+      const api = fakeApi();
+      expect(await unlockWithPair(api, PAIR_SLOT as ISlot)).toBe(true);
+      // The password dialog's Submit is the click the passkey request follows, so
+      // there is no dialog of its own, and a network read in between can lose the click.
+      expect(mockLaunch).not.toHaveBeenCalled();
+      const asked = mockAskSecret.mock.invocationCallOrder[0];
+      const prompted = get.mock.invocationCallOrder[0];
+      expect(api.challenge.mock.invocationCallOrder[0]).toBeLessThan(asked);
+      const reads: number[] = [];
+      for (const m of Object.values(api)) {
+        if (jest.isMockFunction(m)) {
+          reads.push(...m.mock.invocationCallOrder);
+        }
+      }
+      expect(reads.filter(at => at > asked && at < prompted)).toEqual([]);
+      expect(challengeBytes(get.mock.calls[0][0].publicKey)).toEqual(
+        CHALLENGE_BYTES
+      );
+      expect(api.unlockPair).toHaveBeenCalledWith('pw', ASSERTION);
+      expect(api.unlockPair.mock.invocationCallOrder[0]).toBeGreaterThan(
+        prompted
+      );
+    });
+
+    it('names the address when the method was added at another one', async () => {
+      pressInTurn();
+      await expect(
+        unlockWithChoice(
+          fakeApi(),
+          lockedWith([
+            { type: 'recovery' },
+            { ...PAIR_SLOT, origin: 'https://lab.example.com:8443' }
+          ]),
+          HOST
+        )
+      ).rejects.toThrow('the unlock was cancelled');
+      const choice =
+        mockLaunch.mock.calls[0][0].options.body.node.querySelector(
+          '[data-method="pair"]'
+        ) as HTMLButtonElement;
+      expect(choice.disabled).toBe(true);
+      expect(choice.textContent).toBe(
+        'Password and passkeyNo passkey was added for this address.'
+      );
+    });
+
+    it('sends nothing when the password dialog is cancelled or the passkey prompt dismissed', async () => {
+      const { get } = noPrfBrowser();
+      const api = fakeApi();
+      const s = lockedWith([{ type: 'recovery' }, PAIR_SLOT]);
+      pressInTurn('pair');
+      mockAskSecret.mockResolvedValueOnce({ accepted: false, value: null });
+      await expect(unlockWithChoice(api, s, HOST)).rejects.toThrow(
+        'the unlock was cancelled'
+      );
+      expect(get).not.toHaveBeenCalled();
+      mockLaunch.mockReset();
+      pressInTurn('pair');
+      mockAskSecret.mockResolvedValueOnce({ accepted: true, value: 'pw' });
+      get.mockRejectedValueOnce(new DOMException('x', 'NotAllowedError'));
+      const fail = jest.fn();
+      await expect(unlockWithChoice(api, s, HOST, fail)).rejects.toThrow('x');
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(api.unlockPair).not.toHaveBeenCalled();
+      // Only a refusal of the server is said in the page; a dismissal is the user's.
+      expect(fail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the panel', () => {
+    const UNLOCK_PAIR = 'Unlock with password and passkey';
+    const locked = (slots: any[]) =>
+      status({ unlocked: false, remaining: null, slots });
+
+    it('unlocks from the locked view: the main button and no hint where no PRF passkey is here', async () => {
+      noPrfBrowser();
+      const api = fakeApi({
+        status: jest
+          .fn()
+          .mockResolvedValue(locked([{ type: 'recovery' }, PAIR_SLOT]))
+      });
+      const panel = await panelWith(api);
+      expect(button(panel, UNLOCK_PAIR).classList).toContain('jp-mod-accept');
+      expect(text(panel)).not.toContain('No passkey was added');
+      mockAskSecret.mockResolvedValueOnce({ accepted: true, value: 'pw' });
+      button(panel, UNLOCK_PAIR).click();
+      for (let i = 0; i < 4; i++) {
+        await flush();
+      }
+      expect(api.unlockPair).toHaveBeenCalledWith('pw', ASSERTION);
+      panel.dispose();
+      // Beside a PRF passkey for this hostname it is the second way in.
+      api.status.mockResolvedValue(locked([...status().slots, PAIR_SLOT]));
+      const other = await panelWith(api);
+      expect(button(other, UNLOCK_PAIR).classList).not.toContain(
+        'jp-mod-accept'
+      );
+      // At another address there is no button, and the hint says so.
+      api.status.mockResolvedValue(
+        locked([{ type: 'recovery' }, { ...PAIR_SLOT, origin: 'https://x' }])
+      );
+      await other.refresh();
+      expect(() => button(other, UNLOCK_PAIR)).toThrow();
+      expect(text(other)).toContain(`No passkey was added for ${HOST}`);
+      // ACC-PANEL-226: with the app pair as well, Unlock with password stays beside it.
+      api.status.mockResolvedValue(
+        locked([{ type: 'recovery' }, APP_SLOT, PAIR_SLOT])
+      );
+      await other.refresh();
+      expect(button(other, UNLOCK_PAIR)).toBeTruthy();
+      expect(button(other, 'Unlock with password')).toBeTruthy();
+    });
+
+    it('names the address where Password and passkey was added at another port of this host, in place of the advice to add a passkey', async () => {
+      const there = `https://${HOST}:8443`;
+      const api = fakeApi({
+        status: jest
+          .fn()
+          .mockResolvedValue(
+            locked([
+              { type: 'recovery' },
+              { ...PAIR_SLOT, rp_id: HOST, origin: there }
+            ])
+          )
+      });
+      const panel = await panelWith(api);
+      expect(() => button(panel, UNLOCK_PAIR)).toThrow();
+      expect(
+        Array.from(
+          panel.node.querySelectorAll('.jp-PasskeyVaultPanel-hint'),
+          hint => hint.textContent
+        )
+      ).toEqual([
+        `Password and passkey was added at ${there}. Open JupyterLab at that address to unlock with it.`
+      ]);
+      expect(button(panel, 'Use recovery passphrase')).toBeTruthy();
+      panel.dispose();
+      // At another hostname this tab's host has no slot of any kind: the advice stays.
+      api.status.mockResolvedValue(
+        locked([
+          { type: 'recovery' },
+          {
+            ...PAIR_SLOT,
+            rp_id: 'other.example',
+            origin: 'https://other.example'
+          }
+        ])
+      );
+      const other = await panelWith(api);
+      expect(text(other)).toContain(
+        `No passkey was added for ${HOST}. Add one under Vault settings and security (the cog) with the recovery passphrase.`
+      );
+    });
+
+    it('reads Password and passkey added when the passkey added in the cog view has no PRF, and Passkey added for one with a PRF', async () => {
+      noPrfBrowser();
+      const api = fakeApi({
+        status: jest
+          .fn()
+          .mockResolvedValue(status({ slots: [{ type: 'recovery' }] }))
+      });
+      const panel = await panelWith(api);
+      (
+        panel.node.querySelector(
+          'button[title="Vault settings and security"]'
+        ) as HTMLElement
+      ).click();
+      // The recovery passphrase as the proof, then the new unlock password.
+      mockAskSecret
+        .mockResolvedValueOnce({ accepted: true, value: 'recovery words' })
+        .mockResolvedValueOnce({ accepted: true, value: 'a long password' });
+      pressInTurn('Create passkey', 'Confirm passkey', 'Continue');
+      addMethod(panel, 'passkey');
+      for (let i = 0; i < 6; i++) {
+        await flush();
+      }
+      expect(api.addPair).toHaveBeenCalledTimes(1);
+      expect(lines(panel)).toEqual([['info', 'Password and passkey added']]);
+      expect(toasts()).toEqual([]);
+      // A passkey with a PRF.
+      fakePasskey();
+      Object.assign(navigator.credentials, {
+        create: jest
+          .fn()
+          .mockResolvedValue({ rawId: new Uint8Array([9]).buffer })
+      });
+      mockAskSecret.mockResolvedValueOnce({
+        accepted: true,
+        value: 'recovery words'
+      });
+      pressInTurn('Create passkey', 'Confirm passkey');
+      addMethod(panel, 'passkey');
+      for (let i = 0; i < 6; i++) {
+        await flush();
+      }
+      expect(api.addPasskey).toHaveBeenCalledTimes(1);
+      expect(lines(panel)).toEqual([['info', 'Passkey added']]);
+    });
+
+    it.each<[string, VaultError, string]>([
+      [
+        'a wrong password',
+        new VaultError(400, 'wrong unlock password'),
+        'Wrong unlock password.'
+      ],
+      [
+        'a challenge that expired while the password dialog was open',
+        new VaultError(403, 'the passkey check failed or expired - try again'),
+        'The passkey check failed or expired - try again.'
+      ]
+    ])(
+      '%s: a notification, and the vault stays locked',
+      async (_what, refusal, said) => {
+        const { get } = noPrfBrowser();
+        const api = fakeApi({
+          status: jest
+            .fn()
+            .mockResolvedValue(locked([{ type: 'recovery' }, PAIR_SLOT])),
+          unlockPair: jest.fn().mockRejectedValue(refusal)
+        });
+        const panel = await panelWith(api);
+        mockAskSecret.mockResolvedValueOnce({ accepted: true, value: 'wrong' });
+        button(panel, UNLOCK_PAIR).click();
+        for (let i = 0; i < 4; i++) {
+          await flush();
+        }
+        // The passkey was asked, and the server's refusal is a notification.
+        expect(get).toHaveBeenCalledTimes(1);
+        expect(lines(panel)).toEqual([]);
+        expect(toasts()).toEqual([['error', said]]);
+        expect(text(panel)).toContain('Locked');
+      }
+    );
+
+    it('lists one row in the cog view with a two-step Remove, and the eye proves with the passkey', async () => {
+      const { get } = noPrfBrowser();
+      const api = fakeApi({
+        status: jest
+          .fn()
+          .mockResolvedValue(
+            status({ slots: [{ type: 'recovery' }, PAIR_SLOT] })
+          )
+      });
+      const panel = await panelWith(api);
+      (
+        panel.node.querySelector(
+          'button[title="Vault settings and security"]'
+        ) as HTMLElement
+      ).click();
+      const row = panel.node.querySelector(
+        '[data-method="pair"]'
+      ) as HTMLElement;
+      expect(row.textContent).toBe(
+        'Password and passkeyAdded 2026-11-02 10:00 UTC PhoneRemove'
+      );
+      const remove = () =>
+        panel.node.querySelector(
+          '[data-focus-key="pair"]'
+        ) as HTMLButtonElement;
+      const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
+      remove().click();
+      now.mockReturnValue(1000 + ARM_DELAY_MS);
+      remove().click();
+      now.mockRestore();
+      await flush();
+      expect(api.removePasskey).toHaveBeenCalledWith('CQ');
+      expect(text(panel)).toContain('Password and passkey removed');
+      // At another address the row says where it was added.
+      api.status.mockResolvedValue(
+        status({
+          slots: [
+            { type: 'recovery' },
+            { ...PAIR_SLOT, origin: 'https://lab.example.com:8443' }
+          ]
+        })
+      );
+      await panel.refresh();
+      expect(
+        (panel.node.querySelector('[data-method="pair"]') as HTMLElement)
+          .textContent
+      ).toContain('Phone on https://lab.example.com:8443');
+      // The eye: no PRF passkey here, so the passkey of the pair signs a challenge.
+      api.status.mockResolvedValue(
+        status({ slots: [{ type: 'recovery' }, PAIR_SLOT] })
+      );
+      await panel.refresh();
+      (panel as any)._view = 'main';
+      (panel as any)._render();
+      let how: any;
+      mockViewEntry.mockImplementation(async (_entry: any, h: any) => {
+        how = h;
+        return null;
+      });
+      (
+        panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine') as HTMLElement
+      ).click();
+      await flush();
+      expect(await how.passkey()).toEqual({ assertion: ASSERTION });
+      expect(api.challenge).toHaveBeenCalledTimes(1);
+      expect(challengeBytes(get.mock.calls[0][0].publicKey)).toEqual(
+        CHALLENGE_BYTES
+      );
+      // The password alone of this method is not among the typed proofs.
+      expect(how.typed).toEqual(['passphrase']);
+    });
+
+    it('the eye asks a PRF passkey of this hostname before the passkey of the pair', async () => {
+      const get = fakePasskey();
+      mockViewEntry.mockResolvedValue(null);
+      const api = fakeApi({
+        status: jest
+          .fn()
+          .mockResolvedValue(status({ slots: [...status().slots, PAIR_SLOT] }))
+      });
+      const panel = await panelWith(api);
+      (
+        panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine') as HTMLElement
+      ).click();
+      await flush();
+      const how = mockViewEntry.mock.calls[0][1];
+      expect(await how.passkey()).toEqual({ cred_id: 'AAEC', prf: 'CQkJ' });
+      expect(api.challenge).not.toHaveBeenCalled();
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(get.mock.calls[0][0].publicKey.rpId).toBe(HOST);
+    });
+
+    it('adds no button to the Add unlock method chooser', async () => {
+      const api = fakeApi({
+        status: jest
+          .fn()
+          .mockResolvedValue(
+            status({ slots: [{ type: 'recovery' }, PAIR_SLOT] })
+          )
+      });
+      const panel = await panelWith(api);
+      (
+        panel.node.querySelector(
+          'button[title="Vault settings and security"]'
+        ) as HTMLElement
+      ).click();
+      mockChoose.mockResolvedValueOnce(null);
+      button(panel, 'Add unlock method').click();
+      expect(Object.keys(mockChoose.mock.calls[0][0])).toEqual([
+        'passkey',
+        'mfa'
+      ]);
+    });
+  });
 });

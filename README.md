@@ -31,11 +31,13 @@ A passkey bridge for JupyterLab that exposes the passkey (WebAuthn) capability o
 - **Passkeys** - `create` registers and `get` asserts Windows Hello, Touch ID or a security key from a process with no browser
 - **Approval** - the user approves the ceremony in the open tab, and the call blocks until the result returns
 - **PRF** - `get --prf-salt` returns the same 32 bytes for the same credential and salt, so a vault can derive its key and store none
-- **`passphrase`** - asks once in the browser, with an optional "Type it twice" confirm, and prints only a reference to the staged value (`keyctl:...` or `file:...`)
+- **`passphrase`** - asks once in the browser, or in two fields that must match with `--twice`, and prints only a reference to the staged value (`keyctl:...` or `file:...`)
 - **No terminal copy** - the value never appears in the terminal, the shell history, a process argument or the CLI
 - **`copy`** - places a value on the clipboard through a one-shot relay
 - **`show`** - renders a code as a distorted image absent from the DOM text and the accessibility tree
-- **Vault on demand** - a vault command that finds no vault offers to create one at a terminal, and `vault get` unlocks a locked vault in the same call
+- **Vault on demand** - `list`, `get`, `add`, `edit`, `rm`, `copy`, `show`, `exec`, `import` of a file, `passkey rm` and `git migrate` offer to create a missing vault at a terminal; `unlock`, `lock`, `import --pass-cli`, `passkey add`, `recovery` and `rotate` offer nothing. `vault get` unlocks a locked vault in the same call
+- **Set-up** - the panel, and a git request with no vault, ask the recovery passphrase, then offer Passkey, Password and authenticator app, and Later; `vault init` adds a passkey
+- **Unlock methods** - a passkey with the PRF extension, the recovery passphrase, or an unlock password with the authenticator app; a passkey with no PRF becomes Password and passkey, where a new unlock password decrypts and the passkey is the server-checked second step
 - **Git credentials** - `git-credential-jupyterlab-passkey` answers git's credential request from the vault; `vault git install` and `vault git uninstall` set or remove it, and `vault git migrate` imports git's plaintext store
 
 ### Working with an AI agent

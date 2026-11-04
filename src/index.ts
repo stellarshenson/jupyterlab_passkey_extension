@@ -102,15 +102,10 @@ const plugin: JupyterFrontEndPlugin<void> = {
               type: 'string',
               description: 'The text the dialog asks with.'
             },
-            once: {
-              type: 'boolean',
-              description:
-                'Accepted for compatibility; one entry is the default.'
-            },
             twice: {
               type: 'boolean',
               description:
-                'true asks the value twice, with a field to confirm it.'
+                'true asks the value in two fields that must match; the calling agent decides.'
             }
           },
           required: ['nonce']

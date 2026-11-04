@@ -1,6 +1,14 @@
 import { b64urlEncode, b64urlToBuf, mapCeremonyError } from '../passkey-util';
 
-import { ISlot, IStatus, Proof, VaultApi, VaultError } from './api';
+import {
+  IAssertion,
+  IRegistration,
+  ISlot,
+  IStatus,
+  Proof,
+  VaultApi,
+  VaultError
+} from './api';
 
 /**
  * The passkey ceremonies of the vault. The page runs them and sends the PRF
@@ -36,17 +44,137 @@ export function matchingSlots(slots: ISlot[], host: string): ISlot[] {
   return usable.filter(s => s.rp_id === best);
 }
 
+/** The slot of Password and passkey this tab can use: one added at its exact origin. */
+export function pairSlot(
+  slots: ISlot[],
+  origin: string = location.origin
+): ISlot | undefined {
+  return slots.find(s => s.type === 'password-passkey' && s.origin === origin);
+}
+
+/** The fields of a passkey's answer that the server checks, base64url. */
+function assertionOf(cred: PublicKeyCredential): IAssertion {
+  const response = cred.response as AuthenticatorAssertionResponse;
+  return {
+    cred_id: b64urlEncode(cred.rawId),
+    client_data: b64urlEncode(response.clientDataJSON),
+    authenticator_data: b64urlEncode(response.authenticatorData),
+    signature: b64urlEncode(response.signature)
+  };
+}
+
 /**
- * A registration that stopped after the browser created the passkey: that passkey
- * sits in the user's passkey manager with no slot. The message names it by the user
- * name it was created with, so a same-day retry is not deleted in its place.
+ * A signature of the passkey of Password and passkey over `challenge`, which the
+ * server gave. No PRF is asked: this passkey has none.
  */
-export class Unused extends VaultError {
-  constructor(cause: unknown, user: string) {
+export async function passkeyAssertion(
+  slot: ISlot,
+  challenge: string
+): Promise<IAssertion> {
+  const cred = (await navigator.credentials.get({
+    publicKey: {
+      challenge: new Uint8Array(b64urlToBuf(challenge)),
+      rpId: slot.rp_id,
+      allowCredentials: [
+        { id: b64urlToBuf(slot.cred_id as string), type: 'public-key' }
+      ],
+      userVerification: 'required'
+    }
+  })) as PublicKeyCredential;
+  return assertionOf(cred);
+}
+
+/**
+ * The last request of a new unlock method got no answer, or a 5xx: the server may
+ * have stored it, so the passkey is not called unused.
+ */
+class MaybeAdded extends VaultError {
+  constructor() {
     super(
       0,
-      `${describeFailure(cause)}; the passkey your browser created ("${user}") is unused - you can delete it in your passkey manager`
+      'the server did not confirm the new unlock method - it may have been added; check under Vault settings and security (the cog)'
     );
+  }
+}
+
+/** Only a 4xx answer proves that the request stored nothing. */
+export async function stored(request: Promise<void>): Promise<void> {
+  try {
+    await request;
+  } catch (e) {
+    throw e instanceof VaultError && e.status >= 400 && e.status < 500
+      ? e
+      : new MaybeAdded();
+  }
+}
+
+/** A new passkey with no PRF, for Password and passkey: its fields base64url. */
+export interface INewPair {
+  credId: string;
+  registration: IRegistration;
+  label: string;
+  assertion: IAssertion;
+}
+
+/**
+ * A registration that stopped after the browser created the passkey: that passkey
+ * sits in the user's passkey manager with no slot. Unless the browser took the request
+ * to remove it (`removed`), the message names it by the time in its name, to the
+ * second, so a same-day retry is not deleted in its place. The notification never
+ * loses the time (`fit`); the CLI gets the whole `message`.
+ */
+export class Unused extends VaultError {
+  constructor(cause: unknown, createdAt: string, removed: boolean) {
+    const reason = describeFailure(cause);
+    const clause = removed
+      ? ''
+      : `; delete the unused passkey dated ${createdAt}`;
+    super(0, reason + clause, fit(reason, clause));
+  }
+}
+
+/**
+ * `reason` then `clause` as a notification shows them: 140 characters, the panel's
+ * full stop one of them. A reason too long for both is cut and ends in `…`; the
+ * clause, which names what the user must delete, stays whole.
+ */
+export function fit(reason: string, clause: string): string {
+  const room = 139 - clause.length;
+  return reason.length > room
+    ? `${reason.slice(0, room - 1)}…${clause}`
+    : reason + clause;
+}
+
+/**
+ * Ask the browser to remove a passkey no slot holds, where it has
+ * `PublicKeyCredential.signalUnknownCredential`. True when the browser took the
+ * request, which does not prove the passkey is gone.
+ */
+async function forget(
+  rpId: string,
+  credentialId: ArrayBuffer
+): Promise<boolean> {
+  const api = (
+    globalThis as {
+      PublicKeyCredential?: {
+        signalUnknownCredential?: (options: {
+          rpId: string;
+          credentialId: string;
+        }) => Promise<void>;
+      };
+    }
+  ).PublicKeyCredential;
+  if (typeof api?.signalUnknownCredential !== 'function') {
+    return false;
+  }
+  try {
+    await api.signalUnknownCredential({
+      rpId,
+      credentialId: b64urlEncode(credentialId)
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -139,6 +267,20 @@ export async function passkeyPrf(
   };
 }
 
+/** The unlock this tab is running, whichever button started it. */
+let unlocking: Promise<unknown> | null = null;
+
+/**
+ * Run `unlock`, or join the one this tab is running: a click during an unlock must not
+ * open a second passkey prompt.
+ */
+export function shareUnlock(unlock: () => Promise<unknown>): Promise<unknown> {
+  unlocking ??= unlock().finally(() => {
+    unlocking = null;
+  });
+  return unlocking;
+}
+
 /** Unlock with any passkey registered for this hostname. */
 export async function unlockWithPasskey(
   api: VaultApi,
@@ -158,15 +300,27 @@ export async function unlockWithPasskey(
  * one WebAuthn request per user gesture. It is shown the passkey's name and returns
  * false when the user backs out. `label` is the name the user chose before this
  * call; an empty one falls back to the hostname. `proof` is what the server asks
- * for a new slot.
+ * for a new slot. The `create` and the `get` sign `challenge`, which the server gave:
+ * for a passkey with no PRF the server runs the WebAuthn registration steps on the
+ * `create` and checks the signature of the `get`, and `noPrf` takes the flow on to
+ * Password and passkey, with no further passkey prompt. `challenge` is undefined with
+ * an assertion proof, which holds the one live challenge until the request uses it,
+ * on a vault that has Password and passkey already. Resolves to the type of the slot
+ * stored: `passkey`, or `password-passkey` when `noPrf` stored Password and passkey.
  */
 export async function registerPasskey(
   api: VaultApi,
   label: string,
   confirm: (name: string) => Promise<boolean>,
   proof: Proof,
-  host: string
-): Promise<void> {
+  host: string,
+  noPrf: (pair: INewPair) => Promise<void>,
+  challenge: string | undefined
+): Promise<ISlot['type']> {
+  const signed =
+    challenge === undefined
+      ? random(32)
+      : new Uint8Array(b64urlToBuf(challenge));
   const name = label || host;
   // Host and time in the user name, so the passkeys the OS manager lists for this
   // vault can be told apart - to the second, so can a retry and the unused passkey
@@ -177,7 +331,7 @@ export async function registerPasskey(
   const user = `JupyterLab vault - ${createdAt} UTC - ${host}`;
   const created = (await navigator.credentials.create({
     publicKey: {
-      challenge: random(32),
+      challenge: signed,
       rp: { id: host, name: 'JupyterLab vault' },
       user: { id: random(16), name: user, displayName: user },
       pubKeyCredParams: [
@@ -200,7 +354,7 @@ export async function registerPasskey(
     const salt = random(32);
     const cred = (await navigator.credentials.get({
       publicKey: {
-        challenge: random(32),
+        challenge: signed,
         rpId: host,
         allowCredentials: [{ id: created.rawId, type: 'public-key' }],
         userVerification: 'required',
@@ -209,22 +363,38 @@ export async function registerPasskey(
     })) as PublicKeyCredential;
     const first = cred.getClientExtensionResults().prf?.results?.first;
     if (!first) {
-      throw new VaultError(
-        0,
-        'the authenticator returned no PRF - it cannot hold a vault key; use another passkey'
-      );
+      const response = created.response as AuthenticatorAttestationResponse;
+      await noPrf({
+        credId: b64urlEncode(created.rawId),
+        registration: {
+          client_data: b64urlEncode(response.clientDataJSON),
+          attestation_object: b64urlEncode(response.attestationObject)
+        },
+        label: name,
+        assertion: assertionOf(cred)
+      });
+      return 'password-passkey';
     }
-    await api.addPasskey(
-      {
-        cred_id: b64urlEncode(created.rawId),
-        rp_id: host,
-        prf_salt: b64urlEncode(salt.buffer),
-        prf: b64urlEncode(first as ArrayBuffer),
-        label: name
-      },
-      proof
+    await stored(
+      api.addPasskey(
+        {
+          cred_id: b64urlEncode(created.rawId),
+          rp_id: host,
+          prf_salt: b64urlEncode(salt.buffer),
+          prf: b64urlEncode(first as ArrayBuffer),
+          label: name
+        },
+        proof
+      )
     );
+    return 'passkey';
   } catch (e) {
-    throw new Unused(e, user);
+    if (e instanceof MaybeAdded) {
+      // The server may hold this passkey's slot: removing the passkey could take
+      // away a working unlock method.
+      throw e;
+    }
+    // No request stored it: no slot request was sent, or a 4xx answer refused it.
+    throw new Unused(e, `${createdAt} UTC`, await forget(host, created.rawId));
   }
 }

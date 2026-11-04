@@ -361,7 +361,7 @@ test('passphrase dialog relays nothing when cancelled', async ({ page }) => {
   expect(fs.existsSync(passFile)).toBe(false);
 });
 
-test('passphrase takes one entry by default, and the toggle asks for a second', async ({
+test('passphrase takes one entry by default, with nothing to tick', async ({
   page
 }) => {
   await page.goto();
@@ -383,13 +383,12 @@ test('passphrase takes one entry by default, and the toggle asks for a second', 
 
   const inputs = page.locator('.jp-PassphraseDialog-input');
   const submit = page.locator('.jp-Dialog-button.jp-mod-accept');
-  const twice = page.getByRole('checkbox', { name: 'Type it twice' });
   const status = page.locator('.jp-PassphraseDialog-status');
 
-  // One field, and the confirm field it can reveal, out of play and saying nothing.
+  // One field, nothing to tick, and a status row with nothing to report.
   await expect(inputs.nth(0)).toBeVisible();
   await expect(inputs.nth(1)).toBeHidden();
-  await expect(twice).not.toBeChecked();
+  await expect(page.locator('.jp-Dialog').getByRole('checkbox')).toHaveCount(0);
   await expect(status).toBeHidden();
 
   // The gate still holds an empty field shut, and still opens on the real
@@ -397,18 +396,6 @@ test('passphrase takes one entry by default, and the toggle asks for a second', 
   // right in this mode too, and jest cannot see it because it mocks Dialog away.
   await expect(submit).toBeDisabled();
   await inputs.nth(0).fill(TOKEN);
-  await expect(submit).toBeEnabled();
-
-  // Opting in reveals the confirm field and shuts Submit until the pair agrees.
-  await twice.check();
-  await expect(inputs.nth(1)).toBeVisible();
-  await expect(status).toBeHidden();
-  await expect(submit).toBeDisabled();
-  await inputs.nth(1).fill(`${TOKEN}_typo`);
-  await expect(status).toHaveText('Passphrases do not match');
-  await expect(submit).toBeDisabled();
-  await inputs.nth(1).fill(TOKEN);
-  await expect(status).toHaveText('Passphrases match');
   await expect(submit).toBeEnabled();
 
   await page.click('.jp-Dialog-button.jp-mod-accept');

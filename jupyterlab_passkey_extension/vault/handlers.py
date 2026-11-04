@@ -2,7 +2,8 @@
 
 One handler dispatches on the action. Bodies are parsed with the bridge's `json_body`,
 which never logs them - a vault body can carry an entry's password, a passphrase, the
-unlock password, a PRF, or the secret or a code of an authenticator app.
+unlock password, a PRF, a passkey's signature, or the secret or a code of an
+authenticator app.
 Nothing below logs a body, a value or a result.
 """
 
@@ -22,6 +23,8 @@ _service = VaultService()
 def _unlock(s, body):
     if "recovery" in body:
         s.unlock_recovery(body.get("recovery"))
+    elif "assertion" in body:
+        s.unlock_pair(body.get("password"), body.get("assertion"))
     elif "password" in body:
         s.unlock_password(body.get("password"), body.get("code"))
     else:
@@ -31,7 +34,7 @@ def _unlock(s, body):
 
 def _reveal(s, body):
     # With a proof, the panel's proven reveal. Without, the plain read: the CLI's
-    # `vault get`, and the panel's eye in the reveal window after a proof in the tab.
+    # `vault get`, and the panel's eye in the tab's reveal window.
     if any(k in body for k in PROOFS):
         proof = {k: body[k] for k in ("cred_id", *PROOFS) if k in body}
         return {"value": s.reveal_proven(body.get("name"), proof)}
@@ -57,15 +60,20 @@ _POST = {
     "unlock": _unlock,
     "lock": lambda s, b: s.lock(),
     "rotate": lambda s, b: s.rotate(b.get("proof")),
+    "challenge": lambda s, b: s.challenge(),
     "entries": lambda s, b: s.add(b.get("name"), b.get("fields") or {}),
     "delete": lambda s, b: s.delete(b.get("name")),
     "reveal": _reveal,
+    "proof-check": lambda s, b: s.check_recovery(b.get("current")),
     "stage": lambda s, b: {"nonce": s.stage(b.get("name"), b.get("field") or "password", b.get("kind"))},
     "import": lambda s, b: s.import_entries(b.get("entries")),
     "passkeys": lambda s, b: s.add_passkey(
         b.get("cred_id"), b.get("rp_id"), b.get("prf_salt"), b.get("prf"), b.get("label"),
         b.get("proof")),
     "passkeys-remove": lambda s, b: s.remove_passkey(b.get("cred_id")),
+    "password-passkey": lambda s, b: s.add_pair(
+        b.get("password"), b.get("cred_id"), b.get("rp_id"), b.get("registration"), b.get("label"),
+        b.get("assertion"), b.get("proof")),
     "mfa": lambda s, b: s.add_mfa(b.get("password"), b.get("secret"), b.get("code"), b.get("proof")),
     "mfa-remove": lambda s, b: s.remove_mfa(),
     "recovery": lambda s, b: s.replace_recovery(b.get("recovery"), b.get("proof")),

@@ -31,17 +31,21 @@ def _attributes(stream):
 
 
 def _parts(entry):
-    """The scheme, host and path of an entry's url; the host carries the port and no
-    userinfo, as git's host attribute does. None for a url urlsplit rejects. A url
-    with no scheme and no netloc, such as a bare host, is read as one."""
+    """The scheme, host and path of an entry's url, percent-decoded as git's attributes
+    are; the host carries the port and no userinfo, as git's host attribute does. None
+    for a url urlsplit rejects. A url with no netloc that is a bare host, or a name and
+    a port, which urlsplit reads as a scheme and a path, is read as a host."""
     url = entry.get("url", "")
     try:
         split = urllib.parse.urlsplit(url)
-        if not split.netloc and not split.scheme:
+        if not split.netloc and (not split.scheme or split.path.partition("/")[0].isdigit()):
             split = urllib.parse.urlsplit("//" + url)
     except ValueError:
         return None
-    return (split.scheme.lower(), split.netloc.rpartition("@")[2].lower(), split.path)
+    host = urllib.parse.unquote(split.netloc.rpartition("@")[2]).lower()
+    # A path byte that is not UTF-8 decodes as git's request does on stdin.
+    return (split.scheme.lower(), host,
+            urllib.parse.unquote(split.path, errors="surrogateescape"))
 
 
 def _segments(path):
@@ -56,7 +60,8 @@ def _prefix(path, request_path):
 
 
 def select(entries, attrs):
-    """The entries a request matches, narrowed to the longest path and to its username.
+    """The entries a request matches, narrowed to its username and to the longest path:
+    a username in the request needs an entry with that name, or an entry with none.
 
     git only sends `path` after it has applied useHttpPath, generic or per-URL, so a
     path in the request is what turns path scoping on; without one, entry paths are
@@ -80,52 +85,58 @@ def select(entries, attrs):
         matched.append(entry)
     if malformed:
         print(f"{PROGRAM}: invalid url, entry not used: {', '.join(malformed)}", file=sys.stderr)
+    username = attrs.get("username", "")
+    if username:
+        # As `git credential-store` does: an entry never answers for another account.
+        matched = ([entry for entry in matched if entry.get("username", "") == username]
+                   or [entry for entry in matched if not entry.get("username")])
     if path is not None and matched:
         longest = max(len(_segments(_parts(entry)[2])) for entry in matched)
         matched = [entry for entry in matched if len(_segments(_parts(entry)[2])) == longest]
-    username = attrs.get("username", "")
-    if username:
-        named = [entry for entry in matched if entry.get("username", "") == username]
-        if named:
-            matched = named
     return matched
 
 
 def _request(attrs):
-    return f"{attrs.get('protocol', '')}://{attrs.get('host', '')}{attrs.get('path', '')}"
+    # git sends the path with no leading slash.
+    path = attrs.get("path", "").lstrip("/")
+    return f"{attrs.get('protocol', '')}://{attrs.get('host', '')}" + (f"/{path}" if path else "")
 
 
 def _lookup(attrs):
     """The matched entry's username and password, or None after a line on stderr."""
+    if not attrs.get("host"):
+        # git asks with `host=` for a client certificate's passphrase: no url holds that.
+        print(f"{PROGRAM}: no vault entry matches {_request(attrs)}", file=sys.stderr)
+        return None
     vault = Vault(timeout=_cli.CLICK_TIMEOUT)
     if _vcli._terminal():
         # The set-up offer ACC-VAULT-266 added for a command run at a terminal.
         entries = _vcli.ensure_vault(vault, vault.list)
     else:
-        # git gives the helper its request on stdin, so there is no terminal to ask
-        # at: the page runs the set-up, skipping the steps the vault already has.
-        status = vault.status()
-        if not status["initialized"] or not any(
-                slot["type"] == "passkey" for slot in status["slots"]):
-            _vcli.setup_in_browser()
+        # git gives the helper its request on stdin, so there is no terminal to ask at:
+        # the page runs the set-up. Any vault that exists unlocks the normal way, with
+        # whichever method it has.
+        if not vault.status()["initialized"]:
+            _vcli.setup_in_browser(vault)
         entries = vault.list()
     matched = select(entries, attrs)
-    if len(matched) == 1:
-        entry = matched[0]
+    if matched:
+        # Several entries left, with or without a username in the request: `store`
+        # answers its first line, the one written last, so the newest changed answers.
+        entry = max(matched, key=lambda entry: entry.get("updated", ""))
+        if not entry.get("username") and not attrs.get("username"):
+            print(f"{PROGRAM}: vault entry {entry['name']} has no username and the request "
+                  f"{_request(attrs)} names none", file=sys.stderr)
+            return None
         return entry.get("username", ""), vault.get(entry["name"])
-    if not matched:
-        host = attrs.get("host", "").lower()
-        names = []
-        for entry in entries:
-            parts = _parts(entry)
-            if parts is not None and parts[1] == host:
-                names.append(entry["name"])
-        tried = f"; candidates: {', '.join(names)}" if names else ""
-        print(f"{PROGRAM}: no vault entry matches {_request(attrs)}{tried}", file=sys.stderr)
-    else:
-        names = ", ".join(entry["name"] for entry in matched)
-        print(f"{PROGRAM}: {len(matched)} vault entries match {_request(attrs)}: {names}",
-              file=sys.stderr)
+    host = attrs.get("host", "").lower()
+    names = []
+    for entry in entries:
+        parts = _parts(entry)
+        if parts is not None and parts[1] == host:
+            names.append(entry["name"])
+    tried = f"; candidates: {', '.join(names)}" if names else ""
+    print(f"{PROGRAM}: no vault entry matches {_request(attrs)}{tried}", file=sys.stderr)
     return None
 
 
@@ -134,6 +145,8 @@ def main(argv=None):
     if len(argv) != 1 or argv[0] not in OPERATIONS:
         print(f"usage: {PROGRAM} {'|'.join(OPERATIONS)}", file=sys.stderr)
         return 1
+    # git writes a path's bytes as they are, which need not be UTF-8.
+    sys.stdin.reconfigure(errors="surrogateescape")
     attrs = _attributes(sys.stdin)
     if argv[0] != "get":
         # The vault is the only writer: git must never make it store or erase.
@@ -146,7 +159,8 @@ def main(argv=None):
     if found is None:
         return 1
     username, password = found
-    sys.stdout.write(f"username={username}\npassword={password}\n")
+    # An empty `username=` line would replace the name git has, and git then sends no token.
+    sys.stdout.write((f"username={username}\n" if username else "") + f"password={password}\n")
     return 0
 
 

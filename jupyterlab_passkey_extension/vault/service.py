@@ -14,10 +14,11 @@ import os
 import re
 import secrets
 import string
+import time
 from datetime import datetime, timezone
 
 from .. import relay
-from . import holders, store, totp
+from . import holders, store, totp, webauthn
 from .store import VaultError
 
 log = logging.getLogger(__name__)
@@ -27,8 +28,8 @@ DEFAULT_UNLOCK_MINUTES = 30
 # to. A copied vault file can be attacked through this slot, so short is not offered.
 DEFAULT_PASSWORD_MIN_LENGTH = 12
 PASSWORD_MIN_LENGTH_RANGE = (8, 128)
-# How long an accepted proof in a tab shows a password without another proof, and what
-# the setting may be. 0 asks a proof at every reveal.
+# How long an unlock or an accepted proof in a tab shows a password without another
+# proof, and what the setting may be. 0 asks a proof at every reveal.
 DEFAULT_REVEAL_SECONDS = 60
 REVEAL_SECONDS_RANGE = (0, 3600)
 # How long a data key may serve before an unlock rotates it, in days, and what the
@@ -50,13 +51,19 @@ MAX_NAME = 200
 # and a guess.
 MAX_WRONG_CODES = 5
 MAX_FIELD = 65536
+# How long a passkey challenge is accepted, in seconds: as long as a registration may
+# take, since it signs before the offer and the new password are answered.
+CHALLENGE_SECONDS = 600
+# The one answer to every refused passkey check: it tells a forger nothing.
+CHECK_FAILED = "the passkey check failed or expired - try again"
 # The kinds of proof, by the key that carries the secret, with the name a refusal gives
 # them. The unlock password alone proves the panel's reveal and nothing else: it opens
 # the vault only with a code, so alone it must not add an unlock method or replace the
-# recovery passphrase.
+# recovery passphrase. A passkey with no PRF (`assertion`) proves as a code does.
 PROOFS = {
     "prf": "a passkey",
     "code": "a code of the authenticator app",
+    "assertion": "a passkey with no PRF",
     "current": "the recovery passphrase",
     "password": "the unlock password",
 }
@@ -170,6 +177,9 @@ class VaultService:
         # code accepted, since a code is accepted once.
         self._wrong_codes = 0
         self._last_step = None
+        # The one live passkey challenge and when it expires (`time.monotonic`), or None.
+        # A new one replaces it; a request that names one uses it up.
+        self._challenge = None
 
     # -- configuration -----------------------------------------------------
 
@@ -227,6 +237,13 @@ class VaultService:
         self.holder().put(vault_id, root + dek, self.unlock_minutes() * 60)
         self._held = vault_id
         self._wrong_codes = 0
+        relay.end_unlock_wait()
+
+    def _drop_old_key(self, doc):
+        """The file has just taken a new data key, so the held key no longer reads it.
+        It goes now, not at the next hold: a hold that fails must leave a locked vault,
+        never an open one whose entries do not decrypt."""
+        self.holder().clear(doc["id"])
 
     def _upgrade_slot(self, path, root, kind, secret):
         """Argon2id for the slot this unlock used. Best effort: an unlock that already
@@ -249,6 +266,7 @@ class VaultService:
                 dek = root
             else:
                 doc = store.load(path)
+                self._drop_old_key(doc)
         else:
             dek = store.open_data_key(doc, root)
         if kind is not None:
@@ -260,6 +278,8 @@ class VaultService:
                 dek = store.rotate_data_key(path, root)
             except Exception as e:
                 log.warning("could not rotate the vault's data key: %s", e)
+            else:
+                self._drop_old_key(doc)
         return root, dek
 
     def _rotation(self, doc):
@@ -346,19 +366,73 @@ class VaultService:
             self._check_code(doc, store.open_data_key(doc, root), code)
         self._hold(*self._finish_unlock(path, doc, root, "password", password))
 
+    def unlock_pair(self, password, assertion):
+        """Unlock with Password and passkey: the password decrypts the root key, and
+        the key is put in the holder only for a verified signature of the passkey over
+        the live challenge. The challenge is used up first, so a request with none
+        reaches no Argon2id."""
+        if not isinstance(password, str) or not password:
+            raise VaultError("a password unlock needs the unlock password")
+        challenge = self._take_challenge()
+        path = store.vault_path()
+        doc = store.load(path)
+        root = store.unwrap_pair(doc, password)
+        self._check_assertion(doc, store.open_data_key(doc, root), assertion, challenge)
+        self._hold(*self._finish_unlock(path, doc, root, None, None))
+
+    def challenge(self):
+        """A new passkey challenge, which replaces the last one."""
+        value = secrets.token_urlsafe(32)
+        self._challenge = (value, time.monotonic() + CHALLENGE_SECONDS)
+        return {"challenge": value}
+
+    def _take_challenge(self):
+        """The live challenge, used up whether or not the request it serves succeeds."""
+        held, self._challenge = self._challenge, None
+        if held is None or time.monotonic() >= held[1]:
+            raise Denied(CHECK_FAILED)
+        return held[0]
+
+    def _check_assertion(self, doc, dek, assertion, challenge):
+        """Refuse unless `assertion` is a signature of the passkey of Password and
+        passkey over `challenge`. `dek` opens the passkey's public key. A refused check
+        is not counted: a signature cannot be guessed and a challenge serves once."""
+        slot, key = store.pair_key(doc, dek)
+        try:
+            count = webauthn.verify(assertion, key, slot["cred_id"], slot["rp_id"],
+                                    slot["origin"], challenge, slot.get("sign_count", 0))
+        except webauthn.Refused:
+            raise Denied(CHECK_FAILED)
+        if count:
+            self._save_sign_count(count)
+
+    def _save_sign_count(self, count):
+        """Record the passkey's sign count. Best effort: a check that succeeded must
+        not fail because the count could not be written."""
+        try:
+            store.set_sign_count(store.vault_path(), count)
+        except Exception as e:
+            log.warning("could not record the passkey's sign count: %s", type(e).__name__)
+
     def rotate(self, proof):
-        """Rotate the data key now: the entries and the authenticator secret are
-        re-sealed under a new key, no slot changes, and an old copy of the data key
-        stops reading the vault. Needs an unlocked vault and a recovery or passkey
-        proof; a code alone holds no key and is no proof here."""
+        """Rotate the data key now: the entries, the authenticator secret and the
+        public key of Password and passkey are re-sealed under a new key, no slot's
+        wrapped key changes, and an old copy of the data key stops reading the vault.
+        Needs an unlocked vault and a recovery or PRF passkey proof; a code alone and a
+        passkey with no PRF alone hold no key and are no proof here."""
         self._dek()
         path = store.vault_path()
         doc = store.load(path)
         if isinstance(proof, dict) and "code" in proof:
             raise Denied(f"{PROOFS['code']} is no proof for this - use a passkey or "
                          "the recovery passphrase")
+        if isinstance(proof, dict) and "assertion" in proof:
+            raise Denied(f"{PROOFS['assertion']} is no proof for this - use a passkey with PRF "
+                         "or the recovery passphrase")
         root = self._proven_root(doc, proof)
-        self._hold(root, store.rotate_data_key(path, root))
+        dek = store.rotate_data_key(path, root)
+        self._drop_old_key(doc)
+        self._hold(root, dek)
         return {"rotation": self._rotation(store.load(path))}
 
     def lock(self):
@@ -453,13 +527,20 @@ class VaultService:
         too, but proves only a `reveal`: alone it opens no vault and changes nothing.
         {"code": a code of the authenticator app} holds no key of its own; on an
         unlocked vault it checks the code and returns the held root, so it proves a new
-        slot, a new unlock method and a recovery change - not a rotation."""
+        slot, a new unlock method and a recovery change - not a rotation.
+        {"assertion": a signature of the passkey of Password and passkey} proves as a
+        code does, over the live challenge."""
         if not isinstance(proof, dict) or not any(k in proof for k in PROOFS):
             raise Denied(f"this needs a proof: {FULL_PROOFS}")
         if "code" in proof:
             # The code's own refusal first: no app, a wrong code, a used one.
             self._code_dek(doc, proof["code"])
             return self._root()
+        if "assertion" in proof:
+            # The held key first: a locked vault answers 423 and keeps the challenge.
+            dek, root = self._dek(), self._root()
+            self._check_assertion(doc, dek, proof["assertion"], self._take_challenge())
+            return root
         if REVEAL_ONLY in proof:
             if not reveal:
                 raise Denied(f"{PROOFS[REVEAL_ONLY]} is no proof for this - use {FULL_PROOFS}")
@@ -474,6 +555,13 @@ class VaultService:
         except (VaultError, ValueError, AttributeError):
             raise Denied("wrong recovery passphrase" if "current" in proof
                          else "the passkey did not open the vault")
+
+    def check_recovery(self, passphrase):
+        """Refuse a wrong recovery passphrase, with no other effect: the page asks this
+        before the steps a proof guards, and the request that acts checks its proof
+        again. The proof is built here, so a code cannot come this way: `_check_code`
+        would use it up."""
+        self._proven_root(store.load(store.vault_path()), {"current": passphrase})
 
     def _code_dek(self, doc, typed):
         """The held data key, for a right code of the authenticator app."""
@@ -502,10 +590,10 @@ class VaultService:
         """The panel's reveal: the password, read with the data key the proof gives. A
         code proves on an unlocked vault through the held data key; a root-bearing
         proof opens the file's data key itself. `read` stays for the CLI, the Python
-        API and the panel in the `reveal_seconds` window that an accepted proof in its
-        tab starts. A locked vault shows nothing, whatever the proof: a secret that
-        opens it must unlock it first, and the unlock password opens it only with a
-        code."""
+        API and the panel in the `reveal_seconds` window that an unlock or an accepted
+        proof in its tab starts. A locked vault shows nothing, whatever the proof: a
+        secret that opens it must unlock it first, and the unlock password opens it
+        only with a code."""
         self._dek()
         name = _check_name(name)
         doc = store.load(store.vault_path())
@@ -592,9 +680,7 @@ class VaultService:
         a proof and for a right code of the new app - the pair opens the vault, and a
         code proves a recovery change and a new passkey, so an unlocked vault is not
         enough to add it."""
-        shortest = self.password_min_length()
-        if not isinstance(password, str) or not shortest <= len(password) <= MAX_FIELD:
-            raise VaultError(f"an unlock password is at least {shortest} characters")
+        self._check_new_password(password)
         secret = totp.decode_secret(setup_key)
         if secret is None:
             raise VaultError(f"an authenticator app's secret is base32 of {totp.MIN_SECRET} "
@@ -609,17 +695,58 @@ class VaultService:
             raise Conflict("the vault already has a password and authenticator app - remove them first")
         root = self._proven_root(doc, proof)
         held = self.holder().get(doc["id"])
-        if doc["version"] == 1:
-            # A version-1 file has one key for both jobs; give it a data key before
-            # writing the app's secret, which this build seals under the data key.
-            dek, _ = store.adopt_data_key(path, root)
-        else:
-            dek = store.open_data_key(doc, root)
+        dek = self._adopted(path, doc, root)
         store.set_mfa(path, root, dek, password, secret)
         if held is not None:
             self._hold(root, dek)
         # The code that added the app is used: it proves nothing after this.
         self._wrong_codes, self._last_step = 0, step
+
+    def _check_new_password(self, password):
+        shortest = self.password_min_length()
+        if not isinstance(password, str) or not shortest <= len(password) <= MAX_FIELD:
+            raise VaultError(f"an unlock password is at least {shortest} characters")
+
+    def _adopted(self, path, doc, root):
+        """The data key a new secret is sealed under. A version-1 file has one key for
+        both jobs; it is given a data key first, and the key held for it goes."""
+        if doc["version"] == 1:
+            dek, _ = store.adopt_data_key(path, root)
+            self._drop_old_key(doc)
+            return dek
+        return store.open_data_key(doc, root)
+
+    def add_pair(self, password, cred_id, rp_id, registration, label, assertion, proof):
+        """Add Password and passkey: a new unlock password, and a passkey with no PRF.
+        The `create` that made the passkey passes the WebAuthn registration steps over
+        the live challenge and gives the public key the vault keeps, as COSE key bytes;
+        the passkey's signature over the same challenge proves the page holds that key. Allowed only
+        with a proof, as every unlock method is. The origin of the registration is
+        stored, and every later check compares it exactly."""
+        self._check_new_password(password)
+        for key, value in (("cred_id", cred_id), ("rp_id", rp_id)):
+            if not isinstance(value, str) or not value:
+                raise VaultError(f"adding a password and passkey needs {key}")
+        if label is not None and (not isinstance(label, str) or len(label) > MAX_NAME):
+            raise VaultError(f"a passkey label is at most {MAX_NAME} characters")
+        challenge = self._take_challenge()
+        try:
+            origin = webauthn.origin_of(registration, rp_id)
+            cose = webauthn.registered_key(registration, cred_id, rp_id, origin, challenge)
+            count = webauthn.verify(assertion, cose, cred_id, rp_id, origin, challenge)
+        except webauthn.Refused:
+            raise Denied(CHECK_FAILED)
+        path = store.vault_path()
+        doc = store.load(path)
+        if any(slot.get("type") == store.PAIR for slot in doc["slots"]):
+            raise Conflict("the vault already has a password and passkey - remove them first")
+        root = self._proven_root(doc, proof)
+        held = self.holder().get(doc["id"])
+        dek = self._adopted(path, doc, root)
+        store.add_pair(path, root, dek, password, cred_id, rp_id, origin, cose, label or rp_id,
+                       count)
+        if held is not None:
+            self._hold(root, dek)
 
     def remove_mfa(self):
         self._dek()  # removing an unlock method needs an unlocked vault

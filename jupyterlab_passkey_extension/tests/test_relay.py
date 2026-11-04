@@ -11,6 +11,7 @@ into a red suite.
 import contextlib
 import logging
 import os
+import secrets
 import subprocess
 import sys
 
@@ -26,7 +27,14 @@ needs_keyctl = pytest.mark.skipif(
     not _KEYCTL_WORKS, reason="keyctl not functional on this host"
 )
 
-NONCE = "relay_nonce_0123456789"
+NONCE = ""  # set per test by _own_nonce
+
+
+@pytest.fixture(autouse=True)
+def _own_nonce(monkeypatch):
+    # The keyctl tests write to the @u that parallel runs on this host share, so a
+    # constant nonce lets one run collect or unstage another's key.
+    monkeypatch.setitem(globals(), "NONCE", f"relay_nonce_{secrets.token_hex(8)}")
 
 
 # --------------------------------------------------------------------------- #
@@ -254,7 +262,7 @@ def test_keyctl_sets_a_ttl(monkeypatch):
 
     timeouts = [c for c in calls if len(c) >= 2 and c[1] == "timeout"]
     assert timeouts, "no keyctl timeout was set on the staged key"
-    assert timeouts[0][-1] == str(relay._TTL["secret"])
+    assert timeouts[-1][-1] == str(relay._TTL["secret"])
 
 
 # --------------------------------------------------------------------------- #
@@ -446,20 +454,117 @@ def test_probe_detail_reports_a_missing_binary(monkeypatch):
     assert "install keyutils" in relay._probe_detail
 
 
-def test_probe_possesses_the_user_keyring_before_testing_it(monkeypatch):
-    """`search @u` reads possession, and possession reaches a child only through the
-    session keyring - so the probe must link @u into @s before the round-trip, or a
-    fresh session silently downgrades to the file relay."""
+def _kernel(ring_found=False, key_found=False, refusals=0, user_rc=0, payload=b"value"):
+    """A relay._keyctl stand-in answering as the kernel does for a session that lost
+    possession: `timeout` and `pipe` on key 4242 are refused `refusals` times, and the
+    other calls work. Returns it with the list of calls it saw."""
     calls = []
+    left = [None] * refusals
 
     def fake(args, input_bytes=None):
         calls.append(args)
-        return subprocess.CompletedProcess(args, 1, b"", b"nope")
+        op, rc, out, err = args[0], 0, b"", b""
+        if op == "id":
+            rc, out = user_rc, b"777\n"
+        elif op == "search":
+            found = ring_found if args[1] == "@s" else key_found
+            rc, out = (0, b"888\n" if args[1] == "@s" else b"4242\n") if found else (1, b"")
+        elif op == "newring":
+            out = b"888\n"
+        elif op == "padd":
+            out = b"4242\n"
+        elif op in ("timeout", "pipe") and args[1] == "4242" and left:
+            left.pop()
+            rc, err = 1, b"keyctl: Permission denied"
+        elif op == "pipe":
+            out = payload
+        return subprocess.CompletedProcess(args, rc, out, err)
 
+    return fake, calls
+
+
+def test_probe_possesses_the_user_keyring_before_testing_it(monkeypatch):
+    """`pipe` reads possession, and possession reaches a child only through the session
+    keyring - so the probe must make that path before the round-trip, or a fresh session
+    silently downgrades to the file relay. The path is a keyring named for this
+    namespace's @u, because a direct link in @s is replaced from a child namespace."""
+    fake, calls = _kernel(key_found=True, payload=b"probe")
     monkeypatch.setattr(relay.shutil, "which", lambda _: "/usr/bin/keyctl")
     monkeypatch.setattr(relay, "_keyctl", fake)
-    relay._keyctl_probe()
-    assert calls[0] == ["link", "@u", "@s"]
+    assert relay._keyctl_probe() is True
+    name = "jlab-passkey:possess.777"
+    assert calls[:5] == [
+        ["id", "@u"],
+        ["search", "@s", "keyring", name],
+        ["newring", name, "@s"],
+        ["link", "@u", "888"],
+        ["timeout", "888", str(relay._POSSESS_TTL)],
+    ]
+    assert ["link", "@u", "@s"] not in calls
+
+
+def test_possession_uses_the_keyring_this_namespace_already_has(monkeypatch):
+    # A second `newring` of one name would replace the keyring, and for a moment the
+    # keyring of every other process in this namespace.
+    fake, calls = _kernel(ring_found=True)
+    monkeypatch.setattr(relay, "_keyctl", fake)
+    relay._keyctl_possess()
+    assert not [c for c in calls if c[0] == "newring"]
+    assert ["link", "@u", "888"] in calls
+    assert ["timeout", "888", str(relay._POSSESS_TTL)] in calls
+
+
+def test_possession_makes_no_keyring_it_cannot_name_per_namespace(monkeypatch):
+    # With no id (keyutils too old for `keyctl id`) every namespace would use one name,
+    # and they would replace each other again.
+    fake, calls = _kernel(user_rc=1)
+    monkeypatch.setattr(relay, "_keyctl", fake)
+    relay._keyctl_possess()
+    assert calls == [["id", "@u"]]
+
+
+def test_a_probe_survives_one_refused_read(monkeypatch):
+    # The first two probes of one session can both run `newring`, the later replacing
+    # the earlier, and must not send the host to another backend for that.
+    fake, calls = _kernel(key_found=True, refusals=1, payload=b"probe")
+    monkeypatch.setattr(relay.shutil, "which", lambda _: "/usr/bin/keyctl")
+    monkeypatch.setattr(relay, "_keyctl", fake)
+    assert relay._keyctl_probe() is True
+    assert calls.count(["pipe", "4242"]) == 2
+
+
+@pytest.mark.parametrize("refusals,staged", [(1, True), (2, False)])
+def test_stage_restores_possession_once_when_the_timeout_is_refused(monkeypatch, refusals, staged):
+    # POST result, `vault copy`, `show` and `passphrase` all stage here. The server
+    # probes once, so a path lost later is restored by the call that finds it lost.
+    fake, calls = _kernel(refusals=refusals)
+    monkeypatch.setattr(relay, "_keyctl", fake)
+    if staged:
+        relay._keyctl_stage(NONCE, "secret", "x")
+    else:
+        with pytest.raises(OSError, match="keyctl timeout failed: keyctl: Permission denied"):
+            relay._keyctl_stage(NONCE, "secret", "x")
+    assert calls.count(["timeout", "4242", str(relay._TTL["secret"])]) == 2
+    assert calls.count(["id", "@u"]) == 1
+    # Never a key with no expiry: a second refusal removes it.
+    assert (["unlink", "4242", "@u"] in calls) is not staged
+
+
+@pytest.mark.parametrize("refusals,value", [(1, "value"), (2, None)])
+def test_collect_restores_possession_once_when_the_read_is_refused(monkeypatch, refusals, value):
+    fake, calls = _kernel(key_found=True, refusals=refusals)
+    monkeypatch.setattr(relay, "_keyctl", fake)
+    assert relay._keyctl_collect(NONCE, "secret") == value
+    assert calls.count(["pipe", "4242"]) == 2
+    assert calls.count(["id", "@u"]) == 1
+
+
+def test_only_a_permission_refusal_restores_possession(monkeypatch):
+    run, calls = _fake_keyctl_runner(timeout_rc=1)
+    monkeypatch.setattr(relay.subprocess, "run", run)
+    with pytest.raises(OSError, match="timeout boom"):
+        relay._keyctl_stage(NONCE, "secret", "x")
+    assert ["keyctl", "id", "@u"] not in calls
 
 
 def test_debug_report_names_the_backend_and_never_a_secret(monkeypatch):

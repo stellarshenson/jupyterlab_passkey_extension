@@ -50,7 +50,7 @@ it('says the vault did not answer when something in front of it answers with a p
     .lock()
     .catch(e => e);
   expect(err.message).toBe(
-    'the vault did not answer (HTTP 403) - reload the page to sign in again or start the server'
+    'the vault did not answer (HTTP 403) - reload the page or start the server'
   );
 });
 
@@ -65,7 +65,7 @@ it('fails on a page in place of JSON, such as the hub sign-in page answered with
     .catch(e => e);
   expect(err).toBeInstanceOf(VaultError);
   expect(err.message).toBe(
-    'the vault did not answer (HTTP 200) - reload the page to sign in again or start the server'
+    'the vault did not answer (HTTP 200) - reload the page or start the server'
   );
 });
 
@@ -93,7 +93,7 @@ it("does not show the Jupyter server's Forbidden as the vault's answer", async (
     .lock()
     .catch(e => e);
   expect(err.message).toBe(
-    'the vault did not answer (HTTP 403) - reload the page to sign in again or start the server'
+    'the vault did not answer (HTTP 403) - reload the page or start the server'
   );
 });
 
@@ -112,7 +112,7 @@ it('says to restart the server when it runs without the vault', async () => {
   );
 });
 
-describe('the reveal window after a proof', () => {
+describe('the reveal window after an unlock or a proof', () => {
   const PROOF = { current: 'the passphrase' };
   const SLOT = {
     cred_id: 'AAEC',
@@ -120,6 +120,23 @@ describe('the reveal window after a proof', () => {
     prf_salt: 'AAAA',
     prf: 'CQkJ',
     label: 'Work laptop'
+  };
+  const ASSERTION = {
+    cred_id: 'CQ',
+    client_data: 'eyJ0eXBlIjoid2ViYXV0aG4uZ2V0In0',
+    authenticator_data: 'AAEC',
+    signature: 'MEUC'
+  };
+  const PAIR = {
+    password: 'a long password',
+    cred_id: 'CQ',
+    rp_id: 'host',
+    registration: {
+      client_data: 'eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIn0',
+      attestation_object: 'o2NmbXRkbm9uZQ'
+    },
+    label: 'Phone',
+    assertion: ASSERTION
   };
   const answer = (status: number, body: unknown) => ({
     ok: status < 400,
@@ -157,9 +174,9 @@ describe('the reveal window after a proof', () => {
 
   it.each<[string, (api: VaultApi) => Promise<unknown>]>([
     ['a new vault', api => api.init('the passphrase')],
-    ['a recovery unlock', api => api.unlockRecovery('the passphrase')],
-    ['a password unlock', api => api.unlockPassword('a password', '123456')],
-    ['a passkey unlock', api => api.unlockPasskey('AAEC', 'CQkJ')]
+    ['a status read', api => api.status()],
+    ['a proof check', api => api.checkRecovery('the passphrase')],
+    ['a passkey challenge', api => api.challenge()]
   ])('is not started by %s', async (_what, request) => {
     mockMakeRequest.mockResolvedValue(status(60));
     const api = vault();
@@ -167,10 +184,44 @@ describe('the reveal window after a proof', () => {
     expect(api.proven).toBe(false);
   });
 
+  const UNLOCKS: [string, (api: VaultApi) => Promise<unknown>][] = [
+    ['a recovery unlock', api => api.unlockRecovery('the passphrase')],
+    ['a password unlock', api => api.unlockPassword('a password', '123456')],
+    ['a passkey unlock', api => api.unlockPasskey('AAEC', 'CQkJ')],
+    [
+      'a password and passkey unlock',
+      api => api.unlockPair('a password', ASSERTION)
+    ]
+  ];
+
+  it.each(UNLOCKS)('starts with %s', async (_what, request) => {
+    mockMakeRequest.mockResolvedValue(status(60));
+    const api = vault();
+    await request(api);
+    expect(api.proven).toBe(true);
+  });
+
+  it.each(UNLOCKS)('is not started by a refused %s', async (_what, request) => {
+    mockMakeRequest.mockResolvedValue(
+      answer(403, { error: 'wrong passphrase' })
+    );
+    const api = vault();
+    await expect(request(api)).rejects.toThrow('wrong passphrase');
+    expect(api.proven).toBe(false);
+  });
+
+  it('takes its length from the status the unlock answers', async () => {
+    const api = vault();
+    mockMakeRequest.mockResolvedValue(status(0));
+    await api.unlockPasskey('AAEC', 'CQkJ');
+    expect(api.proven).toBe(false);
+  });
+
   it.each<[string, (api: VaultApi) => Promise<unknown>]>([
     ['a password shown for a proof', api => api.revealPassword('nas', PROOF)],
     ['a new passkey', api => api.addPasskey(SLOT, PROOF)],
     ['a new pair', api => api.addMfa('a password', 'KEY', '123456', PROOF)],
+    ['a new password and passkey', api => api.addPair(PAIR, PROOF)],
     ['a new recovery passphrase', api => api.replaceRecovery('new', PROOF)],
     ['a data-key rotation', api => api.rotate(PROOF)]
   ])('starts with %s', async (_what, request) => {
@@ -189,6 +240,46 @@ describe('the reveal window after a proof', () => {
     ).toBe(true);
     expect(mockMakeRequest.mock.calls[0][1].method).toBe('POST');
     expect(sent()).toEqual({ proof: PROOF });
+  });
+
+  it('checks a recovery passphrase through its own action, with the passphrase alone', async () => {
+    mockMakeRequest.mockResolvedValue({
+      ok: true,
+      status: 204,
+      text: async () => ''
+    });
+    await vault().checkRecovery('the passphrase');
+    expect(mockMakeRequest).toHaveBeenCalledTimes(1);
+    expect(
+      (mockMakeRequest.mock.calls[0][0] as string).endsWith(
+        '/vault/proof-check'
+      )
+    ).toBe(true);
+    expect(mockMakeRequest.mock.calls[0][1].method).toBe('POST');
+    expect(sent()).toEqual({ current: 'the passphrase' });
+  });
+
+  it('sends Password and passkey to its own actions', async () => {
+    const at = (i: number) => mockMakeRequest.mock.calls[i];
+    mockMakeRequest.mockResolvedValueOnce(answer(200, { challenge: 'Y2g' }));
+    expect(await vault().challenge()).toBe('Y2g');
+    expect((at(0)[0] as string).endsWith('/vault/challenge')).toBe(true);
+    expect(at(0)[1].method).toBe('POST');
+    mockMakeRequest.mockResolvedValueOnce(status(60));
+    await vault().unlockPair('a password', ASSERTION);
+    expect((at(1)[0] as string).endsWith('/vault/unlock')).toBe(true);
+    expect(JSON.parse(at(1)[1].body)).toEqual({
+      password: 'a password',
+      assertion: ASSERTION
+    });
+    mockMakeRequest.mockResolvedValueOnce({
+      ok: true,
+      status: 204,
+      text: async () => ''
+    });
+    await vault().addPair(PAIR, PROOF);
+    expect((at(2)[0] as string).endsWith('/vault/password-passkey')).toBe(true);
+    expect(JSON.parse(at(2)[1].body)).toEqual({ ...PAIR, proof: PROOF });
   });
 
   it('has no way to send the vault settings to the server', () => {

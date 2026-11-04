@@ -186,7 +186,7 @@ describe('plugin activation', () => {
       Object.keys(
         commands.get('passkey:passphrase').describedBy.args.properties
       )
-    ).toEqual(['nonce', 'prompt', 'once', 'twice']);
+    ).toEqual(['nonce', 'prompt', 'twice']);
 
     // A lab with no translator: each label is returned as written.
     const plain = fakeApp();

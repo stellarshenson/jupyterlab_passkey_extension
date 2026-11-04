@@ -16,19 +16,34 @@ import time
 import pytest
 
 from jupyterlab_passkey_extension import relay
-from jupyterlab_passkey_extension.vault import holders
+from jupyterlab_passkey_extension.vault import holders, service, store
 
 KEY = bytes(range(32))
 KEY2 = bytes(range(32, 64))
 # Vault ids of this test process only, so a run never touches a real vault's key.
 VID = f"7e57{os.getpid():012x}"
 VID2 = f"7e58{os.getpid():012x}"
+PASSPHRASE = "correct horse battery staple"
 
 _KEYCTL = relay._keyctl_probe()
 _GPG = all(shutil.which(t) for t in holders._GPG_TOOLS)
 
 needs_keyctl = pytest.mark.skipif(not _KEYCTL, reason="keyctl not functional on this host")
 needs_gpg = pytest.mark.skipif(not _GPG, reason="GnuPG not installed")
+
+
+def _child_namespace(*argv):
+    """A test parameter: the command that runs another in a child user namespace."""
+    works = shutil.which(argv[0]) and subprocess.run(
+        [*argv, "true"], capture_output=True).returncode == 0
+    return pytest.param(list(argv), id=argv[0], marks=pytest.mark.skipif(
+        not (_KEYCTL and works), reason=f"{argv[0]} cannot start a user namespace here"))
+
+
+CHILD_NAMESPACES = [
+    _child_namespace("unshare", "--user", "--map-current-user"),
+    _child_namespace("bwrap", "--dev-bind", "/", "/", "--unshare-user", "--die-with-parent", "--"),
+]
 
 
 @pytest.fixture(autouse=True)
@@ -235,6 +250,256 @@ def test_keyctl_keeps_one_key_per_vault():
     finally:
         h.clear(VID)
         h.clear(VID2)
+
+
+# --------------------------------------------------------------------------- #
+# possession of the held key - each case runs in a session keyring of its own, because
+# a link made in the shared one would take the keys of a live server on this host
+# --------------------------------------------------------------------------- #
+
+
+def _in_private_session(case, *args):
+    r = subprocess.run(
+        ["keyctl", "session", "-", sys.executable, "-c",
+         f"import sys; from {__name__} import {case}; {case}(*sys.argv[1:])", *args],
+        capture_output=True, text=True, timeout=60,
+        env=dict(os.environ, JLAB_PASSKEY_RELAY_BACKEND="keyctl",
+                 PYTHONPATH=os.pathsep.join(sys.path)),
+    )
+    assert r.returncode == 0, r.stderr
+
+
+def _readable_with_no_repair():
+    kid = relay._keyctl_search(holders._key_desc(VID))
+    return relay._keyctl(["pipe", kid]).returncode == 0
+
+
+def _possession_ring():
+    user = relay._keyctl(["id", "@u"]).stdout.decode().strip()
+    name = f"{relay._KEY_PREFIX}possess.{user}"
+    return relay._keyctl(["search", "@s", "keyring", name]).stdout.decode().strip()
+
+
+def _drop_possession():
+    assert relay._keyctl(["unlink", _possession_ring(), "@s"]).returncode == 0
+    assert not _readable_with_no_repair()
+
+
+def _child_links_while_a_key_is_held(*child):
+    h = holders.KeyctlHolder()
+    h.put(VID, KEY, 60)
+    probe = [sys.executable, "-c", (
+        "import sys; from jupyterlab_passkey_extension import relay; "
+        "sys.exit(not relay._keyctl_probe())")]
+    theirs = subprocess.run([*child, "keyctl", "id", "@u"], capture_output=True, check=True)
+    assert theirs.stdout != relay._keyctl(["id", "@u"]).stdout, "not a child namespace"
+    try:
+        # What an older build runs in a sandboxed lab, then what this build runs there.
+        for command in (["keyctl", "link", "@u", "@s"], probe):
+            subprocess.run([*child, *command], capture_output=True, check=True)
+            assert _readable_with_no_repair()
+            assert h.get(VID) == KEY and 50 <= h.remaining(VID) <= 60
+            h.put(VID, KEY, 60)
+            nonce = f"possess_{os.getpid()}"
+            relay.stage(nonce, "secret", "value")
+            assert relay.collect(nonce, "secret") == "value"
+    finally:
+        h.clear(VID)
+
+
+def _missing_path_restored_by_each_call():
+    h = holders.KeyctlHolder()
+    h.put(VID, KEY, 60)
+    assert relay.backend() == "keyctl"
+    nonce = f"possess_{os.getpid()}"
+    try:
+        _drop_possession()
+        assert h.get(VID) == KEY
+        _drop_possession()
+        assert 50 <= h.remaining(VID) <= 60
+        _drop_possession()
+        h._add(holders._expiry_desc(VID), b"0", 60)
+        _drop_possession()
+        relay.stage(nonce, "secret", "value")
+        _drop_possession()
+        assert relay.collect(nonce, "secret") == "value"
+        _drop_possession()
+        h.put(VID, KEY2, 60)
+        assert h.get(VID) == KEY2
+    finally:
+        h.clear(VID)
+
+
+def _expired_ring_made_again():
+    h = holders.KeyctlHolder()
+    h.put(VID, KEY, 60)
+    expired = _possession_ring()
+    try:
+        assert relay._keyctl(["timeout", expired, "1"]).returncode == 0
+        time.sleep(2.5)
+        relay._keyctl_possess()
+        assert _possession_ring() not in ("", expired)
+        assert _readable_with_no_repair()
+    finally:
+        h.clear(VID)
+
+
+def _path_that_cannot_be_restored():
+    h = holders.KeyctlHolder()
+    h.put(VID, KEY, 60)
+    try:
+        _drop_possession()
+        # The possessor and the owner lose write, so no keyring can be made in @s.
+        assert relay._keyctl(["setperm", "@s", "0x3b010000"]).returncode == 0
+        # Open reads as locked, as the entries do: never `unlocked, 1 s left` and a 423.
+        assert h.remaining(VID) is None and h.get(VID) is None
+        with pytest.raises(OSError, match="does not possess the @u keyring"):
+            h.put(VID, KEY2, 60)
+        assert relay._keyctl(["setperm", "@s", "0x3f3f0000"]).returncode == 0
+        assert h.get(VID) == KEY, "the failed put cleared the held key"
+    finally:
+        h.clear(VID)
+
+
+@contextlib.contextmanager
+def _open_vault():
+    """The real service on real keys, with a vault in a directory of its own."""
+    with tempfile.TemporaryDirectory() as home:
+        os.environ.update({holders.ENV: "keyctl", "XDG_STATE_HOME": home,
+                           "JLAB_PASSKEY_VAULT": f"{home}/vault.json"})
+        vault = service.VaultService()
+        vault.init(PASSPHRASE)
+        vault.add("probe/one", {"password": "s3cret"})
+        try:
+            yield vault
+        finally:
+            vault.lock()
+
+
+def _unlock_or_rotate(vault, action):
+    if action == "unlock":
+        vault.unlock_recovery(PASSPHRASE)
+    else:
+        vault.rotate({"current": PASSPHRASE})
+
+
+def _lose_the_path():
+    assert relay._keyctl(["unlink", _possession_ring(), "@s"]).returncode == 0
+    assert relay._keyctl(["setperm", "@s", "0x3b010000"]).returncode == 0
+
+
+def _path_back():
+    assert relay._keyctl(["setperm", "@s", "0x3f3f0000"]).returncode == 0
+
+
+def _failed_hold_after_a_new_data_key(action):
+    with _open_vault() as vault:
+        path = store.vault_path()
+        doc = store.load(path)
+        doc["data_key"]["created"] = "2001-01-01T00:00:00Z"  # an unlock rotates it
+        store._write(path, doc)
+        rotate_data_key = store.rotate_data_key
+
+        def rotate_then_lose_the_path(*args):
+            dek = rotate_data_key(*args)
+            _lose_the_path()
+            return dek
+
+        store.rotate_data_key = rotate_then_lose_the_path
+        with pytest.raises(OSError):
+            _unlock_or_rotate(vault, action)
+        _path_back()
+        assert not vault.status()["unlocked"]
+        with pytest.raises(service.Locked):
+            vault.list_entries()
+        vault.unlock_recovery(PASSPHRASE)
+        assert [e["name"] for e in vault.list_entries()] == ["probe/one"]
+
+
+def _failed_unlock_with_no_new_data_key():
+    with _open_vault() as vault:
+        _lose_the_path()
+        with pytest.raises(OSError, match="does not possess the @u keyring"):
+            vault.unlock_recovery(PASSPHRASE)
+        _path_back()
+        assert vault.status()["unlocked"]
+        assert [e["name"] for e in vault.list_entries()] == ["probe/one"]
+
+
+def _full_key_quota(action):
+    # Counted at the two calls the quota decides: filling the real one would reach
+    # the keys of a live server under this uid.
+    with _open_vault() as vault:
+        keyctl = relay._keyctl
+        free = [0]
+
+        def full(args, input_bytes=None):
+            if args[0] == "padd" and not free[0]:
+                return subprocess.CompletedProcess(args, 1, b"", b"Disk quota exceeded")
+            r = keyctl(args, input_bytes)
+            free[0] += {"padd": -1, "unlink": 1}.get(args[0], 0)
+            return r
+
+        relay._keyctl = full
+        _unlock_or_rotate(vault, action)
+        relay._keyctl = keyctl
+        assert vault.status()["unlocked"]
+        assert [e["name"] for e in vault.list_entries()] == ["probe/one"]
+
+
+@pytest.mark.parametrize("child", CHILD_NAMESPACES)
+def test_a_child_namespace_cannot_take_the_keys_away(child):
+    # The link is not expected to fail a given set of tests: one change at another
+    # moment failed 5, 7 and 9 of this file. So this reads the key straight after it.
+    _in_private_session("_child_links_while_a_key_is_held", *child)
+
+
+@needs_keyctl
+def test_a_missing_path_to_the_keys_is_restored_by_the_call_that_needs_it():
+    _in_private_session("_missing_path_restored_by_each_call")
+
+
+@needs_keyctl
+def test_an_expired_possession_keyring_is_made_again():
+    _in_private_session("_expired_ring_made_again")
+
+
+@needs_keyctl
+def test_a_path_that_cannot_be_restored_locks_the_status_and_keeps_the_key():
+    _in_private_session("_path_that_cannot_be_restored")
+
+
+@needs_keyctl
+@pytest.mark.parametrize("action", ["unlock", "rotate"])
+def test_a_failed_hold_after_a_new_data_key_leaves_the_vault_locked(action):
+    _in_private_session("_failed_hold_after_a_new_data_key", action)
+
+
+@needs_keyctl
+def test_a_failed_unlock_with_no_new_data_key_keeps_the_held_key():
+    _in_private_session("_failed_unlock_with_no_new_data_key")
+
+
+@needs_keyctl
+def test_a_held_key_that_expires_at_the_read_does_not_stop_the_hold(monkeypatch):
+    possessed = relay._keyctl_possessed
+    h = holders.KeyctlHolder()
+    h.put(VID, KEY, 60)
+    try:
+        with monkeypatch.context() as expired:
+            expired.setattr(relay, "_keyctl_possessed", lambda args: (
+                subprocess.CompletedProcess(args, 1, b"", b"Key has expired")
+                if args[0] == "pipe" else possessed(args)))
+            h.put(VID, KEY2, 60)
+        assert h.get(VID) == KEY2
+    finally:
+        h.clear(VID)
+
+
+@needs_keyctl
+@pytest.mark.parametrize("action", ["unlock", "rotate"])
+def test_a_full_key_quota_refuses_no_hold_that_frees_its_own_room(action):
+    _in_private_session("_full_key_quota", action)
 
 
 def test_an_empty_holder_reports_nothing(holder):

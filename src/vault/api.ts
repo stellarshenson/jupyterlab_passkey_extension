@@ -25,7 +25,7 @@ export interface IHolder {
 }
 
 export interface ISlot {
-  type: 'recovery' | 'passkey' | 'password';
+  type: 'recovery' | 'passkey' | 'password' | 'password-passkey';
   /** The key derivation of a typed slot: argon2id today, scrypt in older slots. */
   kdf?: string;
   cred_id?: string;
@@ -33,6 +33,8 @@ export interface ISlot {
   prf_salt?: string;
   label?: string;
   created?: string;
+  /** The exact origin a Password and passkey slot was added at. */
+  origin?: string;
 }
 
 /** The data key's age and rotation state, as the server reports them. */
@@ -59,7 +61,7 @@ export interface IStatus {
   settings: {
     unlock_minutes: number;
     password_min_length: number;
-    /** How long a proof in this tab shows a password without another proof. */
+    /** How long an unlock or a proof in this tab shows a password with no other proof. */
     reveal_seconds: number;
     /** The rotation period in days; 0 turns automatic rotation off. */
     rotate_days: number;
@@ -97,28 +99,63 @@ export interface IPasskeySlot {
 }
 
 /**
+ * A passkey's answer to a server challenge, each field base64url: the server checks
+ * the signature with the public key the vault holds for Password and passkey.
+ */
+export interface IAssertion {
+  cred_id: string;
+  client_data: string;
+  authenticator_data: string;
+  signature: string;
+}
+
+/**
+ * A passkey's answer to `navigator.credentials.create`, each field base64url: the
+ * server runs the WebAuthn registration steps on it and takes the public key from it.
+ */
+export interface IRegistration {
+  client_data: string;
+  attestation_object: string;
+}
+
+/** A new Password and passkey. */
+export interface IPairSlot {
+  password: string;
+  cred_id: string;
+  rp_id: string;
+  registration: IRegistration;
+  label: string;
+  assertion: IAssertion;
+}
+
+/**
  * What the server asks before it adds an unlock method, replaces the recovery
  * passphrase or shows a password to the panel: the current recovery passphrase, a
- * passkey's PRF, or - on an unlocked vault only - a code of the authenticator app.
- * The unlock password alone is a proof for showing a password on an unlocked vault
- * and for nothing else.
+ * passkey's PRF, or - on an unlocked vault only - a code of the authenticator app or
+ * a signature of the passkey of Password and passkey. The unlock password alone is a
+ * proof for showing a password on an unlocked vault and for nothing else.
  */
 export type Proof =
   | { current: string }
   | { cred_id: string; prf: string }
   | { code: string }
+  | { assertion: IAssertion }
   | { password: string };
 
 /**
  * A vault request that did not succeed: the vault's own `error`, the text `_call` gives
  * an answer that is not the vault's, or, with status 0, a refusal the page makes
- * before any request. A lost answer is `NoAnswer`; a registration stopped after the
- * browser created the passkey, whatever the cause, is `Unused` (webauthn.ts).
+ * before any request. A lost answer is `NoAnswer`. A registration stopped after the
+ * browser created the passkey is `Unused` (webauthn.ts) when no request stored the
+ * method, and `MaybeAdded` after a 5xx or a lost answer to that request. `short`
+ * is the panel's notification text, which `fit` (webauthn.ts) cuts where a clause
+ * must stay whole; the CLI gets `message`.
  */
 export class VaultError extends Error {
   constructor(
     readonly status: number,
-    message: string
+    message: string,
+    readonly short = message
   ) {
     super(message);
   }
@@ -136,13 +173,13 @@ export class VaultApi {
   constructor(private readonly _settings: ServerConnection.ISettings) {}
 
   /**
-   * True for the reveal window after this tab had a proof accepted: the person at the
-   * screen has just proven, so the entry popup's eye asks no second proof. The window
-   * is the `reveal_seconds` setting, read from the server's status; 0 means every
-   * reveal asks for a proof. An unlock does not start it. Kept by the tab, as the
-   * eye's proof is asked by the tab: the server reads a password for any request on
-   * an unlocked vault (`vault get`). A lock in this tab and a reload of the page end
-   * it. While the system clock reads earlier than that proof, it is false.
+   * True for the reveal window after this tab unlocked the vault or had a proof
+   * accepted: the person at the screen has just proven, so the entry popup's eye asks
+   * no second proof. The window is the `reveal_seconds` setting, read from the server's
+   * status; 0 means every reveal asks for a proof. Kept by the tab, as the eye's proof
+   * is asked by the tab: the server reads a password for any request on an unlocked
+   * vault (`vault get`). A lock in this tab and a reload of the page end it. While the
+   * system clock reads earlier than that proof, it is false.
    */
   get proven(): boolean {
     const since = Date.now() - this._provenAt;
@@ -154,9 +191,10 @@ export class VaultApi {
   }
 
   /**
-   * Rotate the data key now: the entries and the authenticator secret are re-sealed
-   * under a new key. The server takes a passkey or the recovery passphrase (a code
-   * alone holds no key) and needs an unlocked vault.
+   * Rotate the data key now: the entries, the authenticator secret and the public key
+   * of Password and passkey are re-sealed under a new key. The server takes a passkey
+   * with PRF or the recovery passphrase (a code alone and a passkey with no PRF alone
+   * hold no key) and needs an unlocked vault.
    */
   rotate(proof: Proof): Promise<void> {
     return this._proving(this._call('rotate', 'POST', { proof }));
@@ -167,7 +205,9 @@ export class VaultApi {
   }
 
   unlockRecovery(recovery: string): Promise<IStatus> {
-    return this._status(this._call<IStatus>('unlock', 'POST', { recovery }));
+    return this._proving(
+      this._status(this._call<IStatus>('unlock', 'POST', { recovery }))
+    );
   }
 
   /**
@@ -176,15 +216,35 @@ export class VaultApi {
    * takes no code.
    */
   unlockPassword(password: string, code?: string): Promise<IStatus> {
-    return this._status(
-      this._call<IStatus>('unlock', 'POST', { password, code })
+    return this._proving(
+      this._status(this._call<IStatus>('unlock', 'POST', { password, code }))
     );
   }
 
   unlockPasskey(credId: string, prf: string): Promise<IStatus> {
-    return this._status(
-      this._call<IStatus>('unlock', 'POST', { cred_id: credId, prf })
+    return this._proving(
+      this._status(
+        this._call<IStatus>('unlock', 'POST', { cred_id: credId, prf })
+      )
     );
+  }
+
+  /**
+   * Password and passkey: the password, and the passkey's signature over the challenge
+   * `challenge()` gave. The server keeps the key only when the signature verifies.
+   */
+  unlockPair(password: string, assertion: IAssertion): Promise<IStatus> {
+    return this._proving(
+      this._status(
+        this._call<IStatus>('unlock', 'POST', { password, assertion })
+      )
+    );
+  }
+
+  /** A one-use challenge for the passkey of Password and passkey to sign. */
+  async challenge(): Promise<string> {
+    return (await this._call<{ challenge: string }>('challenge', 'POST'))
+      .challenge;
   }
 
   lock(): Promise<void> {
@@ -225,11 +285,31 @@ export class VaultApi {
     return (await this._call<{ value: string }>('generate', 'GET')).value;
   }
 
+  /**
+   * Refuse a wrong recovery passphrase before the steps a proof guards. It changes
+   * nothing and starts no reveal window: the request that acts carries the proof
+   * again, and that request is the accepted proof.
+   */
+  checkRecovery(current: string): Promise<void> {
+    return this._call('proof-check', 'POST', { current });
+  }
+
   /** The server adds the slot only with a proof. */
   addPasskey(slot: IPasskeySlot, proof: Proof): Promise<void> {
     return this._proving(this._call('passkeys', 'POST', { ...slot, proof }));
   }
 
+  /**
+   * Add Password and passkey. The server stores it only for a registration and a
+   * signature of the new passkey, both over the live challenge, and a proof.
+   */
+  addPair(slot: IPairSlot, proof: Proof): Promise<void> {
+    return this._proving(
+      this._call('password-passkey', 'POST', { ...slot, proof })
+    );
+  }
+
+  /** Remove a passkey; the cred_id of Password and passkey removes that method. */
   removePasskey(credId: string): Promise<void> {
     return this._call('passkeys-remove', 'POST', { cred_id: credId });
   }
@@ -260,7 +340,7 @@ export class VaultApi {
     return this._proving(this._call('recovery', 'POST', { recovery, proof }));
   }
 
-  /** When this tab last had a proof accepted; 0 before the first and after a lock. */
+  /** When this tab last unlocked or had a proof accepted; 0 before and after a lock. */
   private _provenAt = 0;
 
   /** The reveal window, from the `reveal_seconds` setting; the server default until read. */
@@ -273,7 +353,7 @@ export class VaultApi {
     return result;
   }
 
-  /** `request`, whose success is an accepted proof of this tab. */
+  /** `request`, whose success is an unlock or an accepted proof of this tab. */
   private async _proving<T>(request: Promise<T>): Promise<T> {
     const result = await request;
     this._provenAt = Date.now();
@@ -330,7 +410,7 @@ export class VaultApi {
           (response.status === 424 ? data?.message : undefined) ??
           (response.status === 404
             ? 'the vault is not loaded on this Jupyter server - restart the server'
-            : `the vault did not answer (HTTP ${response.status}) - reload the page to sign in again or start the server`)
+            : `the vault did not answer (HTTP ${response.status}) - reload the page or start the server`)
       );
     }
     return data as T;

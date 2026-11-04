@@ -19,10 +19,13 @@ import time
 
 import pytest
 
-from jupyterlab_passkey_extension import cli
+from jupyterlab_passkey_extension import cli, relay
 from jupyterlab_passkey_extension.vault import client, handlers, holders, service, totp
 from jupyterlab_passkey_extension.vault import cli as vcli
 from jupyterlab_passkey_extension.vault.store import VaultError
+
+# The fixture `server` replaces the browser step; a test of the page's answer uses this.
+REAL_BROWSER_STEP = client.browser_step
 
 PASS = "correct horse battery staple"
 PRF = base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode()
@@ -65,7 +68,7 @@ def server(vault_env, monkeypatch):
         except VaultError as e:
             raise client.VaultClientError(str(e))
 
-    def browser_step(command, args, label, message, timeout):
+    def browser_step(command, args, label, message, timeout, poll=None):
         calls.append(command)
         steps.append({"command": command, **args})
         if command == client.REGISTER_COMMAND:
@@ -73,6 +76,8 @@ def server(vault_env, monkeypatch):
             # The page sends a proof; here the recovery passphrase.
             svc.add_passkey(f"cred-{n}", "lab.example", "c2FsdA", PRF, args.get("label") or None,
                             {"current": PASS})
+            # The page's answer names the method it stored (`answerCli` in plugin.ts).
+            return {"ok": True, "method": "passkey"}
         elif command == client.UNLOCK_COMMAND:
             if args.get("method") == "choose":
                 # The chooser was answered with the recovery passphrase.
@@ -112,7 +117,9 @@ def ready(server, monkeypatch, capsys):
 
 def test_init_sets_the_recovery_passphrase_and_registers_a_passkey(server, monkeypatch, capsys):
     assert run(monkeypatch, "vault", "init", stdin=PASS + "\n") == 0
-    assert f"vault created at {server.status()['path']};" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert f"vault created at {server.status()['path']};" in err
+    assert "it opens the vault when no other unlock method can" in err
     slots = server.status()["slots"]
     assert [s["type"] for s in slots] == ["recovery", "passkey"]
     assert server.calls == [client.REGISTER_COMMAND]
@@ -142,7 +149,7 @@ def test_a_cancelled_chooser_exits_non_zero_without_a_secret(server, monkeypatch
     run(monkeypatch, "vault", "add", "github/api", stdin=SECRET + "\n")
     run(monkeypatch, "vault", "lock")
 
-    def cancelled(command, args, label, message, timeout):
+    def cancelled(command, args, label, message, timeout, poll=None):
         assert args.get("method") == "choose"
         raise SystemExit("ceremony failed: the unlock was cancelled")
 
@@ -177,43 +184,70 @@ def test_init_at_a_terminal_asks_twice_and_refuses_a_mismatch(server, monkeypatc
     assert server.status()["initialized"] is False
 
 
-def test_a_secret_in_the_browser_asks_once_with_the_twice_toggle(monkeypatch):
-    # A blind terminal prompt has no control to offer, so it asks twice; the
-    # browser dialog has the checkbox, so it opens with one field.
-    seen = {}
-
-    def trigger(command, args, label, message):
-        seen.update({"command": command, "args": args})
-
-    monkeypatch.setattr(vcli._cli, "_trigger", trigger)
+def _dialogs(monkeypatch, *answers):
+    """Answer browser dialogs with `answers`, then PASS, and return the arguments they got."""
+    seen, left = [], iter(answers)
+    monkeypatch.setattr(vcli._cli, "_trigger", lambda command, args, label, message: seen.append(args))
     monkeypatch.setattr(vcli._cli, "_wait", lambda *a, **kw: None)
-    monkeypatch.setattr(vcli.relay, "collect", lambda nonce, kind: PASS)
+    monkeypatch.setattr(vcli.relay, "collect", lambda nonce, kind: next(left, PASS))
     monkeypatch.setattr(vcli.relay, "unstage", lambda nonce, kind: None)
-    a = argparse.Namespace(in_browser=True, timeout=1.0)
-
-    assert vcli._read_secret(a, "Password", twice=True) == PASS
-
-    assert seen["command"] == cli.PASSPHRASE_COMMAND
-    assert seen["args"]["once"] is True
-    assert "twice" not in seen["args"]
+    return seen
 
 
-def test_recovery_in_the_browser_asks_the_new_passphrase_with_the_toggle(ready, monkeypatch):
-    seen = []
+def test_vault_init_in_the_browser_sends_twice(server, monkeypatch):
+    # The frontend reads only `twice`, so a recovery passphrase needs it to get two fields.
+    seen = _dialogs(monkeypatch)
+    assert run(monkeypatch, "vault", "init", "--in-browser", "--no-passkey") == 0
+    assert [(d["prompt"], d["twice"]) for d in seen] == [("Recovery passphrase", True)]
+    assert "once" not in seen[0]
 
-    def trigger(command, args, label, message):
-        seen.append(args)
 
-    monkeypatch.setattr(vcli._cli, "_trigger", trigger)
-    monkeypatch.setattr(vcli._cli, "_wait", lambda *a, **kw: None)
-    answers = iter([PASS, "another passphrase"])
-    monkeypatch.setattr(vcli.relay, "collect", lambda nonce, kind: next(answers))
-    monkeypatch.setattr(vcli.relay, "unstage", lambda nonce, kind: None)
+def test_vault_recovery_in_the_browser_sends_twice_for_the_new_passphrase_only(ready, monkeypatch):
+    seen = _dialogs(monkeypatch)
     assert run(monkeypatch, "vault", "recovery", "--in-browser") == 0
-    # Both prompts are one field with the "Type it twice" toggle, as every secret.
-    assert seen[0]["once"] is True
-    assert seen[1]["once"] is True
-    assert "twice" not in seen[1]
+    assert [(d["prompt"], d["twice"]) for d in seen] == [
+        ("Current recovery passphrase", False),
+        ("New recovery passphrase", True),
+    ]
+
+
+@pytest.mark.parametrize("argv", [["add", "github/new"], ["edit", "github/api", "--password"]])
+def test_an_entry_value_in_the_browser_has_one_field(ready, monkeypatch, argv):
+    # The blind prompt asks an entry value twice; the dialog of the same call has one field.
+    seen = _dialogs(monkeypatch)
+    assert run(monkeypatch, "vault", *argv, "--in-browser") == 0
+    assert [(d["prompt"], d["twice"]) for d in seen] == [("Password", False)]
+
+
+def test_an_unlock_in_the_browser_has_one_field(ready, monkeypatch):
+    run(monkeypatch, "vault", "lock")
+    seen = _dialogs(monkeypatch)
+    assert run(monkeypatch, "vault", "unlock", "--recovery", "--in-browser") == 0
+    assert [(d["prompt"], d["twice"]) for d in seen] == [("Recovery passphrase", False)]
+
+
+def test_a_password_unlock_and_a_proof_in_the_browser_have_one_field(ready, monkeypatch):
+    step = int(time.time()) // totp.STEP
+    ready.add_mfa(UNLOCK, APP_KEY, totp.code(APP, step), {"current": PASS})
+    run(monkeypatch, "vault", "lock")
+    seen = _dialogs(monkeypatch, UNLOCK, totp.code(APP, step + 1))
+    assert run(monkeypatch, "vault", "unlock", "--password", "--in-browser") == 0
+    assert run(monkeypatch, "vault", "rotate", "--in-browser") == 0
+    assert [(d["prompt"], d["twice"]) for d in seen] == [
+        ("Unlock password", False),
+        ("Code of the authenticator app", False),
+        ("Recovery passphrase", False),
+    ]
+
+
+@pytest.mark.parametrize("argv", [["add", "github/new"], ["edit", "github/api", "--password"]])
+def test_an_entry_value_at_a_blind_prompt_asks_twice_and_refuses_a_mismatch(ready, monkeypatch, argv):
+    answers = iter([SECRET, SECRET + "x"])
+    monkeypatch.setattr(vcli.getpass, "getpass", lambda prompt: next(answers))
+    monkeypatch.setattr(sys, "stdin", FakeStdin("", tty=True))
+    with pytest.raises(SystemExit, match="differ"):
+        run(monkeypatch, "vault", *argv)
+    assert next(answers, None) is None
 
 
 def test_lock_and_unlock_with_passkey_and_recovery(ready, monkeypatch, capsys):
@@ -537,6 +571,12 @@ def test_import_from_pass_cli_says_why_it_stopped(ready, pass_cli, monkeypatch, 
     assert set(_names(monkeypatch, capsys)) == {"github/api"}
 
 
+def test_a_pass_cli_master_password_in_the_browser_has_one_field(ready, pass_cli, monkeypatch):
+    seen = _dialogs(monkeypatch, "old-master")
+    assert run(monkeypatch, "vault", "import", "--pass-cli", "--in-browser") == 0
+    assert [(d["prompt"], d["twice"]) for d in seen] == [("pass-cli master password", False)]
+
+
 # --------------------------------------------------------------------------- #
 # copy, show, exec
 # --------------------------------------------------------------------------- #
@@ -737,6 +777,31 @@ def test_passkey_list_and_remove(ready, monkeypatch, capsys):
     assert [s["type"] for s in ready.status()["slots"]] == ["recovery"]
 
 
+def test_password_and_passkey_in_status_passkey_list_rm_and_unlock(server, monkeypatch, capsys):
+    from jupyterlab_passkey_extension.tests.test_vault_webauthn import (ORIGIN, PAIR_PASSWORD,
+                                                                       add_pair)
+    assert run(monkeypatch, "vault", "init", "--no-passkey", stdin=PASS + "\n") == 0
+    run(monkeypatch, "vault", "status")
+    assert "password and passkey: none" in capsys.readouterr().out
+    add_pair(server)
+    slot = [s for s in server.status()["slots"] if s["type"] == "password-passkey"][0]
+    run(monkeypatch, "vault", "status")
+    assert f"password and passkey: added {slot['created']} at {ORIGIN}" in capsys.readouterr().out
+    run(monkeypatch, "vault", "passkey", "list")
+    assert capsys.readouterr().out == "\t".join(
+        (slot["cred_id"], "laptop", "lab.example", slot["created"])) + "\n"
+    # --password on a vault whose only unlock password goes with a passkey: the tab asks
+    # for it with the passkey, so the terminal reads no secret.
+    run(monkeypatch, "vault", "lock")
+    monkeypatch.setattr(vcli.getpass, "getpass", lambda prompt: pytest.fail("a secret was asked"))
+    monkeypatch.setattr(sys, "stdin", FakeStdin(PAIR_PASSWORD + "\n", tty=True))
+    run(monkeypatch, "vault", "unlock", "--password")
+    assert server.steps[-1] == {"command": client.UNLOCK_COMMAND, "method": "choose"}
+    assert sys.stdin.read() == PAIR_PASSWORD + "\n"
+    run(monkeypatch, "vault", "passkey", "rm", "--cred-id", slot["cred_id"])
+    assert [s["type"] for s in server.status()["slots"]] == ["recovery"]
+
+
 def test_passkey_remove_needs_an_unlocked_vault(ready, monkeypatch):
     run(monkeypatch, "vault", "lock")
     with pytest.raises(SystemExit, match="the vault is locked - run `jupyterlab-passkey vault unlock`"):
@@ -753,6 +818,21 @@ def test_passkey_add_needs_no_unlock(ready, monkeypatch):
     s = ready.status()
     assert s["unlocked"] is False
     assert [x["label"] for x in s["slots"] if x["type"] == "passkey"] == ["lab.example", "Work laptop"]
+
+
+@pytest.mark.parametrize("method, said", [("password-passkey", "password and passkey added"),
+                                          ("passkey", "passkey added")])
+def test_passkey_add_names_the_method_the_page_stored(ready, monkeypatch, capsys, method, said):
+    # The page's answer through the result relay: a passkey with no PRF is stored as
+    # Password and passkey, and the line names that method.
+    def trigger(command_id, args_obj, label, message, seconds=None):
+        nonce = args_obj["nonce"]
+        relay.stage(nonce, "json", json.dumps({"nonce": nonce, "ok": True, "method": method}))
+
+    monkeypatch.setattr(cli, "_trigger", trigger)
+    monkeypatch.setattr(vcli, "browser_step", REAL_BROWSER_STEP)
+    assert run(monkeypatch, "vault", "passkey", "add") == 0
+    assert capsys.readouterr().err == said + "\n"
 
 
 def test_passkey_add_without_a_vault_says_run_init(server, monkeypatch):
@@ -835,6 +915,14 @@ def test_a_server_without_the_vault_says_to_restart_it(monkeypatch):
         client.request("GET", "status")
 
 
+def test_an_answer_that_is_not_json_is_one_line(monkeypatch):
+    # A proxy or a login page can answer 200 with HTML; a wait reads it as a failed read.
+    monkeypatch.setattr(cli, "_found", ("http://127.0.0.1:1", "token"))
+    monkeypatch.setattr(cli._LOOPBACK, "open", lambda req, timeout: _Answer(b"<html>login</html>"))
+    with pytest.raises(client.VaultClientError, match="vault/status is not JSON"):
+        client.request("GET", "status")
+
+
 def test_a_refused_proof_keeps_the_found_server(monkeypatch):
     # The vault's own 403 (a wrong proof) carries an error; only a refused token -
     # a new one after a restart - makes the client look the server up again.
@@ -864,12 +952,16 @@ def test_recovery_needs_the_current_passphrase_not_an_unlock(ready, monkeypatch)
         run(monkeypatch, "vault", "recovery", stdin="another passphrase\n")
 
 
+NEXT_STEP = (r"vault exists without a passkey - run `jupyterlab-passkey vault passkey add`, "
+             r"or add Password and authenticator app under Vault settings and security \(the cog\)")
+
+
 def test_init_names_the_next_step_when_the_passkey_step_fails(server, monkeypatch):
     def refused(command, args, label, message, timeout):
         raise client.VaultClientError("the passkey request was cancelled or not allowed")
 
     monkeypatch.setattr(vcli, "browser_step", refused)
-    with pytest.raises(SystemExit, match="vault exists without a passkey - run `jupyterlab-passkey vault passkey add`"):
+    with pytest.raises(SystemExit, match=NEXT_STEP):
         run(monkeypatch, "vault", "init", stdin=PASS + "\n")
     assert server.status()["initialized"]
 
@@ -879,7 +971,7 @@ def test_init_names_the_next_step_when_the_passkey_step_is_interrupted(server, m
         raise KeyboardInterrupt
 
     monkeypatch.setattr(vcli, "browser_step", interrupted)
-    with pytest.raises(SystemExit, match="vault exists without a passkey - run `jupyterlab-passkey vault passkey add`"):
+    with pytest.raises(SystemExit, match=NEXT_STEP):
         run(monkeypatch, "vault", "init", stdin=PASS + "\n")
     assert server.status()["initialized"]
 
@@ -945,6 +1037,62 @@ def test_a_missing_vault_asks_once_and_creates_it_on_yes(server, monkeypatch):
     assert asked == [f"No vault at {server.status()['path']}. Create it now? [y/N] "]
     assert server.status()["initialized"] is True
     assert server.calls == [client.REGISTER_COMMAND]
+
+
+def test_the_missing_vault_offer_waits_for_the_passkey_as_init_does(server, monkeypatch):
+    waits = []
+    stub = vcli.browser_step
+
+    def browser_step(command, args, label, message, timeout, poll=None):
+        waits.append((command, timeout))
+        return stub(command, args, label, message, timeout)
+
+    monkeypatch.setattr(vcli, "browser_step", browser_step)
+    answers = iter([PASS, PASS])
+    monkeypatch.setattr(vcli.getpass, "getpass", lambda prompt: next(answers))
+    monkeypatch.setattr(sys, "stdin", FakeStdin("", tty=True))
+    monkeypatch.setattr(sys, "stdout", FakeTty())
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    # `--timeout` is the wait for `list`'s click; the passkey step of the set-up takes a proof
+    # and a name, so it waits 600 s whatever `--timeout` is.
+    assert run(monkeypatch, "vault", "list", "--timeout", "30") == 0
+    assert waits == [(client.REGISTER_COMMAND, vcli.REGISTER_TIMEOUT)]
+
+
+# The commands that offer the set-up, as the documents name them, with a run of each;
+# `git migrate` offers it too (test_vault_git). Then the ones that refuse it (ruling 13).
+OFFERS = [("list", ("list",)), ("get", ("get", "x")), ("add", ("add", "x")),
+          ("edit", ("edit", "x", "-u", "y")), ("rm", ("rm", "x")), ("copy", ("copy", "x")),
+          ("show", ("show", "x")), ("exec", ("exec", "--env", "A=x", "--", "true")),
+          ("import", ("import", "FILE")), ("passkey rm", ("passkey", "rm", "--cred-id", "x"))]
+REFUSES = [("unlock", ("unlock",)), ("lock", ("lock",)),
+           ("import --pass-cli", ("import", "--pass-cli")), ("passkey add", ("passkey", "add")),
+           ("recovery", ("recovery",)), ("rotate", ("rotate",))]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("name, argv, offers", [(*row, True) for row in OFFERS]
+                         + [(*row, False) for row in REFUSES], ids=lambda value: str(value))
+def test_the_set_up_offer_comes_with_the_commands_the_documents_name(name, argv, offers, server,
+                                                                     tmp_path, monkeypatch):
+    entries = tmp_path / "entries.json"
+    entries.write_text('[{"name": "x", "password": "y"}]')
+    argv = tuple(str(entries) if word == "FILE" else word for word in argv)
+    monkeypatch.setattr(sys, "stdin", FakeStdin("", tty=True))
+    monkeypatch.setattr(sys, "stdout", FakeTty())
+    asked = []
+    monkeypatch.setattr("builtins.input", lambda prompt: asked.append(prompt) or "n")
+    with pytest.raises(SystemExit, match="no vault"):
+        run(monkeypatch, "vault", *argv)
+    assert bool(asked) is offers
+    assert server.status()["initialized"] is False
+
+    for doc in ("docs/cli-reference.md", "README.md"):
+        line = next(line for line in (ROOT / doc).read_text().splitlines()
+                    if line.startswith(("- **Missing vault** - ", "- **Vault on demand** - ")))
+        offering, refusing = re.match(r"- \*\*[^*]+\*\* - (.+?) offer .*?[.;] (.+?) offer nothing",
+                                      line).groups()
+        assert f"`{name}`" in (offering if offers else refusing), doc
 
 
 def test_a_missing_vault_is_left_alone_on_no(server, monkeypatch):
@@ -1047,3 +1195,11 @@ def test_every_vault_subcommand_help_has_a_description_and_examples(monkeypatch,
         description = text.split("\n\n")[1]
         examples = text.partition("\nexamples:\n")[2]
         assert description.strip() and "jupyterlab-passkey vault " in examples, w
+
+
+def test_git_help_says_a_store_value_out_of_reach_gets_its_line(monkeypatch, capsys):
+    text = " ".join(_help(monkeypatch, capsys, "vault", "git", "install").split())
+    assert "install prints the value as written and the git config command that restores" in text
+    text = " ".join(_help(monkeypatch, capsys, "vault", "git", "migrate").split())
+    assert "print it as written with the git config command that restores it" in text
+    assert "only a plain path, ~ and a set variable" in text

@@ -45,6 +45,12 @@ _KEY_PREFIX = "jlab-passkey:"
 # its TTL, which is the whole point over the file that lingers until reboot.
 _TTL = {"json": 300, "pass": 300, "secret": 900, "code": 900, "cancel": 60}
 
+# Seconds a possession keyring lives after _keyctl_possess last reached it. A user
+# namespace that has ended leaves its keyring in a session keyring that can outlive it
+# by months, and each one counts towards the uid's key quota. A process still running
+# makes its keyring again at its next refused call.
+_POSSESS_TTL = 24 * 3600
+
 # A `show` code is a short human-readable value (an authenticator code, a pairing
 # code), and rendering it to a PNG costs time and memory that grow with its length
 # on the server's event loop. Cap it so a mistaken `show` of a large file cannot
@@ -89,8 +95,16 @@ def _say(message: str) -> None:
     # the relay reference. Chatter must never land there.
     if stderr is None:
         return
+    buffer = getattr(stderr, "buffer", None)
     try:
-        print(message, file=stderr)
+        if buffer is not None and any("\udc80" <= char <= "\udcff" for char in message):
+            # A path or git config value read with surrogateescape holds a byte that is
+            # not UTF-8: it goes out as that byte, so a printed command names the same file.
+            stderr.flush()
+            buffer.write(os.fsencode(message) + b"\n")
+            buffer.flush()
+        else:
+            print(message, file=stderr)
     except (OSError, ValueError):
         # ValueError: something closed it.
         sys.stderr = None
@@ -206,6 +220,20 @@ def write_relay(nonce, filename, content):
         raise
 
 
+# The one shared unlock of this user: vault/client.py writes it and holds no secret in
+# it. Under the 16 characters of a nonce, so no relay can take the name.
+UNLOCK_WAIT = "unlock-wait.json"
+
+
+def end_unlock_wait():
+    """Forget the shared unlock: the server calls this on every unlock, the one event
+    that ends a wait or a refusal whichever client caused it. Never fails an unlock."""
+    try:
+        os.unlink(os.path.join(relay_dir(), UNLOCK_WAIT))
+    except OSError:
+        pass
+
+
 def _shm_path(nonce, kind):
     """The guarded relay path for a read or write. Raises on a squatted dir."""
     return os.path.join(ensure_relay_dir(), f"{nonce}.{kind}")
@@ -287,6 +315,41 @@ def _keyctl(args, input_bytes=None):
     )
 
 
+def _keyctl_possess():
+    """Give this session possession of @u, which `timeout` and `pipe` need.
+
+    Possession is a path from the session keyring to the key. The path runs through a
+    keyring of this user namespace's own, never a direct link of @u in @s: a session
+    keyring can be shared across user namespaces (a sandboxed lab inherits it), each
+    namespace has its own @u named `_uid.<uid>`, and a keyring holds one key per name,
+    so a direct link made in one namespace replaces another's and takes its keys away.
+    Best-effort: where keyrings are refused this fails too, and the call that needs
+    possession decides.
+    """
+    user = _keyctl(["id", "@u"])
+    if user.returncode != 0:
+        return
+    name = f"{_KEY_PREFIX}possess.{user.stdout.decode().strip()}"
+    ring = _keyctl(["search", "@s", "keyring", name])
+    if ring.returncode != 0:
+        ring = _keyctl(["newring", name, "@s"])
+    if ring.returncode == 0:
+        ring_id = ring.stdout.decode().strip()
+        _keyctl(["link", "@u", ring_id])
+        _keyctl(["timeout", ring_id, str(_POSSESS_TTL)])
+
+
+def _keyctl_possessed(args):
+    """Run a keyctl call that names a key by number, which the kernel allows only to a
+    possessor. A refusal restores possession once and tries again: the path can be
+    missing, not only replaced, and this process probes only at its start."""
+    r = _keyctl(args)
+    if r.returncode != 0 and b"Permission denied" in r.stderr:
+        _keyctl_possess()
+        r = _keyctl(args)
+    return r
+
+
 def _keyctl_search(desc):
     """Return the key id as a string, or None if no such key on @u."""
     r = _keyctl(["search", "@u", "user", desc])
@@ -318,7 +381,7 @@ def _keyctl_stage(nonce, kind, content, ttl=None):
     # no-expiry secret behind. The padd->timeout pair is not atomic; an interrupt
     # between them is the one residue this cannot close, and it is no worse than the
     # shm file the tmpfs bounds anyway.
-    t = _keyctl(["timeout", kid, str(ttl if ttl is not None else _TTL[kind])])
+    t = _keyctl_possessed(["timeout", kid, str(ttl if ttl is not None else _TTL[kind])])
     if t.returncode != 0:
         _keyctl(["unlink", kid, "@u"])
         raise OSError(f"keyctl timeout failed: {t.stderr.decode().strip()}")
@@ -329,7 +392,7 @@ def _keyctl_collect(nonce, kind):
     if kid is None:
         return None
     try:
-        r = _keyctl(["pipe", kid])
+        r = _keyctl_possessed(["pipe", kid])
         return r.stdout.decode("utf-8") if r.returncode == 0 else None
     finally:
         # Destroy the key on any read ATTEMPT, not just a successful one - the same
@@ -368,8 +431,8 @@ def _explain_keyctl_failure(step, stderr):
     if "Permission denied" in msg:
         # A user key grants READ to the POSSESSOR only (perm mask 3f010000: the owning
         # uid gets view, not read). A process possesses a key when it is reachable from
-        # its session keyring, so where @u is not linked into @s the add and the search
-        # both succeed and only the read is refused - which is what makes this one look
+        # its session keyring, so where @s has no path to @u the add and the search both
+        # succeed and only the read is refused - which is what makes this one look
         # like a working keyctl right up to the moment it matters.
         return (
             f"the key could not be read at `{step}` ({msg}) - this session does not "
@@ -397,12 +460,11 @@ def _keyctl_probe():
         return False
     # Possess @u before testing it. Possession is what the keyring permission check
     # actually reads, each _keyctl call is its own process, and possession reaches a
-    # child only through the SESSION keyring it inherits - so on a session whose @u is
-    # not linked in (a fresh login, a service, anything under setsid) `search @u` fails
-    # even though `padd @u` just succeeded, and the backend silently downgrades to the
-    # swappable file relay. Best-effort: where keyrings are refused outright this fails
-    # too, and the round-trip below is still the thing that decides.
-    _keyctl(["link", "@u", "@s"])
+    # child only through the SESSION keyring it inherits - so on a session with no path
+    # to @u (a fresh login, a service, anything under setsid) `pipe` fails even though
+    # `padd @u` and `search @u` just succeeded, and the backend silently downgrades to
+    # the swappable file relay. The round-trip below is still the thing that decides.
+    _keyctl_possess()
     desc = f"{_KEY_PREFIX}probe.{os.getpid()}"
     try:
         r = _keyctl(["padd", "user", desc, "@u"], input_bytes=b"probe")
@@ -419,7 +481,7 @@ def _keyctl_probe():
                 _probe_detail = _explain_keyctl_failure("search", s.stderr)
                 return False
             found = s.stdout.decode().strip()
-            piped = _keyctl(["pipe", found])
+            piped = _keyctl_possessed(["pipe", found])
             if piped.returncode != 0:
                 _probe_detail = _explain_keyctl_failure("pipe", piped.stderr)
                 return False

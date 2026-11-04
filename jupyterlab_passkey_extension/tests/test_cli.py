@@ -218,6 +218,14 @@ def test_trigger_keeps_the_button_up_and_pushes_immediately(posted):
     assert payload["immediate"] is True
 
 
+def test_trigger_names_a_wait_with_no_end_as_null(posted):
+    # The notifications ingest refuses Infinity and NaN, which `--timeout inf` would send.
+    cli._trigger("passkey:vault-unlock", {"nonce": "n" * 20}, "Unlock vault", "msg",
+                 seconds=float("inf"))
+
+    assert posted[0]["payload"]["data"] == {"command": "passkey:vault-unlock", "seconds": None}
+
+
 def test_trigger_omits_auth_header_when_no_token(posted, monkeypatch):
     monkeypatch.setattr(cli, "_server", lambda: ("http://127.0.0.1:8888", None))
     cli._trigger("passkey:run", {"nonce": "n" * 20}, "Approve", "msg")
@@ -248,7 +256,7 @@ def test_a_404_trigger_names_the_missing_extension(monkeypatch):
 
 
 def test_get_prints_prf_and_consumes_the_relay(relay_dir, capsys, monkeypatch, no_wait):
-    def fake_trigger(command_id, args_obj, label, message):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
         (relay_dir / f"{args_obj['nonce']}.json").write_text(
             json.dumps({"nonce": args_obj["nonce"], "ok": True, "cred_id": "CID", "prf": "PRFVALUE"})
         )
@@ -264,7 +272,7 @@ def test_get_prints_prf_and_consumes_the_relay(relay_dir, capsys, monkeypatch, n
 
 
 def test_get_without_salt_prints_cred_id_not_prf(relay_dir, capsys, monkeypatch, no_wait):
-    def fake_trigger(command_id, args_obj, label, message):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
         assert "prf_salt" not in args_obj
         (relay_dir / f"{args_obj['nonce']}.json").write_text(
             json.dumps({"nonce": args_obj["nonce"], "ok": True, "cred_id": "CID"})
@@ -281,7 +289,7 @@ def test_get_without_salt_prints_cred_id_not_prf(relay_dir, capsys, monkeypatch,
 def test_get_with_salt_fails_loudly_when_no_prf_comes_back(relay_dir, monkeypatch, no_wait):
     # prf_enabled lies on Windows Hello, so the get is authoritative - it must not
     # silently print an empty value that a caller would feed into key derivation.
-    def fake_trigger(command_id, args_obj, label, message):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
         (relay_dir / f"{args_obj['nonce']}.json").write_text(
             json.dumps({"nonce": args_obj["nonce"], "ok": True, "cred_id": "CID"})
         )
@@ -301,7 +309,7 @@ def test_an_ok_relay_without_cred_id_answers_with_a_line_not_a_keyerror(
 ):
     # The server writes any authenticated body verbatim, so ok:true with no cred_id is
     # reachable - a malformed writer, not a KeyError of ours.
-    def fake_trigger(command_id, args_obj, label, message):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
         (relay_dir / f"{args_obj['nonce']}.json").write_text(
             json.dumps({"nonce": args_obj["nonce"], "ok": True})
         )
@@ -313,7 +321,7 @@ def test_an_ok_relay_without_cred_id_answers_with_a_line_not_a_keyerror(
 
 
 def test_failed_ceremony_exits_with_the_error(relay_dir, monkeypatch, no_wait):
-    def fake_trigger(command_id, args_obj, label, message):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
         (relay_dir / f"{args_obj['nonce']}.json").write_text(
             json.dumps({"nonce": args_obj["nonce"], "ok": False, "error": "not-allowed"})
         )
@@ -327,7 +335,7 @@ def test_failed_ceremony_exits_with_the_error(relay_dir, monkeypatch, no_wait):
 def test_rp_id_mismatch_gives_an_actionable_message(relay_dir, monkeypatch, no_wait):
     # The URL-mismatch case must not surface as a bare code: the caller can fix it, but
     # only if told it is --rp-id vs the tab URL, not "rp-id-mismatch".
-    def fake_trigger(command_id, args_obj, label, message):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
         (relay_dir / f"{args_obj['nonce']}.json").write_text(
             json.dumps(
                 {"nonce": args_obj["nonce"], "ok": False, "error": "rp-id-mismatch"}
@@ -343,7 +351,7 @@ def test_rp_id_mismatch_gives_an_actionable_message(relay_dir, monkeypatch, no_w
 def test_create_prints_cred_id_and_sends_a_user(relay_dir, capsys, monkeypatch, no_wait):
     seen = {}
 
-    def fake_trigger(command_id, args_obj, label, message):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
         seen.update(args_obj)
         (relay_dir / f"{args_obj['nonce']}.json").write_text(
             json.dumps({"nonce": args_obj["nonce"], "ok": True, "cred_id": "NEWCID", "prf_enabled": False})
@@ -368,7 +376,7 @@ def test_ceremony_under_forced_broken_keyctl_exits_one_line_not_a_traceback(monk
     monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
     monkeypatch.setattr(cli.relay, "_backend_cache", None)
     monkeypatch.setattr(cli.relay, "_keyctl_probe", lambda: False)
-    monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: None)
+    monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m, seconds=None: None)
 
     with pytest.raises(SystemExit) as exc:
         cli.cmd_get(_ns(rp_id="h", cred_id="CID", prf_salt=None, timeout=1.0))
@@ -475,7 +483,7 @@ def test_passphrase_asks_once_by_default(relay_dir, monkeypatch, no_wait):
     monkeypatch.setattr(cli, "_trigger", fake_trigger)
     cli.cmd_passphrase(_ns(prompt=None, twice=False, timeout=1.0))
 
-    # One entry is the dialog's own default, toggle and all.
+    # One entry is the dialog's own default.
     assert "once" not in seen
     assert "twice" not in seen
 
@@ -1003,7 +1011,7 @@ def test_nonces_satisfy_the_server_guard(relay_dir, monkeypatch, no_wait):
     guard = NONCE_RE
     nonces = []
 
-    def fake_trigger(command_id, args_obj, label, message):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
         nonces.append(args_obj["nonce"])
         (relay_dir / f"{args_obj['nonce']}.json").write_text(
             json.dumps({"nonce": args_obj["nonce"], "ok": True, "cred_id": "C"})
@@ -1342,7 +1350,7 @@ def test_a_relay_that_lands_as_we_give_up_is_not_left_on_disk(relay_dir, monkeyp
     nonce = "n" * 20
     relay_file = relay_dir / f"{nonce}.json"
 
-    def wait_then_strand(nonce, kind, timeout, on_timeout):
+    def wait_then_strand(nonce, kind, timeout, on_timeout, poll=None):
         # The relay lands, then we give up on it - the exact ordering that stranded it.
         relay_file.write_text(json.dumps({"ok": True, "prf": "KEY_MATERIAL"}))
         raise SystemExit("no relay")
@@ -1366,7 +1374,7 @@ def test_a_base64url_value_starting_with_a_dash_survives_argv(relay_dir, capsys,
     """
     seen = {}
 
-    def fake_trigger(command_id, args_obj, label, message):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
         seen.update(args_obj)
         (relay_dir / f"{args_obj['nonce']}.json").write_text(
             json.dumps({"nonce": args_obj["nonce"], "ok": True, "cred_id": "-CID", "prf": "PRFVALUE"})
@@ -1390,7 +1398,7 @@ def test_the_equals_form_still_parses(relay_dir, capsys, monkeypatch, no_wait):
     """The glue must not double-handle a value the caller already attached with "=" ."""
     seen = {}
 
-    def fake_trigger(command_id, args_obj, label, message):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
         seen.update(args_obj)
         (relay_dir / f"{args_obj['nonce']}.json").write_text(
             json.dumps({"nonce": args_obj["nonce"], "ok": True, "cred_id": "CID", "prf": "P"})
@@ -1668,7 +1676,7 @@ needs_keyctl = pytest.mark.skipif(
 def test_get_on_keyctl_prints_prf_and_consumes_the_key(capsys, monkeypatch, no_wait):
     seen = {}
 
-    def fake_trigger(command_id, args_obj, label, message):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
         seen.update(args_obj)
         relay.stage(args_obj["nonce"], "json", json.dumps(
             {"nonce": args_obj["nonce"], "ok": True, "cred_id": "CID", "prf": "PRFVALUE"}))

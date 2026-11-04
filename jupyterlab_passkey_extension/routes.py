@@ -73,7 +73,7 @@ class PasskeyResultHandler(APIHandler):
 class PasskeyPassphraseHandler(APIHandler):
     """Relay a passphrase captured in the browser to a local client.
 
-    The frontend dialog collects the passphrase (entered twice, confirmed to
+    The frontend dialog collects the passphrase (one field, or two that must
     match there) and POSTs it here; it is staged raw - no JSON envelope, no
     trailing newline - and the CLI prints the consumer a scheme-prefixed
     reference (`keyctl:...` or `file:...`) that resolves to the value directly.

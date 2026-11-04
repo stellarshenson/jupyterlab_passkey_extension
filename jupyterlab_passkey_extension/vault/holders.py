@@ -141,7 +141,7 @@ class KeyctlHolder(Holder):
 
     @classmethod
     def unusable_reason(cls):
-        # The relay's probe links @u into the session keyring first, then runs a real
+        # The relay's probe gives this session possession of @u first, then runs a real
         # add/search/read round-trip - a present binary proves nothing.
         if relay._keyctl_probe():
             return None
@@ -152,7 +152,7 @@ class KeyctlHolder(Holder):
         if r.returncode != 0:
             raise OSError(f"keyctl padd failed: {r.stderr.decode(errors='replace').strip()}")
         kid = r.stdout.decode().strip()
-        t = relay._keyctl(["timeout", kid, str(ttl)])
+        t = relay._keyctl_possessed(["timeout", kid, str(ttl)])
         if t.returncode != 0:
             # A key with no expiry would hold the data key until logout.
             relay._keyctl(["unlink", kid, "@u"])
@@ -160,6 +160,14 @@ class KeyctlHolder(Holder):
 
     def put(self, vault_id, key, ttl):
         _check(key, ttl)
+        # Before the clear: an unlock that cannot hold its key must not lock an open vault.
+        # A read of the held key, not the probe: a test key needs a free key in the quota,
+        # and the clear frees two.
+        held = relay._keyctl_search(_key_desc(vault_id))
+        if held is not None:
+            r = relay._keyctl_possessed(["pipe", held])
+            if b"Permission denied" in r.stderr:
+                raise OSError(relay._explain_keyctl_failure("pipe", r.stderr))
         self.clear(vault_id)
         try:
             self._add(_key_desc(vault_id), key, ttl)
@@ -172,7 +180,7 @@ class KeyctlHolder(Holder):
         kid = relay._keyctl_search(desc)
         if kid is None:
             return None
-        r = relay._keyctl(["pipe", kid])
+        r = relay._keyctl_possessed(["pipe", kid])
         return r.stdout if r.returncode == 0 else None
 
     def get(self, vault_id):
@@ -192,7 +200,9 @@ class KeyctlHolder(Holder):
     def remaining(self, vault_id):
         if relay._keyctl_search(_key_desc(vault_id)) is None:
             return None
-        return _seconds_left(self._read(_expiry_desc(vault_id)))
+        # Read, not only found: a key this session cannot read is not an open vault.
+        expiry = self._read(_expiry_desc(vault_id))
+        return None if expiry is None else _seconds_left(expiry)
 
 
 # --------------------------------------------------------------------------- #

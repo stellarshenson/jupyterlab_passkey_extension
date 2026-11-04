@@ -2,14 +2,15 @@
 
 ## Vault
 
-The Jupyter server holds one encrypted file that the panel, the CLI and Python use through its authenticated API, unlocked with a passkey, an unlock password plus authenticator code, or the recovery passphrase; the design is in [docs/design-vault.md](design-vault.md).
+The Jupyter server holds one encrypted file that the panel, the CLI and Python use through its authenticated API, unlocked with a passkey, an unlock password plus authenticator code, an unlock password plus a passkey with no PRF, or the recovery passphrase; the design is in [docs/design-vault.md](design-vault.md).
 
 - **Encryption** - every entry, names included, is one AES-256-GCM ciphertext under a random 32-byte data key; the data key is sealed under a random 32-byte root key, and every keyslot wraps that root key with `HKDF(PRF)` or `Argon2id` (m=65536 KiB, t=3, p=1), so any slot opens the root and the root opens the data key; `Scrypt` (n=2^17, r=8, p=1) opens only older recovery and password slots, which upgrade on their next unlock; any recovery or password slot this build writes, at init, at a recovery change or at an unlock upgrade, is Argon2id and an older build cannot open it, while passkey slots remain readable
-- **Rotation** - a passkey or the current recovery passphrase re-seals the entries and the authenticator secret under a new random data key and discards the previous one; an unlock rotates the data key automatically once `rotate_days` has passed, and a code alone cannot rotate
+- **Rotation** - a passkey with PRF or the current recovery passphrase re-seals the entries, the authenticator secret and the public key of a passkey with no PRF under a new random data key and discards the previous one; an unlock rotates the data key automatically once `rotate_days` has passed, and a code alone cannot rotate
 - **Unlock** - any slot unwraps the root key, which opens the data key, and the recovery passphrase is mandatory
 - **Authenticator code** - the code is a server check that takes no part in encryption, so the file and the unlock password alone decrypt
+- **Passkey with no PRF** - it cannot hold a vault key. It works with a new unlock password of its own: the password decrypts, and the server checks the passkey. The file and that password alone decrypt, with no passkey
 - **File** - `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` (`~/.local/share/...`), mode `0600`, path set by `JLAB_PASSKEY_VAULT`
-- **Hostnames** - a passkey opens the vault only from its hostname or a subdomain; on another host unlock with the unlock password and an authenticator code, or the recovery passphrase
+- **Hostnames** - a passkey opens the vault only from its hostname or a subdomain; on another host unlock with the unlock password and an authenticator code, or the recovery passphrase; Password and passkey works only at the exact address it was added at
 
 ### Configuration
 
@@ -24,12 +25,12 @@ The four vault policy keys are organisation-controlled: the server administrator
 }
 ```
 
-| Setting               | Default | Range     | Effect                                                                                                      |
-| --------------------- | ------- | --------- | ----------------------------------------------------------------------------------------------------------- |
-| `unlock_minutes`      | 30      | 1 to 1440 | minutes the server holds the key after an unlock; 30 is the NIST SP 800-63B AAL2 idle limit                 |
-| `password_min_length` | 12      | 8 to 128  | fewest characters of an unlock password                                                                     |
-| `reveal_seconds`      | 60      | 0 to 3600 | seconds a tab skips the proof after a proof; 0 asks at every reveal and an unlock does not start the window |
-| `rotate_days`         | 365     | 0 to 3650 | days a data key serves before an unlock rotates it; 0 turns automatic rotation off                          |
+| Setting               | Default | Range     | Effect                                                                                       |
+| --------------------- | ------- | --------- | -------------------------------------------------------------------------------------------- |
+| `unlock_minutes`      | 30      | 1 to 1440 | minutes the server holds the key after an unlock; 30 is the NIST SP 800-63B AAL2 idle limit  |
+| `password_min_length` | 12      | 8 to 128  | fewest characters of an unlock password                                                      |
+| `reveal_seconds`      | 60      | 0 to 3600 | seconds a tab skips the proof after an unlock or a proof in that tab; 0 asks at every reveal |
+| `rotate_days`         | 365     | 0 to 3650 | days a data key serves before an unlock rotates it; 0 turns automatic rotation off           |
 
 Only the `sidebar` setting remains in the Settings Editor.
 
@@ -38,12 +39,16 @@ Only the `sidebar` setting remains in the Settings Editor.
 The Vault panel is in the right sidebar. The `sidebar` setting places it on the left.
 
 - **Unlock and list** - creates and unlocks the vault, lists entries by category with how long ago each key was last used, kept current while the panel is open: a reveal updates its row at once and a use from another client shows within 15 s, shows nothing while locked, and opens a row read-only with Edit, Delete and Close
+- **Set-up** - Create vault asks the recovery passphrase, then offers Passkey, Password and authenticator app, and Later. That passphrase is the proof for either method and is not asked again. A step that fails or is cancelled opens the choice again with the reason, and Later leaves the vault created and unlocked with the recovery passphrase alone. A tab at an IP address offers no Passkey. With no vault, a git request opens the same steps from one notification
+- **Failures** - a failed action shows as a JupyterLab notification, amber or red; the panel shows no line for it in any view. The X on the toast hides the toast; the notification stays in JupyterLab's notification list until you start the next action, this tab completes a step for a `jupyterlab-passkey` command, such as an unlock, or you dismiss it in that list. The panel keeps one red line of its own, for a read that failed, and removes it when the server answers again
+- **Unlock notification** - the notification a command raises for a locked vault, or for no vault, leaves a tab within 15 s, or when a background tab is shown again, once the vault is open, or set up, by any route, and once the command's wait for it has run out
+- **Unused passkey** - when adding a passkey stops after your browser created it and the vault stored nothing, the page asks the browser to remove that passkey; where the browser cannot, the notification names it by the time in its name, to the second, so you can delete it in your passkey manager. When the answer to the request that stores the method is lost or is a server error, the page asks for no removal and says the method may have been added: check under Vault settings and security (the cog). Declining Password and passkey for a passkey with no PRF names the other ways in: another passkey, or Password and authenticator app
 - **Row tooltip** - hovering an entry shows its name, then Username, URL, Category, Last used, Updated and Created as ages, and never the password
 - **Category** - the Add and Edit dialogs list the vault's existing categories beside the Category field; a choice fills the field, which still accepts a typed category
-- **Password and proof** - the value shows dots until you click the eye button, which asks a passkey PRF or, without one, a code, password or recovery passphrase
-- **`reveal_seconds`** - after a proof the panel skips the proof for the `reveal_seconds` setting (default 60), or until the tab locks the vault or the page reloads
-- **Security view** - the cog shows the key holder, the unlock methods with Remove or Change, and the data key's age with Rotate data key; it adds a passkey or a password plus authenticator app (`password_min_length`, default 12)
-- **Sensitive changes** - changing the recovery passphrase or adding a method needs a proof in the same step, so an unlocked vault is not enough
+- **Password and proof** - the value shows dots until you click the eye button, which asks a passkey PRF, a passkey with no PRF or, without one, a code, password or recovery passphrase
+- **`reveal_seconds`** - after an unlock or a proof in the tab the panel skips the proof for the `reveal_seconds` setting (default 60), or until the tab locks the vault or the page reloads
+- **Security view** - the cog shows the key holder, the unlock methods with Remove or Change, and the data key's age with Rotate data key; it adds a passkey, a passkey with no PRF with its own unlock password, or a password plus authenticator app (`password_min_length`, default 12)
+- **Sensitive changes** - changing the recovery passphrase, rotating the data key or adding a method needs a proof in the same step, so an unlocked vault or the `reveal_seconds` window is not enough
 
 ### Command line and Python
 

@@ -2,6 +2,37 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.2] - 2026-11-04
+
+### Added
+
+- Password and passkey, for a passkey with no PRF: a new unlock password decrypts the vault, and the server checks the passkey at registration and at each use with the WebAuthn steps of Yubico's `fido2` library, a new dependency (`fido2>=2.2,<3`)
+- The vault keeps the passkey of Password and passkey as the COSE public key its registration attested, in the slot field `cose_key`, the form `fido2` checks a signature with
+- An unlock with Password and passkey asks the password, and the passkey prompt follows its Submit with no dialog between
+
+### Changed
+
+- The vault sets the number of secret fields by the kind of secret: two that must match for a recovery passphrase and a new unlock password, one for an entry value, an unlock and a proof; `jupyterlab-passkey passphrase` asks once and takes `--twice`
+- Create vault offers Passkey, Password and authenticator app, and Later after the recovery passphrase, and a step that fails or is cancelled opens that choice again with the reason
+- The git helper raises the set-up only with no vault; any vault that exists unlocks the normal way, the recovery passphrase included
+- Processes of one user share one unlock notification: the others wait on vault status, and one press, or an unlock from the panel, another tab or a terminal, lets all go on. After a notification nobody answered, a command that needs the unlocked vault fails at once for 10 minutes and names `jupyterlab-passkey vault unlock`, which still asks
+- `vault git migrate --remove-source` removes the plaintext files only when every line was imported, and retires the global `store` helpers that would rewrite them, `credential.<url>.helper` values included
+- `vault git install` removes a `store` helper in its scope, `credential.<url>.helper` values included, and prints what it removed; the plaintext file stays until `vault git migrate --remove-source`
+- The git helper follows `git credential-store` on the username: a username in the request needs an entry with that name or with none, and with several entries left the newest changed entry answers, with or without a username in the request. A request with no host gets no answer
+- `vault git migrate` checks each line before it adds: the same host, username and value adds nothing and does not block `--remove-source`; another value is named and the source stays; another username gets its own entry. Migrate and its dry run print one line for each host left with several entries
+
+### Fixed
+
+- An unlock or set-up notification leaves a tab within 15 s once the vault is open, or set up, by another route, and once the wait of the command that raised it has run out
+- A press on an unlock or set-up notification reads the vault state first, so it asks nothing once the vault is open, or set up, by another route, and a failed read is a failure notification; Safari may refuse the passkey request that follows that read
+- A migrated entry for a host with a port, a path with a space, `?` or `#`, or an IPv6 host answers git: migrate decodes the percent-encoding git writes, and the helper reads an entry an earlier migrate wrote
+- An entry written `<name>:<port>` matches, an entry with no username no longer makes git drop the token, and the helper's error lines print the request with its slash
+- `vault git install` and `uninstall` read the helper in `~/.gitconfig` and in the XDG git config, and name the file they changed
+- `vault git migrate` reports a malformed store or helper value in one line, naming the file and the line of the store
+- A passkey with no PRF stored as Password and passkey reads `Password and passkey added` in the panel, and `vault passkey add` and `vault init` print `password and passkey added`
+- At another port or scheme of the host where Password and passkey was added, the locked view names the address it was added at, in place of the advice to add a passkey
+- Where the vault's state shows the outcome, the notification of a vault creation the vault did not confirm says that the server stopped answering and where the outcome shows once it answers; an unconfirmed passkey add, which can only stop before the browser makes the passkey, says to do it again once the server answers
+
 ## [1.2.0] - 2026-11-02
 
 ### Added

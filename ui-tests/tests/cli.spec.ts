@@ -351,7 +351,7 @@ test('passphrase relays the typed value to a raw 0600 file and prints only a ref
 
   await page.waitForSelector('.jp-PassphraseDialog-body');
   const inputs = page.locator('.jp-PassphraseDialog-input');
-  // The default is one entry; the confirm field is behind "Type it twice".
+  // The default is one entry.
   await inputs.nth(0).fill(PASSPHRASE);
   await page.click('.jp-Dialog-button.jp-mod-accept');
 

@@ -17,7 +17,8 @@ from jupyterlab_passkey_extension.vault import handlers, service as vault_servic
 PASS = "correct horse battery staple"
 PRF = base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode()
 SECRET = "pw-MUST-NOT-LEAK-7f3a"
-NEEDS_PROOF = "this needs a proof: a passkey, a code of the authenticator app or the recovery passphrase"
+NEEDS_PROOF = ("this needs a proof: a passkey, a code of the authenticator app, a passkey with no PRF "
+               "or the recovery passphrase")
 # An authenticator app: its secret, and the setup key the app is given.
 APP = bytes(range(40, 60))
 APP_KEY = base64.b32encode(APP).decode()
@@ -387,6 +388,39 @@ def test_adding_mfa_to_an_unlocked_version_one_vault_rekeys_the_holder(vault_env
     assert svc.read("fixture-entry") == "fixture-password"
 
 
+def _version_one_vault_held_by_its_root(vault_env):
+    path = vault_env / "vault" / "vault.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(os.path.join(os.path.dirname(__file__), "fixtures", "vault-1.1.55.json"),
+                    path)
+    doc = store.load(path)
+    holder = handlers._service.holder()
+    holder.put(doc["id"], store.unwrap_recovery(doc, PASS), 600)
+    return holder
+
+
+def test_a_failed_hold_after_a_version_one_file_gains_a_data_key_leaves_it_locked(
+        vault_env, monkeypatch):
+    svc, holder = handlers._service, _version_one_vault_held_by_its_root(vault_env)
+
+    def boom(*args):
+        raise OSError("the hold failed")
+
+    monkeypatch.setattr(holder, "put", boom)
+    with pytest.raises(OSError, match="the hold failed"):
+        svc.unlock_recovery(PASS)
+    assert not svc.status()["unlocked"]
+
+
+def test_adding_mfa_ends_a_hold_it_cannot_read_on_a_version_one_file(
+        vault_env, clock, monkeypatch):
+    svc, holder = handlers._service, _version_one_vault_held_by_its_root(vault_env)
+    with monkeypatch.context() as refused:
+        refused.setattr(holder, "get", lambda vault_id: None)
+        svc.add_mfa(UNLOCK, APP_KEY, clock.code(), {"current": PASS})
+    assert not svc.status()["unlocked"]
+
+
 def test_an_adopt_that_cannot_be_written_keeps_a_version_one_file_readable(
         vault_env, monkeypatch, caplog):
     # A read-only vault: the unlock must still serve the file with the root key, and a
@@ -490,12 +524,73 @@ async def test_a_passkey_is_registered_only_with_a_proof(jp_fetch, vault_env):
     assert [x["cred_id"] for x in s["slots"] if x["type"] == "passkey"] == ["c1", "c2"]
 
 
+async def test_the_proof_check_answers_as_the_proof_does_and_changes_nothing(jp_fetch, vault_env, caplog):
+    await init(jp_fetch)
+    # An older slot, which an unlock with the same passphrase rewrites.
+    downgrade_slot("recovery", PASS)
+    before = vault_file(vault_env)
+    for unlocked in (True, False):
+        if not unlocked:
+            await call(jp_fetch, "lock")
+        assert await call(jp_fetch, "proof-check", {"current": PASS}) is None
+        for body in ({"current": PASS + "x"}, {"current": ""}, {"current": 5}, {"current": None}, {}):
+            assert await fails(jp_fetch, "proof-check", body) == (403, "wrong recovery passphrase")
+        assert (await call(jp_fetch, "status", method="GET"))["unlocked"] is unlocked
+        assert vault_file(vault_env) == before
+    assert PASS not in caplog.text
+
+
+async def test_the_proof_check_of_a_missing_vault_is_not_a_refusal(jp_fetch, vault_env):
+    code, error = await fails(jp_fetch, "proof-check", {"current": PASS})
+    assert code == 400 and error.startswith("no vault at ")
+
+
+async def test_a_final_request_is_still_refused_after_a_right_proof_check(jp_fetch, vault_env, clock):
+    await init(jp_fetch)
+    await call(jp_fetch, "proof-check", {"current": PASS})
+    wrong = {"current": PASS + "x"}
+    for action, body in [
+        ("passkeys", {"cred_id": "c1", "rp_id": "h", "prf_salt": "s", "prf": PRF}),
+        ("recovery", {"recovery": "never set"}),
+        ("mfa", {"password": UNLOCK, "secret": APP_KEY, "code": clock.code()}),
+        ("rotate", {}),
+    ]:
+        assert await fails(jp_fetch, action, {**body, "proof": wrong}) == (403, "wrong recovery passphrase")
+        assert await fails(jp_fetch, action, body) == (403, NEEDS_PROOF)
+    status = await call(jp_fetch, "status", method="GET")
+    assert [x["type"] for x in status["slots"]] == ["recovery"]
+
+
+async def test_the_proof_check_takes_no_code_and_uses_none_up(jp_fetch, vault_env, clock):
+    await init(jp_fetch)
+    await add_mfa(jp_fetch, clock)
+    code = clock.code()
+    await call(jp_fetch, "proof-check", {"current": PASS, "code": code})
+    for body in ({"code": code}, {"code": "000000"}, {"proof": {"code": code}}):
+        assert await fails(jp_fetch, "proof-check", body) == (403, "wrong recovery passphrase")
+    assert handlers._service._wrong_codes == 0
+    await call(jp_fetch, "passkeys", {"cred_id": "c1", "rp_id": "h", "prf_salt": "s", "prf": PRF,
+                                      "proof": {"code": code}})
+
+
+def test_check_recovery_refuses_a_wrong_passphrase_and_holds_no_key(vault_env):
+    svc = handlers._service
+    svc.init(PASS)
+    svc.lock()
+    before = vault_file(vault_env)
+    assert svc.check_recovery(PASS) is None
+    with pytest.raises(vault_service.Denied, match="^wrong recovery passphrase$"):
+        svc.check_recovery(PASS + "x")
+    assert svc.holder().get(svc._vault_id()) is None
+    assert vault_file(vault_env) == before
+
+
 # --------------------------------------------------------------------------- #
 # password and authenticator app
 # --------------------------------------------------------------------------- #
 
 NO_PROOF = (403, "the unlock password is no proof for this - use a passkey, a code of the "
-                 "authenticator app or the recovery passphrase")
+                 "authenticator app, a passkey with no PRF or the recovery passphrase")
 TOO_MANY = (403, "too many wrong codes - codes are refused until the vault is unlocked with a "
                  "passkey or the recovery passphrase")
 

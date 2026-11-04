@@ -34,7 +34,10 @@ dependencies = [
     # The vault: AES-256-GCM for the entries and the wrapped data key, Argon2id for
     # the recovery and unlock password slots, HKDF for a passkey slot's PRF.
     "cryptography>=50.0,<51",
-    "argon2-cffi>=25.1,<26"
+    "argon2-cffi>=25.1,<26",
+    # Password and passkey: the WebAuthn check of a passkey with no PRF. Yubico's
+    # library runs the verification steps; fido2 2.2 allows cryptography below 52.
+    "fido2>=2.2,<3"
 ]
 dynamic = ["version", "description", "authors", "urls", "keywords"]
 

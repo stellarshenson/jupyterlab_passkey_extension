@@ -119,7 +119,7 @@
   align-items: center;
   min-height: 24px;
   padding: 4px var(--jp-passkey-vault-inset);
-  border-bottom: 1px solid var(--jp-border-color2);
+  border-bottom: var(--jp-border-width) solid var(--jp-border-color2);
   background: var(--jp-layout-color2);
 }
 
@@ -178,7 +178,7 @@
   align-items: center;
   gap: 6px;
   padding: 4px var(--jp-passkey-vault-inset);
-  border-bottom: 1px solid var(--jp-border-color3);
+  border-bottom: var(--jp-border-width) solid var(--jp-border-color3);
 }
 
 .jp-PasskeyVaultPanel-diode {
@@ -266,9 +266,12 @@
   padding: 4px var(--jp-passkey-vault-inset) 4px var(--jp-passkey-vault-text);
 }
 
+/* The row above the first category ends with the sections' line. Padding, not
+   margin, so the line spans the panel and touches the first category. */
 .jp-PasskeyVaultPanel-filterBox {
   flex: 0 0 auto;
-  margin: 4px var(--jp-passkey-vault-inset);
+  padding: 4px var(--jp-passkey-vault-inset);
+  border-bottom: var(--jp-border-width) solid var(--jp-border-color3);
 }
 
 .jp-PasskeyVaultPanel-filterInput {
@@ -290,10 +293,13 @@
   border-color: var(--jp-brand-color1);
 }
 
+/* A category of the list view or a section of the cog view. Every section, the last
+   included, ends with the line of the workspace manager; none has a top line, so two
+   lines never touch. */
 .jp-PasskeyVaultPanel-section {
   display: flex;
   flex-direction: column;
-  border-bottom: 1px solid var(--jp-border-color3);
+  border-bottom: var(--jp-border-width) solid var(--jp-border-color3);
 }
 
 /* A band, as the section headers of the AI assistants panels and the file browser. */

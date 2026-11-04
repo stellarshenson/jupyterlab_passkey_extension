@@ -249,7 +249,7 @@ describe('runPassphrase', () => {
     await runPassphrase({ nonce: NONCE, twice: true }, serverSettings);
   });
 
-  it('with twice, prompts for a passphrase twice and offers no toggle to turn it off', async () => {
+  it('with twice, prompts for a passphrase twice and offers no way to turn it off', async () => {
     acceptWith('a-passphrase', 'a-passphrase');
     await runPassphrase({ nonce: NONCE, twice: true }, serverSettings);
 
@@ -257,7 +257,9 @@ describe('runPassphrase', () => {
     expect(dialogOptions().body.node.textContent).toContain(
       'Enter the passphrase twice'
     );
-    expect(dialogOptions().body.twice).toBeNull();
+    expect(
+      dialogOptions().body.node.querySelector('input[type="checkbox"]')
+    ).toBeNull();
   });
 
   it('reports match state only once the confirm field has content, without resizing', async () => {
@@ -355,44 +357,48 @@ describe('runPassphrase', () => {
   });
 });
 
-/** Type into the single field of a `once` dialog, firing the input listeners. */
+/** Type into the single field of a one-field dialog, firing the input listeners. */
 function fillOnce(body: any, value: string): void {
   body.first.value = value;
   body.first.dispatchEvent(new Event('input'));
 }
 
-/** Tick or untick the "Type it twice" box, as a click does. */
-function setTwice(body: any, on: boolean): void {
-  body.twice.checked = on;
-  body.twice.dispatchEvent(new Event('change'));
+/** The fields the dialog shows, of any input type. */
+function shownFields(body: any): HTMLInputElement[] {
+  return Array.from<HTMLInputElement>(
+    body.node.querySelectorAll('input')
+  ).filter(field => !field.hidden);
 }
 
-describe('askSecret for a new secret', () => {
-  it('opens one password field with the toggle, and the length rule gates while it is off', async () => {
+describe('askSecret takes the number of fields from its caller', () => {
+  it('shows two password fields and nothing to tick for 2, and Submit waits for a match', async () => {
     mockLaunch.mockImplementation(async (opts: any) => {
       const body = opts.body;
-      expect(body.first.placeholder).toBe('Password');
-      expect(body.second.hidden).toBe(true);
-      // Nothing to confirm yet: only the length rule holds Submit shut.
-      expect(body.first.checkValidity()).toBe(false);
-      fillOnce(body, 'eleven char');
-      expect(body.first.validationMessage).toBe('Enter at least 12 characters');
-      expect(body.first.checkValidity()).toBe(false);
-      fillOnce(body, 'twelve chars');
-      expect(body.first.checkValidity()).toBe(true);
-
-      // Opting in asks for the same value again, under the same length rule.
-      setTwice(body, true);
-      expect(body.second.placeholder).toBe('Confirm password');
+      const announce = body.node.querySelector('.jp-PassphraseDialog-announce');
+      expect(shownFields(body).map(field => field.type)).toEqual([
+        'password',
+        'password'
+      ]);
+      // An empty pair and one field alone hold Submit shut.
       expect(body.second.checkValidity()).toBe(false);
-      fill(body, 'twelve chars', 'twelve chars');
+      fillOnce(body, 'typed by hand');
+      expect(body.second.checkValidity()).toBe(false);
+      fill(body, 'typed by hand', 'typed by han');
+      expect(body.second.checkValidity()).toBe(false);
+      expect(body.second.validationMessage).toBe(
+        'Enter the same passphrase in both fields'
+      );
+      expect(announce.textContent).toBe('Passphrases do not match');
+      expect(body.value).toBeNull();
+      fill(body, 'typed by hand', 'typed by hand');
       expect(body.second.checkValidity()).toBe(true);
       return { button: { accept: true } };
     });
-
-    expect(
-      await askSecret('prompt', true, 'Set unlock password', { minLength: 12 })
-    ).toEqual({ accepted: true, value: 'twelve chars' });
+    expect(await askSecret('prompt', 2)).toEqual({
+      accepted: true,
+      value: 'typed by hand'
+    });
+    expect(dialogOptions().title).toBe('Passphrase');
   });
 });
 
@@ -418,7 +424,7 @@ describe('askSecret for a new unlock password', () => {
       return { button: { accept: true } };
     });
     expect(
-      await askSecret('prompt', false, 'Set unlock password', { minLength: 12 })
+      await askSecret('prompt', 2, 'Set unlock password', { minLength: 12 })
     ).toEqual({ accepted: true, value: 'twelve chars' });
   });
 
@@ -429,21 +435,67 @@ describe('askSecret for a new unlock password', () => {
       expect(opts.body.second.validity.valid).toBe(true);
       return { button: { accept: true } };
     });
-    expect(await askSecret('prompt', false)).toEqual({
+    expect(await askSecret('prompt', 2)).toEqual({
       accepted: true,
       value: 'ab'
     });
   });
 });
 
+describe('askSecret with a note', () => {
+  const NOTE = '#jp-PassphraseDialog-note';
+
+  it('shows the line under the fields, keeps it through typing and names it to the field', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      const body = opts.body;
+      const line = body.node.querySelector(NOTE);
+      expect(line.textContent).toBe('Wrong recovery passphrase');
+      expect(body.first.getAttribute('aria-describedby')).toBe(line.id);
+      expect(
+        body.first.compareDocumentPosition(line) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+      // Typing leaves the refusal in place.
+      fillOnce(body, 'next try');
+      expect(body.node.querySelector(NOTE).textContent).toBe(
+        'Wrong recovery passphrase'
+      );
+      return { button: { accept: true } };
+    });
+    expect(
+      await askSecret('prompt', 1, 'T', undefined, 'Wrong recovery passphrase')
+    ).toEqual({ accepted: true, value: 'next try' });
+  });
+
+  it('shows no line without one', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      expect(opts.body.node.querySelector(NOTE)).toBeNull();
+      expect(opts.body.first.hasAttribute('aria-describedby')).toBe(false);
+      return { button: { accept: false } };
+    });
+    await askSecret('prompt', 1, 'T');
+    expect(mockLaunch).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('runPassphrase with one entry by default', () => {
+  it('shows one field when the CLI sends twice false, as it does for an entry value, an unlock and a proof', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      expect(shownFields(opts.body)).toEqual([opts.body.first]);
+      fillOnce(opts.body, 'a value');
+      return { button: { accept: true } };
+    });
+    await expect(
+      runPassphrase({ nonce: NONCE, twice: false }, serverSettings)
+    ).resolves.toBe(true);
+  });
+
   it('relays a single entry, with the confirm field out of play', async () => {
     mockLaunch.mockImplementation(async (opts: any) => {
       // The whole point: a secret pasted from a password manager is not typed
       // twice, so nothing confirms it against anything.
       const body = opts.body;
-      expect(body.second.hidden).toBe(true);
-      expect(body.twice.checked).toBe(false);
+      expect(shownFields(body)).toEqual([body.first]);
       fillOnce(body, 'ghp_pasted_token');
       return { button: { accept: true } };
     });
@@ -479,53 +531,18 @@ describe('runPassphrase with one entry by default', () => {
     await runPassphrase({ nonce: NONCE }, serverSettings);
   });
 
-  it('keeps the status row out of the layout until the toggle is ticked', async () => {
+  it('keeps the status row out of the layout', async () => {
     mockLaunch.mockImplementation(async (opts: any) => {
-      const body = opts.body;
-      const status = body.node.querySelector('.jp-PassphraseDialog-status');
-      const toggle = body.twice.parentElement;
-      expect(toggle.textContent).toBe('Type it twice');
-      // No confirm field in play, so no empty row reserving height.
+      const status = opts.body.node.querySelector(
+        '.jp-PassphraseDialog-status'
+      );
+      // No confirm field, so no empty row reserving height.
       expect(status.hidden).toBe(true);
-      setTwice(body, true);
-      expect(status.hidden).toBe(false);
       return { button: { accept: false } };
     });
 
     await runPassphrase({ nonce: NONCE }, serverSettings);
-  });
-
-  it('blocks Submit on a match when the toggle is ticked, and restores the one-field rule when unticked', async () => {
-    mockLaunch.mockImplementation(async (opts: any) => {
-      const body = opts.body;
-
-      setTwice(body, true);
-      expect(body.second.hidden).toBe(false);
-      // Ticked: the pair must agree, and an empty confirm field is a mismatch.
-      expect(body.second.checkValidity()).toBe(false);
-
-      fillOnce(body, 'typed by hand');
-      expect(body.second.checkValidity()).toBe(false);
-
-      fill(body, 'typed by hand', 'typed by hand');
-      expect(body.second.checkValidity()).toBe(true);
-      expect(body.value).toBe('typed by hand');
-
-      // Unticked: the confirm value and its validity are cleared, and the only
-      // field gates again.
-      setTwice(body, false);
-      expect(body.second.hidden).toBe(true);
-      expect(body.second.value).toBe('');
-      expect(body.second.checkValidity()).toBe(true);
-      expect(body.first.checkValidity()).toBe(true);
-      expect(body.value).toBe('typed by hand');
-
-      return { button: { accept: true } };
-    });
-
-    await expect(runPassphrase({ nonce: NONCE }, serverSettings)).resolves.toBe(
-      true
-    );
+    expect(mockLaunch).toHaveBeenCalledTimes(1);
   });
 
   it('titles the dialog and prompts for a secret, not a passphrase', async () => {
@@ -565,19 +582,5 @@ describe('runPassphrase with one entry by default', () => {
     const body = dialogOptions().body;
     expect(body.first.type).toBe('password');
     expect(body.first.autocomplete).toBe('new-password');
-  });
-
-  it('still accepts once for compatibility, with the same single field', async () => {
-    mockLaunch.mockImplementation(async (opts: any) => {
-      const body = opts.body;
-      expect(body.second.hidden).toBe(true);
-      expect(body.twice.checked).toBe(false);
-      fillOnce(body, 'ghp_pasted_token');
-      return { button: { accept: true } };
-    });
-
-    await expect(
-      runPassphrase({ nonce: NONCE, once: true }, serverSettings)
-    ).resolves.toBe(true);
   });
 });

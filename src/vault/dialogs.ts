@@ -15,6 +15,7 @@ import { trans } from '../trans';
 import {
   IEntry,
   IEntryFields,
+  ISlot,
   IStatus,
   Proof,
   VaultApi,
@@ -25,11 +26,16 @@ import { newSetupKey, otpauthUri, qrSvg } from './totp';
 
 import {
   describeFailure,
+  fit,
+  INewPair,
   ipAddressAdvice,
   isIpAddress,
   matchingSlots,
+  pairSlot,
+  passkeyAssertion,
   passkeyPrf,
   registerPasskey,
+  stored,
   unlockWithPasskey
 } from './webauthn';
 
@@ -47,13 +53,10 @@ export class EntryForm extends Widget {
   readonly name: HTMLInputElement;
   readonly username: HTMLInputElement;
   readonly password: HTMLInputElement;
-  readonly confirm: HTMLInputElement;
-  readonly twice: HTMLInputElement;
   readonly url: HTMLInputElement;
   readonly category: HTMLInputElement;
   readonly notes: HTMLTextAreaElement;
   readonly generate: HTMLButtonElement;
-  private _confirming = false;
 
   constructor(
     private readonly _generate: () => Promise<string>,
@@ -76,27 +79,6 @@ export class EntryForm extends Widget {
     // Never let the browser or a password manager fill in, or keep, this value.
     this.password.autocomplete = 'new-password';
 
-    // Typed by hand, a password can be confirmed; a generated or pasted one is
-    // typed once. The confirm field starts out of play and starts empty.
-    this.confirm = input('password');
-    this.confirm.placeholder = trans.__('Confirm password');
-    this.confirm.autocomplete = 'new-password';
-    this.confirm.hidden = true;
-    this.twice = document.createElement('input');
-    this.twice.type = 'checkbox';
-    const twiceRow = document.createElement('label');
-    twiceRow.className = 'jp-PasskeyVaultForm-help';
-    twiceRow.append(this.twice, document.createTextNode('Type it twice'));
-    this.twice.addEventListener('change', () => {
-      this._confirming = this.twice.checked;
-      this.confirm.hidden = !this._confirming;
-      if (!this._confirming) {
-        this.confirm.value = '';
-      }
-      this._validate();
-    });
-    this.confirm.addEventListener('input', () => this._validate());
-
     this.generate = document.createElement('button');
     this.generate.type = 'button';
     this.generate.className = 'jp-mod-styled jp-PasskeyVaultForm-generate';
@@ -106,8 +88,6 @@ export class EntryForm extends Widget {
         value => {
           this.password.value = value;
           this._showPasswordHelp();
-          // A filled field can turn a pair that agreed into a mismatch.
-          this._validate();
         },
         e => {
           // The field keeps what it held: the rule for Save still applies.
@@ -123,16 +103,11 @@ export class EntryForm extends Widget {
     const passwordRow = document.createElement('div');
     passwordRow.className = 'jp-PasskeyVaultForm-row';
     passwordRow.append(this.password, this.generate);
-    const passwordBox = document.createElement('div');
-    passwordBox.append(passwordRow, twiceRow, this.confirm);
     this._passwordHelp = document.createElement('div');
     this._passwordHelp.className = 'jp-PasskeyVaultForm-help';
     this._editing = !!entry;
     this._showPasswordHelp();
-    this.password.addEventListener('input', () => {
-      this._showPasswordHelp();
-      this._validate();
-    });
+    this.password.addEventListener('input', () => this._showPasswordHelp());
 
     this.url = input('text', entry?.url);
     this.category = input('text', entry?.category);
@@ -194,12 +169,11 @@ export class EntryForm extends Widget {
     this.node.append(
       field('Name', this.name, this._nameHelp),
       field('Username', this.username),
-      field('Password', passwordBox, this._passwordHelp, this.password),
+      field('Password', passwordRow, this._passwordHelp, this.password),
       field('URL', this.url),
       field('Category', combo, undefined, this.category),
       field('Notes', this.notes)
     );
-    this.confirm.setAttribute('aria-describedby', this._passwordHelp.id);
     this._validate();
   }
 
@@ -308,20 +282,12 @@ export class EntryForm extends Widget {
   };
 
   private readonly _revalidate = (event: Event): void => {
-    if (
-      event.target === this.name ||
-      event.target === this.password ||
-      event.target === this.confirm ||
-      event.target === this.twice
-    ) {
+    if (event.target === this.name) {
       this._validate();
     }
   };
 
   private _validate(): void {
-    // Read the box rather than a value set on `change`: a click fires `input`
-    // first, and Dialog reads validity on `input`, so the gate must already know.
-    this._confirming = this.twice.checked;
     const name = this.name.value.trim();
     const taken = this._taken.includes(name)
       ? `An entry named ${name} already exists`
@@ -329,27 +295,6 @@ export class EntryForm extends Widget {
     this.name.setCustomValidity(name === '' ? 'An entry needs a name' : taken);
     // Said under the field: a greyed-out Save alone does not say why.
     this._nameHelp.textContent = taken;
-    const mismatchHelp = trans.__('Enter the same password in both fields');
-    // Same mechanism for the opt-in confirmation: a custom validity puts the
-    // form into `:invalid`, which is what disables Save. Out of play, it is clear
-    // so a hidden field cannot hold the dialog shut.
-    this.confirm.setCustomValidity(
-      this._confirming && this.confirm.value !== this.password.value
-        ? mismatchHelp
-        : ''
-    );
-    // Said under the field as the name refusal is: a mismatch greys Save with no
-    // other message. The restore touches the line only while it still holds that
-    // sentence, so a failed Generate line is not wiped.
-    if (
-      this._confirming &&
-      this.confirm.value !== '' &&
-      this.confirm.value !== this.password.value
-    ) {
-      this._passwordHelp.textContent = mismatchHelp;
-    } else if (this._passwordHelp.textContent === mismatchHelp) {
-      this._showPasswordHelp();
-    }
   }
 
   private readonly _passwordHelp: HTMLDivElement;
@@ -499,9 +444,12 @@ const TYPED: Record<
 
 /** How the entry popup gets the password. */
 export interface IReveal {
-  /** True while the eye asks no proof: this tab has had a proof accepted. */
+  /** True while the eye asks no proof. */
   proven: () => boolean;
-  /** The proof of a passkey request for this hostname. */
+  /**
+   * The proof of a passkey request: a passkey with PRF for this hostname, else the
+   * passkey of Password and passkey added at this address.
+   */
   passkey: () => Promise<Proof>;
   /** The password: for a proof, or with none while `proven`. */
   reveal: (proof?: Proof) => Promise<string>;
@@ -516,7 +464,7 @@ export interface IReveal {
 /**
  * An entry, read-only, laid out like the edit form. The password is not in the page
  * until a reveal returns it: the eye asks for it once, then only hides and shows it.
- * In the reveal window after a proof in this tab the eye asks no proof. After that it
+ * In the reveal window after an unlock or a proof in this tab the eye asks no proof. After that it
  * asks a passkey first. With none for this hostname, or no answer, a row
  * under the field asks a proof to type: a code of the authenticator app, the unlock
  * password or the recovery passphrase, whichever of them the vault has.
@@ -986,18 +934,58 @@ async function askCode(
   return button.label === USE_PASSPHRASE ? 'passphrase' : null;
 }
 
+/** The server's refusal of a recovery passphrase. */
+const WRONG_PASSPHRASE = 'wrong recovery passphrase';
+
+const USE_PASSKEY = 'Use passkey';
+const USE_ANOTHER = 'Use another proof';
+
+/**
+ * Ask for the passkey of Password and passkey as a proof, or `Use another proof`. Its
+ * `Use passkey` button is the click the passkey request needs, because the challenge
+ * was read from the server since the last click. Resolves to the choice, or null when
+ * cancelled.
+ */
+async function askUsePasskey(
+  title: string,
+  text: string
+): Promise<'passkey' | 'another' | null> {
+  const { button } = await launchWithEscape(
+    new Dialog({
+      title,
+      body: text,
+      hasClose: false,
+      buttons: [
+        Dialog.cancelButton(),
+        Dialog.cancelButton({ label: USE_ANOTHER }),
+        Dialog.okButton({ label: USE_PASSKEY, accept: true })
+      ]
+    })
+  );
+  if (button.accept) {
+    return 'passkey';
+  }
+  return button.label === USE_ANOTHER ? 'another' : null;
+}
+
 /**
  * The proof the server asks before a rotation, a recovery change or a new unlock
  * method: a passkey request when a passkey for this hostname exists. With none - or
- * when that request gets no answer, or the passkey gives no PRF - a code of the
- * authenticator app when `code` is set, the vault has one and is unlocked; else, or
- * when the user chooses it, the current recovery passphrase. A code holds no key of
- * its own: the server takes it for a new passkey, a new unlock method and a recovery
- * change, but not for a rotation, whose caller leaves `code` false. Call it straight
- * from a click: the passkey request comes before any other await. Resolves to null
- * when a dialog is cancelled.
+ * when that request gets no answer, or the passkey gives no PRF - the passkey of
+ * Password and passkey when `code` is set, the vault has one for this address and is
+ * unlocked; then a code of the authenticator app when `code` is set, the vault has
+ * one and is unlocked; else, or when the user chooses it, the current recovery
+ * passphrase. A code and a passkey with no PRF hold no key of their own: the server
+ * takes them for a new passkey, a new unlock method and a recovery change, but not
+ * for a rotation, whose caller leaves `code` false. The server checks
+ * a recovery passphrase as soon as it is typed, so a wrong one opens the same dialog
+ * again before the browser or an app is asked for anything; the request that acts
+ * checks every proof again, and it is the only check of a code, which a check uses up.
+ * Call it straight from a click: the passkey request comes before any other await.
+ * Resolves to null when a dialog is cancelled.
  */
 export async function askProof(
+  api: VaultApi,
   status: IStatus,
   host: string,
   title: string,
@@ -1021,6 +1009,31 @@ export async function askProof(
       }
     }
   }
+  // A passkey with no PRF holds no key: as a code, it proves only while the vault is
+  // unlocked, and only for the actions whose caller takes a code.
+  const pair = code && status.unlocked ? pairSlot(status.slots) : undefined;
+  if (pair) {
+    const challenge = await api.challenge();
+    const answer = await askUsePasskey(
+      title,
+      lead
+        ? `${lead}confirm with the passkey of Password and passkey instead.`
+        : 'Confirm with the passkey of Password and passkey.'
+    );
+    if (answer === null) {
+      return null;
+    }
+    if (answer === 'passkey') {
+      try {
+        return { assertion: await passkeyAssertion(pair, challenge) };
+      } catch (e) {
+        if (mapCeremonyError(e) !== 'not-allowed') {
+          throw e;
+        }
+        lead = 'No passkey answered - ';
+      }
+    }
+  }
   const prompt = (proof: string) =>
     lead ? `${lead}enter ${proof} instead` : `Enter ${proof}`;
   // A code holds no key: it proves only while the vault is unlocked, and only for
@@ -1034,25 +1047,46 @@ export async function askProof(
       return answer;
     }
   }
-  const { accepted, value } = await askSecret(
-    prompt('the current recovery passphrase'),
-    true,
-    title
-  );
-  return accepted && value !== null ? { current: value } : null;
+  let note: string | undefined;
+  for (;;) {
+    const { accepted, value } = await askSecret(
+      prompt('the current recovery passphrase'),
+      1,
+      title,
+      undefined,
+      note
+    );
+    if (!accepted || value === null) {
+      return null;
+    }
+    try {
+      await api.checkRecovery(value);
+      return { current: value };
+    } catch (e) {
+      if (!(e instanceof VaultError && e.message === WRONG_PASSPHRASE)) {
+        throw e;
+      }
+      note = 'Wrong recovery passphrase';
+    }
+  }
 }
 
 /**
- * The unlock methods the panel adds: a passkey, or the unlock password with an
- * authenticator app (`mfa`), which open the vault only together.
+ * The unlock methods the panel adds: a passkey, the unlock password with an
+ * authenticator app (`mfa`), which open the vault only together, and an unlock
+ * password with a passkey that has no PRF (`pair`), which a passkey registration
+ * offers when the passkey has no PRF.
  */
-export type UnlockMethod = 'passkey' | 'mfa';
+export type UnlockMethod = 'passkey' | 'mfa' | 'pair';
 
 /** Every way the vault opens, as the unlock chooser offers them. */
 export type VaultMethod = UnlockMethod | 'recovery';
 
-/** Each method as the dialog that offers them names it, with one line on what it is. */
-const METHODS: Record<VaultMethod, { label: string; about: string }> = {
+/** A button of the chooser: a method, or Later at set-up, which adds none. */
+type MethodChoice = VaultMethod | 'later';
+
+/** Each choice as the dialog that offers them names it, with one line on what it is. */
+const METHODS: Record<MethodChoice, { label: string; about: string }> = {
   passkey: {
     label: trans.__('Passkey'),
     about: 'Fingerprint, face, PIN or security key.'
@@ -1061,9 +1095,17 @@ const METHODS: Record<VaultMethod, { label: string; about: string }> = {
     label: trans.__('Password and authenticator app'),
     about: 'A password, then a 6-digit code from your phone.'
   },
+  pair: {
+    label: trans.__('Password and passkey'),
+    about: 'A password, then your passkey.'
+  },
   recovery: {
     label: trans.__('Recovery passphrase'),
     about: 'The passphrase you stored offline.'
+  },
+  later: {
+    label: trans.__('Later'),
+    about: 'Only the recovery passphrase opens the vault for now.'
   }
 };
 
@@ -1072,19 +1114,38 @@ export interface IMethodState {
   unavailable?: string;
 }
 
+/** The chooser's line of a dialog opened again after a step failed. */
+const NOTE_ID = 'jp-PasskeyVaultForm-note';
+
+/** With no footer button, Dialog's arrow keys throw on a focus target that is not there. */
+const KEYS_NO_FOOTER = ['Enter', 'ArrowLeft', 'ArrowRight'];
+
 /** The body of the dialog that offers the methods: one button for each. */
 class MethodForm extends Widget {
   /** The method whose button was pressed. */
-  chosen: VaultMethod | null = null;
+  chosen: MethodChoice | null = null;
 
-  /** `close` closes the dialog once a method is chosen. */
+  /**
+   * `close` closes the dialog once a method is chosen. `note` shows a line above the
+   * buttons, for a dialog opened again after a step failed.
+   */
   constructor(
-    states: Partial<Record<VaultMethod, IMethodState>>,
-    close: () => void
+    states: Partial<Record<MethodChoice, IMethodState>>,
+    close: () => void,
+    note?: string
   ) {
     super();
     this.addClass('jp-PasskeyVaultForm');
-    for (const kind of (Object.keys(METHODS) as VaultMethod[]).filter(
+    this._kept = 'later' in states ? KEYS_NO_FOOTER : ['Enter'];
+    if (note) {
+      const line = document.createElement('div');
+      line.id = NOTE_ID;
+      line.className = 'jp-PassphraseDialog-status';
+      line.dataset.state = 'mismatch';
+      line.textContent = note;
+      this.node.appendChild(line);
+    }
+    for (const kind of (Object.keys(METHODS) as MethodChoice[]).filter(
       kind => kind in states
     )) {
       const { label, about } = METHODS[kind];
@@ -1099,11 +1160,15 @@ class MethodForm extends Widget {
       choice.className = 'jp-mod-styled jp-PasskeyVaultForm-choice';
       choice.dataset.method = kind;
       choice.disabled = unavailable !== undefined;
-      // The button is named by the method alone; the line under the name is read after it.
+      // The button is named by the method alone; the line under the name is read after
+      // it. A button takes the focus when the dialog opens, so the note is read with it.
       name.id = `jp-PasskeyVaultForm-method-${kind}`;
       help.id = `${name.id}-help`;
       choice.setAttribute('aria-labelledby', name.id);
-      choice.setAttribute('aria-describedby', help.id);
+      choice.setAttribute(
+        'aria-describedby',
+        note ? `${NOTE_ID} ${help.id}` : help.id
+      );
       choice.append(name, help);
       choice.addEventListener('click', () => {
         this.chosen = kind;
@@ -1121,9 +1186,15 @@ class MethodForm extends Widget {
     document.removeEventListener('keydown', this._keepEnter, true);
   }
 
+  /** The keys kept from Dialog while the focus is on a method. */
+  private readonly _kept: string[];
+
   /** Dialog swallows Enter on a body control; see EntryView._keepEnter. Enter on a method presses it. */
   private readonly _keepEnter = (event: KeyboardEvent): void => {
-    if (event.key === 'Enter' && this.node.contains(event.target as Node)) {
+    if (
+      this._kept.includes(event.key) &&
+      this.node.contains(event.target as Node)
+    ) {
       event.stopPropagation();
     }
   };
@@ -1132,33 +1203,64 @@ class MethodForm extends Widget {
 /**
  * Ask which unlock method to add: a press on a method chooses it and closes the
  * dialog. Resolves to null when the user backs out. `title` names the question, so
- * the same buttons serve adding a method and unlocking.
+ * the same buttons serve adding a method and unlocking. `note` is the reason of a
+ * dialog opened again. With Later among the choices it replaces Cancel: Cancel beside
+ * it would suggest the vault goes away.
  */
 export async function chooseUnlockMethod(
-  states: Partial<Record<VaultMethod, IMethodState>>,
-  title: string = trans.__('Add unlock method')
-): Promise<VaultMethod | null> {
-  const body = new MethodForm(states, () => dialog.reject());
+  states: Partial<Record<MethodChoice, IMethodState>>,
+  title: string = trans.__('Add unlock method'),
+  note?: string
+): Promise<MethodChoice | null> {
+  const body = new MethodForm(states, () => dialog.reject(), note);
   const dialog = new Dialog({
     title,
     body,
     focusNodeSelector: '.jp-PasskeyVaultForm-choice:enabled',
     hasClose: false,
-    buttons: [Dialog.cancelButton()]
+    buttons: 'later' in states ? [] : [Dialog.cancelButton()]
   });
   await launchWithEscape(dialog);
   return body.chosen;
 }
 
 /**
+ * Unlock with Password and passkey: the password, then the passkey, then one request.
+ * The challenge is read before the password dialog, so the passkey request follows
+ * that dialog's Submit with no network read between: the Submit is the click the
+ * request needs. A challenge that expired or was replaced while the dialog was open is
+ * the server's refusal, which the caller reports. The page holds the password during
+ * the passkey prompt, as it holds the app pair's while the code is typed. Resolves to
+ * false when cancelled.
+ */
+export async function unlockWithPair(
+  api: VaultApi,
+  slot: ISlot
+): Promise<boolean> {
+  const challenge = await api.challenge();
+  const { accepted, value } = await askSecret(
+    'Enter the unlock password',
+    1,
+    'Unlock vault'
+  );
+  if (!accepted || value === null) {
+    return false;
+  }
+  await api.unlockPair(value, await passkeyAssertion(slot, challenge));
+  return true;
+}
+
+/**
  * Ask how to unlock the vault, then unlock by the method chosen: a passkey for this
- * hostname, the unlock password with a code, or the recovery passphrase. Throws the
- * cancellation as one line for the CLI.
+ * hostname, the unlock password with a code, the unlock password with a passkey that
+ * has no PRF, or the recovery passphrase. Throws the cancellation as one line for the
+ * CLI. `fail` reports a refusal of Password and passkey in the page too.
  */
 export async function unlockWithChoice(
   api: VaultApi,
   status: IStatus,
-  host: string = location.hostname
+  host: string = location.hostname,
+  fail?: (text: string) => void
 ): Promise<void> {
   const kind = await chooseUnlockMethod(
     {
@@ -1170,6 +1272,13 @@ export async function unlockWithChoice(
       mfa: status.slots.some(slot => slot.type === 'password')
         ? {}
         : { unavailable: 'No unlock password was set.' },
+      ...(status.slots.some(slot => slot.type === 'password-passkey')
+        ? {
+            pair: pairSlot(status.slots)
+              ? {}
+              : { unavailable: 'No passkey was added for this address.' }
+          }
+        : {}),
       recovery: {}
     },
     trans.__('Unlock vault')
@@ -1179,7 +1288,7 @@ export async function unlockWithChoice(
   } else if (kind === 'mfa') {
     const { accepted, value } = await askSecret(
       'Enter the unlock password',
-      true,
+      1,
       'Unlock vault'
     );
     if (!accepted || value === null) {
@@ -1190,10 +1299,26 @@ export async function unlockWithChoice(
       throw new VaultError(0, 'the unlock was cancelled');
     }
     await api.unlockPassword(value, code);
+  } else if (kind === 'pair') {
+    const unlocked = await unlockWithPair(
+      api,
+      pairSlot(status.slots) as ISlot
+    ).catch(e => {
+      // The page says the server's refusal too: a challenge lives 600 s and the CLI
+      // waits 120 s by default, so the refusal of one that expired reaches no CLI.
+      // Only the CLI's unlock comes here; the panel reports its own failures.
+      if (e instanceof VaultError && e.status > 0) {
+        fail?.(sentence(e.short));
+      }
+      throw e;
+    });
+    if (!unlocked) {
+      throw new VaultError(0, 'the unlock was cancelled');
+    }
   } else if (kind === 'recovery') {
     const { accepted, value } = await askSecret(
       'Enter the recovery passphrase',
-      true,
+      1,
       'Unlock vault'
     );
     if (!accepted || value === null) {
@@ -1245,6 +1370,29 @@ class AuthenticatorForm extends Widget {
   }
 }
 
+/** The title of every dialog that adds the pair. */
+export const ADD_MFA = 'Add password and authenticator app';
+
+/** The title of every dialog that adds Password and passkey. */
+const ADD_PAIR = 'Add password and passkey';
+
+/**
+ * The step of a new unlock password: two fields, with Submit disabled under the
+ * minimum length. `title` names the method it is for. Null when the user backs out.
+ */
+export async function askNewPassword(
+  minLength: number,
+  title: string = ADD_MFA
+): Promise<string | null> {
+  const { accepted, value } = await askSecret(
+    `Enter the new unlock password, at least ${minLength} characters`,
+    2,
+    title,
+    { minLength }
+  );
+  return accepted ? value : null;
+}
+
 /** The server's refusal of a code that is not the one the app shows now. */
 const WRONG_CODE = 'wrong code';
 
@@ -1290,11 +1438,10 @@ export async function registerMfa(
       if (!(e instanceof VaultError && e.message === WRONG_CODE)) {
         // Only a 4xx answer is a refusal. After a lost answer or a 5xx the two may
         // have been added.
+        const clause =
+          '; the entry your authenticator app added is unused - you can delete it in the app';
         throw e instanceof VaultError && e.status >= 400 && e.status < 500
-          ? new VaultError(
-              e.status,
-              `${e.message}; the entry your authenticator app added is unused - you can delete it in the app`
-            )
+          ? new VaultError(e.status, e.message + clause, fit(e.message, clause))
           : e;
       }
       note = 'Wrong code. Enter the code the app shows now.';
@@ -1303,17 +1450,92 @@ export async function registerMfa(
 }
 
 /**
+ * The rest of a registration whose passkey has no PRF: the offer of Password and
+ * passkey, a new unlock password, and one request that stores both. `proof` is the
+ * one given before the passkey was created; a code is asked again, because a code
+ * typed before two passkey prompts and a password has expired. Declined, or cancelled
+ * at any step, it throws a line that names the other ways in, and the registration
+ * reports the passkey unused.
+ */
+async function offerPair(
+  api: VaultApi,
+  pair: INewPair,
+  proof: Proof,
+  host: string
+): Promise<void> {
+  const status = await api.status();
+  if (status.slots.some(s => s.type === 'password-passkey')) {
+    throw new VaultError(
+      0,
+      'the vault already has a password and passkey - remove them first'
+    );
+  }
+  // What happened, then the ways that work: a retry on this authenticator fails again.
+  const declined = new VaultError(
+    0,
+    'passkey not added, no PRF - use another passkey or Password and authenticator app'
+  );
+  const { button } = await launchWithEscape(
+    new Dialog({
+      title: ADD_PAIR,
+      body: trans.__(
+        'This passkey cannot hold the vault key, because it has no PRF. It can still be used with a new unlock password: the password decrypts the vault, and the server checks the passkey. A copy of the vault file opens with the password alone.'
+      ),
+      hasClose: false,
+      buttons: [
+        Dialog.cancelButton({ label: trans.__('Decline') }),
+        Dialog.okButton({ label: trans.__('Continue'), accept: true })
+      ]
+    })
+  );
+  if (!button.accept) {
+    throw declined;
+  }
+  const password = await askNewPassword(
+    status.settings.password_min_length,
+    ADD_PAIR
+  );
+  if (password === null) {
+    throw declined;
+  }
+  const final =
+    'code' in proof ? await askProof(api, status, host, ADD_PAIR, true) : proof;
+  if (final === null) {
+    throw declined;
+  }
+  await stored(
+    api.addPair(
+      {
+        password,
+        cred_id: pair.credId,
+        rp_id: host,
+        registration: pair.registration,
+        label: pair.label,
+        assertion: pair.assertion
+      },
+      final
+    )
+  );
+}
+
+/**
  * Add a new passkey with a proof. The user names the passkey first; that
  * dialog's button is also the fresh click the browser needs, after a passkey
  * request, before it creates the new passkey. `label` is the name offered. Resolves
- * to false when the user backs out before the browser created anything.
+ * to false when the user backs out before the browser created anything, else to the
+ * type of the slot stored: `password-passkey` for a passkey with no PRF.
  */
 export async function registerWithProof(
   api: VaultApi,
   proof: Proof,
   label: string,
   host: string
-): Promise<boolean> {
+): Promise<false | ISlot['type']> {
+  // Before the dialog whose click the `create` follows: a network read must not sit
+  // between a click and a WebAuthn call. An assertion proof holds the one live
+  // challenge until the request uses it, and its vault has Password and passkey
+  // already, so this registration needs none.
+  const challenge = 'assertion' in proof ? undefined : await api.challenge();
   const name = await nameNewPasskey(
     label,
     'prf' in proof
@@ -1323,59 +1545,103 @@ export async function registerWithProof(
   if (name === null) {
     return false;
   }
-  await registerPasskey(api, name, confirmNewPasskey, proof, host);
-  return true;
+  return registerPasskey(
+    api,
+    name,
+    confirmNewPasskey,
+    proof,
+    host,
+    pair => offerPair(api, pair, proof, host),
+    challenge
+  );
 }
 
-/** The step's outcome as the one line the waiting CLI prints: what stopped, and the
- * next step. */
-function stepError(step: string, outcome: string): VaultError {
+/** The prompt of a new vault's passphrase, the first step of every set-up in the tab. */
+export const NEW_RECOVERY =
+  'Choose a recovery passphrase and store it offline - it opens the vault when no other unlock method can.';
+
+/**
+ * The last step of a set-up: the user adds an unlock method or leaves the recovery
+ * slot alone. `passphrase`, just chosen, is the proof for either method, so it is not
+ * asked again. A method step that fails or is cancelled opens the choice again with
+ * its reason as a line in the dialog, because a notification would stay behind the
+ * dialog. Later, or Escape, ends the set-up with the vault created and unlocked. At an
+ * IP address, which cannot hold a passkey, the choice has no Passkey.
+ */
+export async function chooseFirstMethod(
+  api: VaultApi,
+  passphrase: string,
+  minLength: number,
+  host: string
+): Promise<void> {
+  const proof = { current: passphrase };
+  let note: string | undefined;
+  for (;;) {
+    const kind = await chooseUnlockMethod(
+      { ...(isIpAddress(host) ? {} : { passkey: {} }), mfa: {}, later: {} },
+      undefined,
+      note
+    );
+    if (kind !== 'passkey' && kind !== 'mfa') {
+      return;
+    }
+    try {
+      if (kind === 'passkey') {
+        if (await registerWithProof(api, proof, '', host)) {
+          return;
+        }
+        note = 'Adding the passkey was cancelled.';
+      } else {
+        const password = await askNewPassword(minLength);
+        if (
+          password !== null &&
+          (await registerMfa(api, password, proof, host, ADD_MFA))
+        ) {
+          return;
+        }
+        note = 'Adding the password and authenticator app was cancelled.';
+      }
+    } catch (e) {
+      note = sentence(describeFailure(e));
+    }
+  }
+}
+
+/** The recovery step's outcome as the one line the waiting CLI prints. */
+function stepError(outcome: string): VaultError {
   return new VaultError(
     0,
-    `the ${step} step ${outcome} - run the command again to continue the vault set-up`
+    `the recovery passphrase step ${outcome} - run the command again to continue the vault set-up`
   );
 }
 
 /**
  * Set the vault up from the notification a command with no terminal raised: the
- * recovery passphrase, then a passkey for this hostname. Each step reads the vault
- * first and is skipped when it is done, so a run after a cancelled or crashed step
- * continues at the missing one.
+ * recovery passphrase, then the choice of an unlock method. `status` is the state the
+ * press read: a vault made after the notification was raised needs neither, and the
+ * command unlocks it the normal way.
  */
-export async function setupVault(api: VaultApi, host: string): Promise<void> {
-  let status = await api.status();
-  let passphrase: string | null = null;
-  if (!status.initialized) {
-    const { accepted, value } = await askSecret(
-      'Choose a recovery passphrase and store it offline - it is the only way in without a passkey.',
-      true,
-      'Create vault'
-    );
-    if (!accepted || value === null) {
-      throw stepError('recovery passphrase', 'was cancelled');
-    }
-    passphrase = value;
-    try {
-      await api.init(value);
-    } catch (e) {
-      throw stepError('recovery passphrase', `failed (${describeFailure(e)})`);
-    }
-    status = await api.status();
-  }
-  if (isIpAddress(host) || matchingSlots(status.slots, host).length > 0) {
+export async function setupVault(
+  api: VaultApi,
+  status: IStatus,
+  host: string
+): Promise<void> {
+  if (status.initialized) {
     return;
   }
-  try {
-    // The passphrase just chosen is the proof the server asks for the new passkey.
-    const proof =
-      passphrase === null
-        ? await askProof(status, host, 'Add passkey', true)
-        : { current: passphrase };
-    if (proof !== null && (await registerWithProof(api, proof, '', host))) {
-      return;
-    }
-  } catch (e) {
-    throw stepError('passkey', `failed (${describeFailure(e)})`);
+  const { accepted, value } = await askSecret(NEW_RECOVERY, 2, 'Create vault');
+  if (!accepted || value === null) {
+    throw stepError('was cancelled');
   }
-  throw stepError('passkey', 'was cancelled');
+  try {
+    await api.init(value);
+  } catch (e) {
+    throw stepError(`failed (${describeFailure(e)})`);
+  }
+  await chooseFirstMethod(
+    api,
+    value,
+    status.settings.password_min_length,
+    host
+  );
 }

@@ -8,7 +8,11 @@
         {"type": "passkey", "cred_id": b64url, "rp_id": host, "prf_salt": b64url,
          "hkdf_salt": b64, "label": text, "created": iso, "wrapped": b64},
         {"type": "password", "kdf": "argon2id", "m": 65536, "t": 3, "p": 1,
-         "salt": b64, "created": iso, "wrapped": b64}
+         "salt": b64, "created": iso, "wrapped": b64},
+        {"type": "password-passkey", "kdf": "argon2id", "m": 65536, "t": 3, "p": 1,
+         "salt": b64, "cred_id": b64url, "rp_id": host, "origin": url, "created": iso,
+         "cose_key": b64(nonce | AES-256-GCM(data key, COSE key)), "wrapped": b64,
+         "label": text, "sign_count": int}
       ],
       "entries": b64(nonce | AES-256-GCM(data key, JSON list of entries)),
       "data_key": {"created": iso, "sealed": b64(nonce | AES-256-GCM(root key, data key))},
@@ -17,16 +21,26 @@
 
 Two keys. The root key (32 random bytes) is what the slots wrap under their own
 key-encryption key - `Argon2id(passphrase)` for the recovery slot, `HKDF(PRF)` for a
-passkey slot, `Argon2id(password)` for the one unlock password slot a vault can have; a
-slot written by an earlier build keeps its scrypt parameters and is rewritten under
-Argon2id on its next unlock - so any one slot opens the root, and adding or removing a
-slot never re-encrypts the entries. Every slot parameter except the
-wrapped key itself and its label is bound into the wrap as associated data, so a changed
-salt, KDF cost, credential or hostname fails to open rather than opening wrongly.
+passkey slot, `Argon2id(password)` for the unlock password slot of the authenticator app
+and for the slot of Password and passkey, at most one of each; a slot written by an
+earlier build keeps its scrypt parameters and is rewritten under Argon2id on its next
+unlock - so any one slot opens the root, and adding or removing a slot never
+re-encrypts the entries. Every slot parameter except the wrapped key itself, its label,
+and a Password and passkey slot's public key and sign count is bound into the wrap as
+associated data, so a changed salt, KDF cost, credential, hostname or origin fails to
+open rather than opening wrongly.
+
+A Password and passkey slot is for a passkey with no PRF, which gives no secret to wrap
+a key with: its own password alone unwraps the root, and the service keeps the key only
+for a verified signature of the passkey. The passkey's public key, the CBOR bytes of
+the COSE key its registration attested, is sealed under the data key with the same
+associated data, so a key swapped into the file does not
+decrypt, and a rotation re-seals it.
 
 The data key (32 random bytes) encrypts every entry, names included, as one blob, and is
-itself sealed under the root key. Rotating the data key re-seals the entries and the
-authenticator secret and leaves every slot as it is, so the slots keep opening the root
+itself sealed under the root key. Rotating the data key re-seals the entries, the
+authenticator secret and the public key of a Password and passkey slot, and leaves
+every slot's wrapped key as it is, so the slots keep opening the root
 and a copy of an old data key stops reading the vault. A version-1 file, which had one
 key for both jobs, gains a data key on its first unlock (`adopt_data_key`); its slots
 stay as they are and now wrap the root, which for that file is the old single key.
@@ -81,6 +95,8 @@ _ENTRIES_AAD_V2 = f"{FORMAT}/v2/entries".encode()
 _AUTHENTICATOR_AAD_V2 = f"{FORMAT}/v2/authenticator".encode()
 _DATA_KEY_AAD = f"{FORMAT}/v2/data_key".encode()
 _HKDF_INFO = f"{FORMAT}/passkey".encode()
+# The slot type of Password and passkey: an unlock password with a passkey that has no PRF.
+PAIR = "password-passkey"
 
 
 class VaultError(Exception):
@@ -147,7 +163,10 @@ def _authenticator_aad(doc):
 
 
 def _slot_aad(slot):
-    bound = {k: v for k, v in slot.items() if k not in ("wrapped", "label")}
+    # `cose_key` is sealed apart, under the data key, and a rotation re-seals it; the
+    # sign count changes at use. No other slot type has either field.
+    bound = {k: v for k, v in slot.items()
+             if k not in ("wrapped", "label", "cose_key", "sign_count")}
     return (f"{FORMAT}/slot/" + json.dumps(bound, sort_keys=True)).encode()
 
 
@@ -318,8 +337,29 @@ def unwrap_recovery(doc, passphrase):
 
 
 def unwrap_password(doc, password):
+    if any(s.get("type") == PAIR for s in doc["slots"]) and not any(
+            s.get("type") == "password" for s in doc["slots"]):
+        raise VaultError("this unlock password goes with a passkey - run "
+                         "jupyterlab-passkey vault unlock and use the browser tab")
     return _unwrap_typed(doc, "password", password, "wrong unlock password",
                          "the vault has no unlock password")
+
+
+def unwrap_pair(doc, password):
+    return _unwrap_typed(doc, PAIR, password, "wrong unlock password",
+                         "the vault has no password and passkey")
+
+
+def pair_key(doc, dek):
+    """The slot of Password and passkey and its COSE public key, opened with the data key."""
+    slot = next((s for s in doc["slots"] if s.get("type") == PAIR), None)
+    if slot is None:
+        raise VaultError("the vault has no password and passkey")
+    try:
+        return slot, _open(dek, slot["cose_key"], _slot_aad(slot))
+    except (InvalidTag, ValueError, KeyError, TypeError):
+        raise VaultError("the passkey's public key does not decrypt - "
+                         "remove the password and passkey and add them again")
 
 
 def unwrap_passkey(doc, cred_id, prf):
@@ -374,7 +414,8 @@ def adopt_data_key(path, root):
 
 
 def rotate_data_key(path, root):
-    """Re-seal the entries and the authenticator secret under a new random data key,
+    """Re-seal the entries, the authenticator secret and the public key of a Password
+    and passkey slot under a new random data key,
     under the file's lock, and return that key. A version-1 file is adopted first; no
     slot is touched, so every slot still opens the same root."""
     with _locked(path):
@@ -382,10 +423,14 @@ def rotate_data_key(path, root):
         current, _ = _adopt_locked(doc, root)
         entries = read_entries(doc, current)
         secret = authenticator_secret(doc, current)
+        pair = next((s for s in doc["slots"] if s.get("type") == PAIR), None)
+        key = pair_key(doc, current)[1] if pair else None
         dek = os.urandom(32)
         doc["entries"] = _seal(dek, json.dumps(entries).encode(), _ENTRIES_AAD_V2)
         if secret is not None:
             doc["authenticator"]["secret"] = _seal(dek, secret, _AUTHENTICATOR_AAD_V2)
+        if pair:
+            pair["cose_key"] = _seal(dek, key, _slot_aad(pair))
         doc["data_key"] = {"created": _now(), "sealed": _seal(root, dek, _DATA_KEY_AAD)}
         _write(path, doc)
     return dek
@@ -444,7 +489,8 @@ def add_passkey(path, root, cred_id, rp_id, prf_salt, prf, label):
 def remove_passkey(path, cred_id):
     with _locked(path):
         doc = load(path)
-        kept = [s for s in doc["slots"] if not (s.get("type") == "passkey" and s.get("cred_id") == cred_id)]
+        kept = [s for s in doc["slots"]
+                if not (s.get("type") in ("passkey", PAIR) and s.get("cred_id") == cred_id)]
         if len(kept) == len(doc["slots"]):
             raise VaultError("this vault does not have that passkey")
         doc["slots"] = kept
@@ -502,6 +548,36 @@ def set_mfa(path, root, dek, password, secret):
         _write(path, doc)
 
 
+def add_pair(path, root, dek, password, cred_id, rp_id, origin, cose_key, label, count):
+    """Add the slot of Password and passkey in one write: `password` wraps the root, and
+    the passkey's COSE public key is sealed under the data key with the slot's fields."""
+    slot = {"type": PAIR, "kdf": "argon2id", **ARGON2, "salt": _b64e(os.urandom(16)),
+            "cred_id": cred_id, "rp_id": rp_id, "origin": origin, "created": _now()}
+    slot["wrapped"] = _seal(_kek(slot, password), root, _slot_aad(slot))
+    slot["cose_key"] = _seal(dek, cose_key, _slot_aad(slot))
+    slot["label"] = label
+    if count:
+        slot["sign_count"] = count
+    with _locked(path):
+        doc = load(path)
+        _check_root(doc, root)
+        _check_dek(doc, dek)
+        if any(s.get("type") == PAIR or s.get("cred_id") == cred_id for s in doc["slots"]):
+            raise VaultError("the vault already has a password and passkey - remove them first")
+        doc["slots"].append(slot)
+        _write(path, doc)
+
+
+def set_sign_count(path, count):
+    """Record the sign count of the passkey of Password and passkey."""
+    with _locked(path):
+        doc = load(path)
+        slot = next((s for s in doc["slots"] if s.get("type") == PAIR), None)
+        if slot is not None:
+            slot["sign_count"] = count
+            _write(path, doc)
+
+
 def remove_mfa(path):
     """Remove the unlock password and the authenticator app. A vault written by 1.1.28
     to 1.1.31 can hold one without the other: what is there is removed."""
@@ -533,4 +609,5 @@ def authenticator_metadata(doc):
 
 def slot_metadata(doc):
     """The slots without their wrapped keys - what status shows."""
-    return [{k: v for k, v in s.items() if k not in ("wrapped", "salt", "hkdf_salt")} for s in doc["slots"]]
+    return [{k: v for k, v in s.items() if k not in ("wrapped", "salt", "hkdf_salt", "cose_key")}
+            for s in doc["slots"]]

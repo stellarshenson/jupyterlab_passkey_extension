@@ -17,7 +17,8 @@ const RECOVERY = 'correct horse battery staple';
 
 test.use({ autoGoto: false });
 
-async function addAuthenticator(page: any): Promise<void> {
+/** A virtual authenticator; with `hasPrf` false, a passkey that has no PRF. */
+async function addAuthenticator(page: any, hasPrf = true): Promise<void> {
   const raw = page.page;
   const client = await raw.context().newCDPSession(raw);
   await client.send('WebAuthn.enable');
@@ -28,7 +29,7 @@ async function addAuthenticator(page: any): Promise<void> {
       transport: 'internal',
       hasResidentKey: true,
       hasUserVerification: true,
-      hasPrf: true,
+      hasPrf,
       automaticPresenceSimulation: true,
       isUserVerified: true
     }
@@ -44,10 +45,10 @@ function state(page: any) {
 }
 
 /** A lab with no vault, a virtual authenticator, and the vault panel open. */
-async function openVault(page: any): Promise<void> {
+async function openVault(page: any, hasPrf = true): Promise<void> {
   fs.rmSync(VAULT_DIR, { recursive: true, force: true });
   await page.goto('?reset');
-  await addAuthenticator(page);
+  await addAuthenticator(page, hasPrf);
   await page.sidebar.openTab(PANEL_ID);
   // The first read can queue behind the lab's own start-up requests - seconds in a
   // lab with many extensions installed - so it gets more than the default 5 s.
@@ -59,10 +60,13 @@ async function submitSecret(page: any, value: string, twice: boolean) {
   const fields = dialog.locator('input[type="password"]');
   // Typing starts in the passphrase field, not on the Submit button.
   await expect(fields.nth(0)).toBeFocused();
+  // The kind of secret sets the fields: there is nothing for the user to tick.
+  await expect(dialog.getByRole('checkbox')).toHaveCount(0);
   await fields.nth(0).fill(value);
   if (twice) {
-    await dialog.getByRole('checkbox', { name: 'Type it twice' }).check();
     await fields.nth(1).fill(value);
+  } else {
+    await expect(fields.nth(1)).toBeHidden();
   }
   await dialog.getByRole('button', { name: 'Submit' }).click();
 }
@@ -92,9 +96,22 @@ async function nameAndConfirmPasskey(page: any, name = '') {
   await confirm.click();
 }
 
+/** Press a button of the choice that follows the recovery passphrase. */
+async function chooseAtSetUp(page: any, choice: string): Promise<void> {
+  const dialog = page.locator('.jp-Dialog');
+  const button = dialog.locator(`button[data-method="${choice}"]`);
+  // The choice waits for the server to create the vault; see nameAndConfirmPasskey.
+  await button.waitFor({ timeout: 20000 });
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
+    'Add unlock method'
+  );
+  await button.click();
+}
+
 async function createVault(page: any): Promise<void> {
   await panel(page).getByRole('button', { name: 'Create vault' }).click();
   await submitSecret(page, RECOVERY, true);
+  await chooseAtSetUp(page, 'passkey');
   await nameAndConfirmPasskey(page);
   // The panel is busy from the Create click until the action ends; the state text
   // changes only when the passkeys request returns, which can take longer than an
@@ -111,8 +128,11 @@ async function openCog(page: any) {
     .click();
 }
 
-/** An unlock method the cog view adds: a passkey, or the password and authenticator app. */
-type Kind = 'passkey' | 'mfa';
+/**
+ * An unlock method the cog view lists: a passkey, the password and authenticator app,
+ * or the password and passkey.
+ */
+type Kind = 'passkey' | 'mfa' | 'pair';
 
 /** The cog view's rows of one unlock method. */
 function method(page: any, kind: Kind | 'recovery') {
@@ -325,6 +345,122 @@ test('the panel has the geometry of the AI assistants panels', async ({
   expect(add.slice(0, 2)).toEqual([4, 4]);
 });
 
+test('every section ends with the divider line of the workspace manager, in both views and both themes', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  const dialog = page.locator('.jp-Dialog');
+  // Two categories, so the first and the last section of the list view differ.
+  for (const [name, category] of [
+    ['work/one', 'work'],
+    ['home/one', 'home']
+  ]) {
+    await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+    await dialog.getByLabel('Name', { exact: true }).fill(name);
+    await dialog.getByLabel('Category', { exact: true }).fill(category);
+    await dialog.getByRole('button', { name: 'Save' }).click();
+    await expect(dialog).toHaveCount(0);
+  }
+  const C = '.jp-PasskeyVaultPanel';
+  await expect(panel(page).locator(`${C}-list > ${C}-section`)).toHaveCount(2);
+  const filterButton = panel(page).getByRole('button', {
+    name: 'Filter entries'
+  });
+
+  // Each bottom line as "width style colour", beside the lines the theme's tokens
+  // draw on a temporary element; `above` is the row that stands over the first section.
+  const read = (above: string) =>
+    panel(page).evaluate(
+      (root: HTMLElement, [prefix, aboveSelector]: string[]) => {
+        const line = (node: Element) => {
+          const s = getComputedStyle(node);
+          return `${s.borderBottomWidth} ${s.borderBottomStyle} ${s.borderBottomColor}`;
+        };
+        const token = (color: string) => {
+          const probe = document.createElement('div');
+          probe.style.borderBottom = `var(--jp-border-width) solid var(${color})`;
+          root.appendChild(probe);
+          const value = line(probe);
+          probe.remove();
+          return value;
+        };
+        const at = (selector: string) =>
+          root.querySelector(selector) as HTMLElement;
+        const sections = Array.from(root.querySelectorAll(`${prefix}-section`));
+        const edge = root.getBoundingClientRect();
+        const row = at(aboveSelector).getBoundingClientRect();
+        return {
+          color2: token('--jp-border-color2'),
+          color3: token('--jp-border-color3'),
+          title: line(at(`${prefix}-header`)),
+          titleShadow: getComputedStyle(at(`${prefix}-header`)).boxShadow,
+          status: line(at(`${prefix}-status`)),
+          row: line(at(aboveSelector)),
+          // From the panel's left and right border, and to the first section's top.
+          rowEdges: [
+            row.left - edge.left,
+            edge.right - row.right,
+            sections[0].getBoundingClientRect().top - row.bottom
+          ].map(Math.round),
+          sections: sections.map(line),
+          sectionTops: sections.map(s => getComputedStyle(s).borderTopStyle),
+          sectionShadows: sections.map(s => getComputedStyle(s).boxShadow),
+          // A band: four border styles and its shadow.
+          bands: sections.map(s => {
+            const band = getComputedStyle(
+              s.querySelector(`${prefix}-sectionHeader`) as Element
+            );
+            return [
+              band.borderTopStyle,
+              band.borderRightStyle,
+              band.borderBottomStyle,
+              band.borderLeftStyle,
+              band.boxShadow
+            ].join(' ');
+          })
+        };
+      },
+      [C, above]
+    );
+  const check = async (view: string, above: string) => {
+    const r = await read(above);
+    const every = (value: string) => r.sections.map(() => value);
+    expect(r.sections.length, view).toBeGreaterThan(1);
+    expect(r.title, view).toBe(r.color2);
+    expect(r.titleShadow, view).toBe('none');
+    // The status row's line stays, also above a shown filter box.
+    expect(r.status, view).toBe(r.color3);
+    expect(r.row, view).toBe(r.color3);
+    expect(r.rowEdges, view).toEqual([0, 0, 0]);
+    expect(r.sections, view).toEqual(every(r.color3));
+    // No top line on a section, so two lines never touch.
+    expect(r.sectionTops, view).toEqual(every('none'));
+    expect(r.sectionShadows, view).toEqual(every('none'));
+    expect(r.bands, view).toEqual(every('none none none none none'));
+  };
+
+  for (const theme of ['JupyterLab Light', 'JupyterLab Dark']) {
+    await page.theme.setTheme(theme);
+    await expect(page.locator('body')).toHaveAttribute(
+      'data-jp-theme-name',
+      theme
+    );
+    await expect(filterButton).toHaveAttribute('aria-pressed', 'false');
+    await expect(panel(page).locator(`${C}-filterBox`)).toHaveCount(0);
+    await check(`${theme}, list view`, `${C}-status`);
+    await filterButton.click();
+    await expect(panel(page).locator(`${C}-filterBox`)).toHaveCount(1);
+    await check(`${theme}, list view with the filter`, `${C}-filterBox`);
+    // The filter stays pressed, and the cog view shows no filter box.
+    await openCog(page);
+    await expect(panel(page).locator(`${C}-filterBox`)).toHaveCount(0);
+    await check(`${theme}, cog view`, `${C}-status`);
+    await openCog(page);
+    await filterButton.click();
+  }
+});
+
 test('create vault sets the recovery passphrase, adds a passkey and unlocks', async ({
   page
 }) => {
@@ -348,6 +484,53 @@ test('create vault sets the recovery passphrase, adds a passkey and unlocks', as
   await openCog(page);
   await expect(method(page, 'passkey')).toHaveCount(1);
   await expect(panel(page)).toContainText('localhost');
+});
+
+test('set-up offers the methods after the passphrase, says why a step stopped, and Later leaves the vault open', async ({
+  page
+}) => {
+  await openVault(page);
+  await panel(page).getByRole('button', { name: 'Create vault' }).click();
+  await submitSecret(page, RECOVERY, true);
+  const dialog = page.locator('.jp-Dialog');
+  const choices = dialog.locator('.jp-PasskeyVaultForm-choice');
+  await choices.first().waitFor({ timeout: 20000 });
+  await expect(choices).toHaveCount(3);
+  await expect(choices.nth(0)).toContainText('Passkey');
+  await expect(choices.nth(1)).toContainText('Password and authenticator app');
+  await expect(choices.nth(2)).toContainText('Later');
+  await expect(dialog.getByRole('button', { name: 'Cancel' })).toHaveCount(0);
+  await expect(choices.nth(0)).toBeFocused();
+
+  // A step cancelled at its naming dialog comes back here with its reason, and the
+  // passphrase is not asked again.
+  await chooseAtSetUp(page, 'passkey');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog.locator('#jp-PasskeyVaultForm-note')).toHaveText(
+    'Adding the passkey was cancelled.'
+  );
+  await expect(dialog.locator('input')).toHaveCount(0);
+
+  // The arrow keys throw in JupyterLab's Dialog with no footer button unless kept from it.
+  const thrown: string[] = [];
+  page.on('pageerror', (error: Error) => thrown.push(error.message));
+  await page.keyboard.press('ArrowRight');
+  expect(thrown).toEqual([]);
+
+  await chooseAtSetUp(page, 'later');
+  await expect(dialog).toHaveCount(0);
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true', {
+    timeout: 20000
+  });
+  await expect(state(page)).toContainText('Unlocked');
+  await expect(panel(page)).toContainText('Vault created');
+  await expect(
+    panel(page).locator('.jp-PasskeyVaultPanel-message[data-kind="error"]')
+  ).toHaveCount(0);
+  await openCog(page);
+  await expect(method(page, 'recovery')).toHaveCount(1);
+  await expect(method(page, 'passkey')).toHaveCount(0);
+  await expect(method(page, 'mfa')).toHaveCount(0);
 });
 
 test('a hidden panel leaves the settings view', async ({ page }) => {
@@ -641,26 +824,13 @@ test('the entry dialog is wide with a tall Notes, and Edit shows the same fields
   // Typing starts in Name, not on the Save button.
   await expect(dialog.getByLabel('Name', { exact: true })).toBeFocused();
   await page.keyboard.type('github/api');
-  // One password field by default; the toggle adds the confirm field, and Save
-  // stays shut until the pair agrees.
+  // An entry value has one password field, and nothing to tick.
   const password = dialog.getByLabel('Password', { exact: true });
   const save = dialog.getByRole('button', { name: 'Save' });
-  const twice = dialog.getByRole('checkbox', { name: 'Type it twice' });
-  await expect(twice).not.toBeChecked();
   await expect(password).toBeVisible();
-  await expect(dialog.locator('input[type="password"]').nth(1)).toBeHidden();
-  await twice.check();
-  const confirmPassword = dialog.locator('input[type="password"]').nth(1);
-  await expect(confirmPassword).toBeVisible();
-  await expect(confirmPassword).toHaveAttribute(
-    'placeholder',
-    'Confirm password'
-  );
+  await expect(dialog.locator('input[type="password"]')).toHaveCount(1);
+  await expect(dialog.getByRole('checkbox')).toHaveCount(0);
   await password.fill('s3cret-value');
-  await confirmPassword.fill('s3cret-typo');
-  await expect(save).toBeDisabled();
-  await confirmPassword.fill('s3cret-value');
-  await expect(save).toBeEnabled();
   await save.click();
 
   await panel(page)
@@ -860,6 +1030,32 @@ test('a passkey is added with a passkey as the proof, or the recovery passphrase
   await expect(rows).toHaveCount(1);
 });
 
+test('a wrong recovery passphrase opens its dialog again before any browser prompt', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await openCog(page);
+  await removeMethod(page, method(page, 'passkey'));
+  await expect(method(page, 'passkey')).toHaveCount(0);
+  const calls = await countPasskeyCalls(page);
+
+  const dialog = page.locator('.jp-Dialog');
+  await addMethod(page, 'passkey');
+  await submitSecret(page, `not ${RECOVERY}`, false);
+  await expect(dialog.getByText('Wrong recovery passphrase')).toBeVisible();
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText('Add passkey');
+  await expect(dialog.locator('input[type="password"]').first()).toHaveValue(
+    ''
+  );
+  expect((await calls()).create).toBe(0);
+
+  await submitSecret(page, RECOVERY, false);
+  await nameAndConfirmPasskey(page);
+  await expect(method(page, 'passkey')).toHaveCount(1);
+  expect((await calls()).create).toBe(1);
+});
+
 const MFA_TITLE = 'Add password and authenticator app';
 const UNLOCK_PASSWORD = 'an everyday password';
 
@@ -883,7 +1079,6 @@ async function startMfa(page: any): Promise<string> {
   await expect(dialog.locator('.jp-Dialog-header')).toHaveText(MFA_TITLE);
   const fields = dialog.locator('input[type="password"]');
   await fields.nth(0).fill(UNLOCK_PASSWORD);
-  await dialog.getByRole('checkbox', { name: 'Type it twice' }).check();
   await fields.nth(1).fill(UNLOCK_PASSWORD);
   await dialog.getByRole('button', { name: 'Submit' }).click();
   await appDialog(page).code.waitFor({ timeout: 20000 });
@@ -912,19 +1107,16 @@ test('a password and an authenticator app are added in one flow, and the two unl
   const row = method(page, 'mfa');
   await expect(row).toHaveCount(0);
 
-  // The flow's first step: one password field, with the "Type it twice" opt-in.
+  // The flow's first step: two password fields, and nothing to tick.
   // Submit stays off until the pair agrees and holds the 12 characters asked.
   await addMethod(page, 'mfa');
   await expect(dialog.locator('.jp-Dialog-header')).toHaveText(MFA_TITLE);
   const fields = dialog.locator('input[type="password"]');
   const submit = dialog.getByRole('button', { name: 'Submit' });
   const status = dialog.locator('.jp-PassphraseDialog-status');
-  const twice = dialog.getByRole('checkbox', { name: 'Type it twice' });
   await expect(fields.nth(0)).toBeVisible();
-  await expect(fields.nth(1)).toBeHidden();
   await expect(fields.nth(0)).toHaveAttribute('placeholder', 'Password');
-  await expect(twice).not.toBeChecked();
-  await twice.check();
+  await expect(dialog.getByRole('checkbox')).toHaveCount(0);
   await expect(fields.nth(1)).toBeVisible();
   await expect(fields.nth(1)).toHaveAttribute(
     'placeholder',
@@ -1009,11 +1201,16 @@ test('a password and an authenticator app are added in one flow, and the two unl
   await unlockCode.fill(appCode(setupKey, step + 50));
   await send.click();
   await expect(dialog).toHaveCount(0);
-  await expect(panel(page)).toContainText('wrong code');
+  // A failure is a notification with no timeout, not a line in the panel.
+  const wrong = page.locator('.jp-toast-message', { hasText: 'Wrong code.' });
+  await expect(wrong).toHaveCount(1);
+  await expect(panel(page)).not.toContainText('rong code');
   await expect(state(page)).toHaveText('Locked');
   await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
-  // The step after the one that added the app: a code is accepted once.
+  // The step after the one that added the app: a code is accepted once. The next
+  // action dismisses the notification.
   await unlock.click();
+  await expect(wrong).toHaveCount(0);
   await submitSecret(page, UNLOCK_PASSWORD, false);
   await unlockCode.fill(appCode(setupKey, step + 1));
   await send.click();
@@ -1078,8 +1275,8 @@ test('a code, the unlock password or the recovery passphrase shows a password at
   await expect(dialog).toHaveCount(0);
   await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
 
-  // Unlock with the password and a code. An unlock starts no reveal window, so the eye
-  // asks a proof at once: the app's next code, since a code is accepted once.
+  // Unlock with the password and a code: the app's next code, since a code is accepted
+  // once.
   await openCog(page);
   await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
   await expect(state(page)).toHaveText('Locked');
@@ -1113,7 +1310,10 @@ test('a code, the unlock password or the recovery passphrase shows a password at
     await dialog.getByRole('button', { name: 'Close' }).click();
     await expect(dialog).toHaveCount(0);
   };
-  // The unlock opened the vault but started no window: the eye asks a proof.
+  // The unlock started the reveal window, so the eye asks nothing.
+  await showsAtOnce();
+  // After the window the eye asks a proof.
+  await endProvenMinute(page);
   await row.click();
   await expect(proof).toHaveCount(0);
   await eye.click();
@@ -1268,19 +1468,22 @@ test('the data key is rotated with the recovery passphrase as the proof', async 
  * so the only server `jupyter server list` shows is the test one; the lab's own
  * discovery variables must go, or the CLI would post to the developer's real lab.
  */
-function vaultGet(name: string): Promise<{
+function vaultCli(...args: string[]): Promise<{
   code: number | null;
   stdout: string;
   stderr: string;
 }> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    // The relay the server writes: the test config sets it inside the server only.
+    JLAB_PASSKEY_RELAY_DIR: path.resolve(__dirname, '..', '.tmp-passkey-relay'),
+    JLAB_PASSKEY_RELAY_BACKEND: 'shm',
     JUPYTER_PORT: process.env.JUPYTER_TEST_PORT || '8888'
   };
   for (const variable of ['JUPYTER_SERVER_URL', 'JUPYTERHUB_SERVICE_PREFIX']) {
     delete env[variable];
   }
-  const child = spawn('jupyterlab-passkey', ['vault', 'get', name], { env });
+  const child = spawn('jupyterlab-passkey', ['vault', ...args], { env });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', (data: Buffer) => (stdout += data.toString()));
@@ -1342,7 +1545,7 @@ test('a revealed or externally read entry shows its use without a manual refresh
   await expect(row('reveal/one')).not.toHaveClass(/jp-mod-stale/);
   const revealMs = Date.now() - revealed;
 
-  const got = await vaultGet('agent/two');
+  const got = await vaultCli('get', 'agent/two');
   expect(got.code, got.stderr).toBe(0);
   expect(got.stdout.trim()).toBe(SECRET);
   const read = Date.now();
@@ -1360,4 +1563,414 @@ test('a revealed or externally read entry shows its use without a manual refresh
     Date.now = () => now() + 120000;
   });
   await expect(age('agent/two')).toHaveText('2m ago', { timeout: 17000 });
+});
+
+test('one unlock asks for the passkey once, on a double click and at the eye after it', async ({
+  page
+}) => {
+  const SECRET = 'vault-e2e-secret-4Hs';
+  await openVault(page);
+  await createVault(page);
+  await addEntry(page, SECRET);
+  // A lock ends the reveal window that Create vault started.
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+  const calls = await countPasskeyCalls(page);
+
+  // The button stays in the page during the toast's exit animation, so a double click
+  // reaches the command twice.
+  const unlock = vaultCli('unlock');
+  const press = page.locator('.jp-toast-button', { hasText: 'Unlock vault' });
+  await expect(press).toHaveCount(1, { timeout: 45000 });
+  await press.dblclick();
+  const done = await unlock;
+  expect(done.code, done.stderr).toBe(0);
+  await expect(state(page)).toContainText('Unlocked', { timeout: 20000 });
+  expect((await calls()).get).toBe(1);
+
+  // The eye right after it shows the password with no second prompt.
+  const dialog = page.locator('.jp-Dialog');
+  await panel(page)
+    .locator('.jp-PasskeyVaultPanel-rowLine', { hasText: 'github/api' })
+    .click();
+  await dialog.getByRole('button', { name: 'Show password' }).click();
+  await expect(dialog.getByLabel('Password', { exact: true })).toHaveValue(
+    SECRET
+  );
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect((await calls()).get).toBe(1);
+
+  // An unlocked vault raises no notification.
+  await expect(press).toHaveCount(0, { timeout: 15000 });
+  const again = await vaultCli('unlock');
+  expect(again.code, again.stderr).toBe(0);
+  await expect(press).toHaveCount(0);
+  expect((await calls()).get).toBe(1);
+});
+
+test('an unlock notification leaves the tab once the vault is opened another way, and a press then asks nothing', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+  // A hidden panel reads nothing of its own: the tab last read the vault locked.
+  await page.sidebar.close('right');
+  const calls = await countPasskeyCalls(page);
+
+  // Its own caller: the server's notification queue can still hand this new page the
+  // unlock notification of the test before, and only this CLI's own notification shows
+  // that the CLI waits on a locked vault before the vault is opened.
+  const unlock = vaultCli('unlock', '--caller', 'the opened-elsewhere test');
+  const toast = page.locator('.Toastify__toast', {
+    hasText: 'Asked by the opened-elsewhere test: Unlock the vault'
+  });
+  await expect(toast).toHaveCount(1, { timeout: 45000 });
+  // Opened through the REST API, as a terminal or another tab would.
+  expect(await post(page, 'unlock', { recovery: RECOVERY })).toBe(200);
+  const done = await unlock;
+  expect(done.code, done.stderr).toBe(0);
+
+  // Within one poll of 15 s it leaves the toast and the notification list.
+  await expect(toast).toHaveCount(0, { timeout: 20000 });
+  await page.evaluate(() =>
+    (window as any).jupyterapp.commands.execute(
+      'apputils:display-notifications'
+    )
+  );
+  await expect(page.locator('.jp-Notification-Header')).toBeVisible();
+  await expect(
+    page.locator('.jp-Notification-List-Item', { hasText: 'Unlock the vault' })
+  ).toHaveCount(0);
+
+  // A press now, as from a notification left in another tab, asks nothing.
+  await page.evaluate(() =>
+    (window as any).jupyterapp.commands.execute('passkey:vault-unlock', {})
+  );
+  expect(await calls()).toEqual({ create: 0, get: 0 });
+  await expect(page.locator('.jp-Dialog')).toHaveCount(0);
+});
+
+test('a press on an unlock notification before the tab reads the vault opened another way reads it first and asks nothing', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+  // A hidden panel reads nothing of its own: only the notification's poll reads.
+  await page.sidebar.close('right');
+  const calls = await countPasskeyCalls(page);
+  const STATUS = /\/vault\/status(\?|$)/;
+
+  const unlock = vaultCli('unlock', '--caller', 'the read-on-press test');
+  const toast = page.locator('.Toastify__toast', {
+    hasText: 'Asked by the read-on-press test: Unlock the vault'
+  });
+  await expect(toast).toHaveCount(1, { timeout: 45000 });
+  // The poll reads the vault locked; the tab's next read is 15 s after it.
+  await page.waitForResponse((r: any) => STATUS.test(r.url()), {
+    timeout: 30000
+  });
+  let reads = 0;
+  page.on('request', (r: any) => {
+    if (STATUS.test(r.url())) {
+      reads++;
+    }
+  });
+  // Opened through the REST API, as a terminal or another tab would.
+  expect(await post(page, 'unlock', { recovery: RECOVERY })).toBe(200);
+  expect(reads).toBe(0);
+  await toast.locator('.jp-toast-button', { hasText: 'Unlock vault' }).click();
+
+  // The press leaves the notification at once, not at the next poll.
+  await page.evaluate(() =>
+    (window as any).jupyterapp.commands.execute(
+      'apputils:display-notifications'
+    )
+  );
+  await expect(page.locator('.jp-Notification-Header')).toBeVisible();
+  await expect(
+    page.locator('.jp-Notification-List-Item', {
+      hasText: 'Asked by the read-on-press test'
+    })
+  ).toHaveCount(0, { timeout: 5000 });
+  expect(await calls()).toEqual({ create: 0, get: 0 });
+  await expect(page.locator('.jp-Dialog')).toHaveCount(0);
+  const done = await unlock;
+  expect(done.code, done.stderr).toBe(0);
+});
+
+/** Count the page's passkey requests from here on: `create` and `get`. */
+async function countPasskeyCalls(page: any): Promise<() => Promise<any>> {
+  await page.evaluate(() => {
+    const credentials = navigator.credentials;
+    const create = credentials.create.bind(credentials);
+    const get = credentials.get.bind(credentials);
+    const calls = ((window as any).passkeyCalls = { create: 0, get: 0 });
+    credentials.create = (options?: CredentialCreationOptions) => {
+      calls.create++;
+      return create(options);
+    };
+    credentials.get = (options?: CredentialRequestOptions) => {
+      calls.get++;
+      return get(options);
+    };
+  });
+  return () => page.evaluate(() => ({ ...(window as any).passkeyCalls }));
+}
+
+const PAIR_PASSWORD = 'a password for the passkey';
+
+/** Create the vault with a passkey that has no PRF: the offer of Password and passkey. */
+async function createWithNoPrf(page: any): Promise<void> {
+  await panel(page).getByRole('button', { name: 'Create vault' }).click();
+  await submitSecret(page, RECOVERY, true);
+  await chooseAtSetUp(page, 'passkey');
+  await nameAndConfirmPasskey(page);
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
+    'Add password and passkey',
+    { timeout: 20000 }
+  );
+  await expect(dialog).toContainText(
+    'This passkey cannot hold the vault key, because it has no PRF.'
+  );
+}
+
+/** A vault request sent by the page itself, outside the panel: its status. */
+function post(page: any, action: string, body: unknown): Promise<number> {
+  return page.evaluate(
+    ({ action, body }: any) =>
+      fetch(`/jupyterlab-passkey-extension/vault/${action}`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      }).then(r => r.status),
+    { action, body }
+  );
+}
+
+test('a passkey with no PRF becomes Password and passkey: one create and one get, an unlock with one get, the eye, and Remove', async ({
+  page
+}) => {
+  const SECRET = 'vault-e2e-secret-pair-3Qz';
+  await openVault(page, false);
+  const calls = await countPasskeyCalls(page);
+  const dialog = page.locator('.jp-Dialog');
+  await createWithNoPrf(page);
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
+    'Add password and passkey'
+  );
+  const [added] = await Promise.all([
+    page.waitForRequest(/\/vault\/password-passkey(\?|$)/),
+    submitSecret(page, PAIR_PASSWORD, true)
+  ]);
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true', {
+    timeout: 20000
+  });
+  await expect(state(page)).toContainText('Unlocked');
+  // The get that found no PRF is the signature the server checked: no third prompt.
+  expect(await calls()).toEqual({ create: 1, get: 1 });
+  // The server ran the registration steps on Chromium's create and took the public
+  // key from it: the page sends no key of its own. Both prompts signed one challenge.
+  const registered = added.postDataJSON();
+  expect(registered).not.toHaveProperty('public_key');
+  expect(Object.keys(registered.registration).sort()).toEqual([
+    'attestation_object',
+    'client_data'
+  ]);
+  const client = (data: string) =>
+    JSON.parse(Buffer.from(data, 'base64url').toString());
+  expect(client(registered.registration.client_data).type).toBe(
+    'webauthn.create'
+  );
+  expect(client(registered.registration.client_data).challenge).toBe(
+    client(registered.assertion.client_data).challenge
+  );
+  await openCog(page);
+  await expect(method(page, 'pair')).toHaveCount(1);
+  await expect(method(page, 'pair')).toContainText('Password and passkey');
+  await expect(method(page, 'passkey')).toHaveCount(0);
+  await openCog(page);
+  await addEntry(page, SECRET);
+
+  // An unlock: the password, then the passkey, in one request with no PRF. The
+  // challenge is read before the password dialog, whose Submit leads to the passkey
+  // with no dialog between.
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+  const unlock = panel(page).getByRole('button', {
+    name: 'Unlock with password and passkey'
+  });
+  await Promise.all([
+    page.waitForRequest(/\/vault\/challenge(\?|$)/),
+    unlock.click()
+  ]);
+  const [request] = await Promise.all([
+    page.waitForRequest(/\/vault\/unlock(\?|$)/),
+    submitSecret(page, PAIR_PASSWORD, false)
+  ]);
+  const sent = request.postDataJSON();
+  expect(Object.keys(sent).sort()).toEqual(['assertion', 'password']);
+  expect(Object.keys(sent.assertion).sort()).toEqual([
+    'authenticator_data',
+    'client_data',
+    'cred_id',
+    'signature'
+  ]);
+  await expect(state(page)).toContainText('Unlocked');
+  expect(await calls()).toEqual({ create: 1, get: 2 });
+
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+
+  // A wrong password: the passkey is asked, the server refuses, the vault stays locked.
+  await unlock.click();
+  await submitSecret(page, `not ${PAIR_PASSWORD}`, false);
+  // In the panel's line or a notification, whichever reports the failure.
+  await expect(page.getByText('wrong unlock password').first()).toBeVisible();
+  await expect(state(page)).toHaveText('Locked');
+
+  // After the reveal window of an unlock, the eye proves with this passkey.
+  await unlock.click();
+  await submitSecret(page, PAIR_PASSWORD, false);
+  await expect(state(page)).toContainText('Unlocked');
+  await endProvenMinute(page);
+  const before = (await calls()).get;
+  await panel(page)
+    .locator('.jp-PasskeyVaultPanel-rowLine', { hasText: 'github/api' })
+    .click();
+  const [reveal] = await Promise.all([
+    page.waitForRequest(REVEAL),
+    dialog.getByRole('button', { name: 'Show password' }).click()
+  ]);
+  expect(Object.keys(reveal.postDataJSON()).sort()).toEqual([
+    'assertion',
+    'name'
+  ]);
+  await expect(dialog.getByLabel('Password', { exact: true })).toHaveValue(
+    SECRET
+  );
+  expect((await calls()).get).toBe(before + 1);
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // Remove, in two steps, after a recovery unlock: the button is gone.
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await panel(page)
+    .getByRole('button', { name: 'Use recovery passphrase' })
+    .click();
+  await submitSecret(page, RECOVERY, false);
+  await expect(state(page)).toContainText('Unlocked');
+  await openCog(page);
+  await removeMethod(page, method(page, 'pair'));
+  await expect(method(page, 'pair')).toHaveCount(0);
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+  await expect(unlock).toHaveCount(0);
+});
+
+test('a declined Password and passkey stores nothing, names the ways in, and names the passkey unused where the browser cannot remove it', async ({
+  page
+}) => {
+  await openVault(page, false);
+  // A browser with no removal request: the line names the passkey to delete.
+  await page.evaluate(() =>
+    Object.defineProperty(PublicKeyCredential, 'signalUnknownCredential', {
+      value: undefined,
+      configurable: true
+    })
+  );
+  const dialog = page.locator('.jp-Dialog');
+  await createWithNoPrf(page);
+  await dialog.getByRole('button', { name: 'Decline' }).click();
+  await expect(dialog.locator('#jp-PasskeyVaultForm-note')).toHaveText(
+    /^Passkey not added, no PRF - use another passkey or Password and authenticator app; delete the unused passkey dated \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\.$/,
+    { timeout: 20000 }
+  );
+  await chooseAtSetUp(page, 'later');
+  await expect(dialog).toHaveCount(0);
+  await openCog(page);
+  await expect(method(page, 'pair')).toHaveCount(0);
+  await expect(method(page, 'passkey')).toHaveCount(0);
+});
+
+test('a passkey with no PRF declined in the cog view is an amber notification that names the ways in, and the browser is asked to remove it', async ({
+  page
+}) => {
+  await openVault(page, false);
+  await panel(page).getByRole('button', { name: 'Create vault' }).click();
+  await submitSecret(page, RECOVERY, true);
+  await chooseAtSetUp(page, 'later');
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toHaveCount(0);
+  await expect(state(page)).toContainText('Unlocked', { timeout: 20000 });
+  // Record each passkey the page creates, and take its removal requests in place of the browser.
+  await page.evaluate(() => {
+    const record = ((window as any).passkeyRemoval = {
+      created: [] as string[],
+      asked: [] as unknown[]
+    });
+    const credentials = navigator.credentials;
+    const create = credentials.create.bind(credentials);
+    credentials.create = async (options?: CredentialCreationOptions) => {
+      const made = (await create(options)) as PublicKeyCredential;
+      record.created.push(made.id);
+      return made;
+    };
+    Object.defineProperty(PublicKeyCredential, 'signalUnknownCredential', {
+      value: async (request: unknown) => {
+        record.asked.push(request);
+      },
+      configurable: true
+    });
+  });
+  const removal = () => page.evaluate(() => (window as any).passkeyRemoval);
+
+  await openCog(page);
+  await addMethod(page, 'passkey');
+  // This host has no passkey yet: the recovery passphrase is the proof.
+  await submitSecret(page, RECOVERY, false);
+  await nameAndConfirmPasskey(page);
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText(
+    'Add password and passkey',
+    { timeout: 20000 }
+  );
+  await dialog.getByRole('button', { name: 'Decline' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // The browser took the removal request, so the line names no passkey to delete.
+  const toast = page.locator('.Toastify__toast', {
+    hasText: 'Passkey not added'
+  });
+  await expect(toast).toHaveCount(1, { timeout: 20000 });
+  await expect(toast).toHaveClass(/jp-Notification-Toast-warning/);
+  await expect(toast.locator('.jp-toast-message')).toHaveText(
+    'Passkey not added, no PRF - use another passkey or Password and authenticator app.'
+  );
+  const { created, asked } = await removal();
+  expect(created).toHaveLength(1);
+  expect(asked).toEqual([{ rpId: 'localhost', credentialId: created[0] }]);
+
+  // No line in the panel, in the cog view or the list; the notification stays.
+  const line = panel(page).locator('.jp-PasskeyVaultPanel-message');
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+  await expect(line).toHaveCount(0);
+  await openCog(page);
+  await expect(line).toHaveCount(0);
+  await panel(page).getByRole('button', { name: 'Refresh' }).click();
+  await expect(line).toHaveCount(0);
+  await expect(toast).toHaveCount(1);
+  await openCog(page);
+  await expect(method(page, 'passkey')).toHaveCount(0);
+  await expect(method(page, 'pair')).toHaveCount(0);
+
+  // The next action dismisses it.
+  await addMethod(page, 'passkey');
+  await expect(toast).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
 });

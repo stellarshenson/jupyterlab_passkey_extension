@@ -316,10 +316,13 @@ def _caller() -> str:
     return name[:CALLER_MAX] or NO_CALLER
 
 
-def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
+def _trigger(command_id: str, args_obj: dict, label: str, message: str,
+             seconds: float | None = None) -> None:
     """Post the notification whose button runs `command_id` with `args_obj`. Its text
     starts with who asks (`_caller`), so the person who clicks knows which project
-    raised it."""
+    raised it. `seconds` is how long the caller waits for the click: the data names it
+    with the command, so a tab can drop a vault notification nothing waits for any more
+    (`dismissStale` in src/vault/plugin.ts)."""
     base, token = _server()
     payload = {
         "message": f"Asked by {_caller()}: {message}",
@@ -334,6 +337,10 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
             "args": args_obj,
         }],
     }
+    if seconds is not None:
+        # The ingest refuses a number that is not finite; `--timeout inf` has no end.
+        payload["data"] = {"command": command_id,
+                           "seconds": seconds if math.isfinite(seconds) else None}
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"token {token}"
@@ -372,8 +379,12 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str) -> None:
     _say(f"click '{label}' in your JupyterLab tab - the notification went to {base}")
 
 
+class NoRelay(SystemExit):
+    """`_wait` ran out: nobody answered."""
+
+
 def _wait(nonce: str, kind: str, timeout: float, on_timeout: str,
-          watch_cancel: bool = False) -> None:
+          watch_cancel: bool = False, poll=None) -> None:
     """Block until the relay is staged.
 
     Existence is enough: a relay is staged atomically (the file lands via
@@ -384,6 +395,9 @@ def _wait(nonce: str, kind: str, timeout: float, on_timeout: str,
     With `watch_cancel`, a `cancel` marker staged by a dismissed dialog ends the wait
     at once. Without it a refusal is indistinguishable from an unclicked button, so
     the user waits out the full timeout to be told what they already decided.
+
+    `poll` runs on every round and raises to end the wait on something other than this
+    relay: a vault unlocked from elsewhere leaves no relay for this nonce.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -394,6 +408,8 @@ def _wait(nonce: str, kind: str, timeout: float, on_timeout: str,
             # would strand a key until its TTL for a nonce nothing will use again.
             relay.unstage(nonce, "cancel")
             raise SystemExit("cancelled")
+        if poll:
+            poll()
         time.sleep(0.4)
     # One last look. The final sleep straddles the deadline, so a relay landing in that
     # window would otherwise be declared missing while it is really there - failing a
@@ -401,7 +417,7 @@ def _wait(nonce: str, kind: str, timeout: float, on_timeout: str,
     # would have consumed it is the one raising here.
     if relay.relay_exists(nonce, kind):
         return
-    raise SystemExit(f"no relay after {timeout:.0f}s - {on_timeout}")
+    raise NoRelay(f"no relay after {timeout:.0f}s - {on_timeout}")
 
 
 def _wait_gone(nonce: str, kind: str, timeout: float, on_timeout: str) -> None:
@@ -431,7 +447,7 @@ def _wait_gone(nonce: str, kind: str, timeout: float, on_timeout: str) -> None:
 
 
 def _run(args_obj: dict, label: str, message: str, timeout: float,
-         command_id: str = RUN_COMMAND) -> dict:
+         command_id: str = RUN_COMMAND, poll=None) -> dict:
     """Drive a ceremony command and consume its relay, destroying it on every path out.
 
     `passkey:run` by default; the vault's unlock and register commands answer through
@@ -449,9 +465,9 @@ def _run(args_obj: dict, label: str, message: str, timeout: float,
     the consumer's job.
     """
     nonce = args_obj["nonce"]
-    _trigger(command_id, args_obj, label, message)
+    _trigger(command_id, args_obj, label, message, seconds=timeout)
     try:
-        _wait(nonce, "json", timeout, "was the button clicked and the prompt approved?")
+        _wait(nonce, "json", timeout, "was the button clicked and the prompt approved?", poll=poll)
         # collect destroys the relay as it reads it.
         raw = relay.collect(nonce, "json")
         if raw is None:
@@ -967,14 +983,13 @@ Use it to get a secret out of a head and into something else: a vault entry, a .
 keystore's recovery slot. An AI agent can run this and pipe the reference onward without
 the secret ever entering its transcript. The consumer resolves the scheme itself.
 
-The value is entered once. A "Type it twice" checkbox adds a confirm field, and Submit
-stays disabled until the two match. --twice asks for the value twice with no toggle.
-Cancelling exits 1 at once.
+The value is entered once. The calling agent decides on --twice, for a value being set:
+two fields, and Submit stays disabled until they match. Cancelling exits 1 at once.
 """,
         """
 examples:
-  # a passphrase being set - the dialog offers "Type it twice". The consumer resolves the ref:
-  pass_ref=$(jupyterlab-passkey passphrase --prompt "Recovery passphrase") || exit 1
+  # a passphrase being set - two fields. The consumer resolves the ref:
+  pass_ref=$(jupyterlab-passkey passphrase --twice --prompt "Recovery passphrase") || exit 1
   PASS_RECOVERY_REF="$pass_ref" pass-cli-open --ensure
 
   # a token being pasted - one field, nothing to confirm
@@ -998,7 +1013,7 @@ examples:
     )
     s.add_argument(
         "--twice", action="store_true",
-        help="ask for the value twice, with a confirm field that cannot be dismissed",
+        help="ask for the value in two fields that must match",
     )
     s.set_defaults(func=cmd_passphrase)
 
