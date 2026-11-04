@@ -1,6 +1,6 @@
 {
   "title": "Passkey Vault",
-  "description": "The password vault the Jupyter server keeps, unlocked with a passkey, with an unlock password and an authenticator code, or with the recovery passphrase",
+  "description": "A password vault the Jupyter server keeps, unlocked by passkey, password and code, or recovery passphrase",
   "jupyter.lab.setting-icon": "jupyterlab-passkey-extension:vault",
   "jupyter.lab.setting-icon-label": "Passkey Vault",
   "type": "object",

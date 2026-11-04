@@ -88,41 +88,39 @@ class VaultHandler(APIHandler):
     def _answer(self, table, action, arg):
         fn = table.get(action)
         if fn is None:
-            self.set_status(404)
-            self.finish(json.dumps({"error": f"no vault action {action!r}"}))
-            return
+            return self._error(404, f"no vault action {action!r}", "no-action")
         try:
             result = fn(_service, arg)
         except Locked as e:
-            return self._error(423, e)
+            return self._error(423, e, "locked")
         except Denied as e:
-            return self._error(403, e)
+            return self._error(403, e, "denied")
         except NotFound as e:
-            return self._error(404, e)
+            return self._error(404, e, "entry-not-found")
         except Conflict as e:
-            return self._error(409, e)
+            return self._error(409, e, "conflict")
         except VaultError as e:
-            return self._error(400, e)
+            return self._error(400, e, "invalid")
         except (OSError, ValueError) as e:
             # A key holder or file failure. The messages carry no secret (values ride
             # stdin or the file, never an argument or an exception), and the log line
             # names the action and the exception type, never its message.
             self.log.warning("vault %s failed: %s", action, type(e).__name__)
-            return self._error(500, f"vault {action} failed: {e}")
+            return self._error(500, f"vault {action} failed: {e}", "server")
         if result is None:
             self.set_status(204)
             self.finish()
         else:
             self.finish(json.dumps(result))
 
-    def _error(self, status, message):
+    def _error(self, status, message, code):
         self.set_status(status)
-        self.finish(json.dumps({"error": str(message)}))
+        self.finish(json.dumps({"error": str(message), "code": code}))
 
     def _body(self):
         body = json_body(self) if self.request.body else {}
         if not isinstance(body, dict):
-            self._error(400, "the request body must be a JSON object")
+            self._error(400, "the request body must be a JSON object", "invalid")
             return None
         return body
 

@@ -526,7 +526,10 @@ test('copy survives a transient focus blip - the background retry lands it', asy
 
   await page.evaluate(
     (n: string) =>
-      (window as any).jupyterapp.commands.execute('passkey:copy', { nonce: n }),
+      (window as any).jupyterapp.commands.execute('passkey:copy', {
+        nonce: n,
+        label: 'Galata secret'
+      }),
     nonce
   );
 
@@ -537,7 +540,7 @@ test('copy survives a transient focus blip - the background retry lands it', asy
   // Quietly: a blip that recovers must not raise the second notification.
   expect(
     await page
-      .locator('.jp-toast-message', { hasText: 'needs another click' })
+      .locator('.jp-toast-message', { hasText: 'Clipboard refused' })
       .count()
   ).toBe(0);
   expect(fs.existsSync(secretFile)).toBe(false);
@@ -575,7 +578,7 @@ test('copy refused past its retry window offers a click that finishes it', async
 
   // The offer names the secret and never carries it.
   const toast = page.locator('.jp-toast-message', {
-    hasText: 'needs another click'
+    hasText: 'Clipboard refused'
   });
   await expect(toast).toHaveCount(1);
   await expect(toast).toContainText('Galata secret');
@@ -615,7 +618,10 @@ test('copy re-offers the click when even the recovery write is refused', async (
 
   await page.evaluate(
     (n: string) =>
-      (window as any).jupyterapp.commands.execute('passkey:copy', { nonce: n }),
+      (window as any).jupyterapp.commands.execute('passkey:copy', {
+        nonce: n,
+        label: 'Galata secret'
+      }),
     nonce
   );
 
@@ -630,7 +636,7 @@ test('copy re-offers the click when even the recovery write is refused', async (
   });
   await expect(button).toHaveCount(1);
   const spentOffer = await page
-    .locator('.jp-toast-message', { hasText: 'needs another click' })
+    .locator('.jp-toast-message', { hasText: 'Clipboard refused' })
     .elementHandle();
   await button.first().click();
 
@@ -643,7 +649,7 @@ test('copy re-offers the click when even the recovery write is refused', async (
     spentOffer
   );
   await expect(
-    page.locator('.jp-toast-message', { hasText: 'needs another click' })
+    page.locator('.jp-toast-message', { hasText: 'Clipboard refused' })
   ).toHaveCount(1);
 
   // And the returned offer still works once the refusal clears. With the spent

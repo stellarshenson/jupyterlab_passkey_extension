@@ -784,7 +784,7 @@ class PasskeyNameForm extends Widget {
     const help = document.createElement('div');
     help.className = 'jp-PasskeyVaultForm-help';
     help.textContent = trans.__(
-      'Tells this passkey apart from others in the list, for example "Work laptop"'
+      'Shown in the passkey list, for example "Work laptop"'
     );
     this.node.append(text, field('Name', this.input, help));
   }
@@ -829,7 +829,7 @@ async function confirmNewPasskey(name: string): Promise<boolean> {
   const result = await launchWithEscape(
     new Dialog({
       title: trans.__('Confirm the new passkey'),
-      body: `The passkey "${name}" was created. Confirm it once more so the vault can derive its key from it.`,
+      body: `Passkey "${name}" created - confirm it to derive the vault key`,
       hasClose: false,
       buttons: [
         Dialog.cancelButton(),
@@ -1339,7 +1339,7 @@ class AuthenticatorForm extends Widget {
     this.addClass('jp-PasskeyVaultForm');
     const text = document.createElement('p');
     text.textContent = trans.__(
-      'Scan the QR code with the authenticator app, or type the setup key into the app. Then enter the code the app shows.'
+      'Scan the QR code or enter the setup key, then the app code'
     );
     const qr = document.createElement('div');
     qr.className = 'jp-PasskeyVaultForm-qr';
@@ -1439,7 +1439,7 @@ export async function registerMfa(
         // Only a 4xx answer is a refusal. After a lost answer or a 5xx the two may
         // have been added.
         const clause =
-          '; the entry your authenticator app added is unused - you can delete it in the app';
+          '; the authenticator entry is unused - delete it in the app';
         throw e instanceof VaultError && e.status >= 400 && e.status < 500
           ? new VaultError(e.status, e.message + clause, fit(e.message, clause))
           : e;
@@ -1467,19 +1467,19 @@ async function offerPair(
   if (status.slots.some(s => s.type === 'password-passkey')) {
     throw new VaultError(
       0,
-      'the vault already has a password and passkey - remove them first'
+      'Password and passkey already added - remove it first'
     );
   }
   // What happened, then the ways that work: a retry on this authenticator fails again.
   const declined = new VaultError(
     0,
-    'passkey not added, no PRF - use another passkey or Password and authenticator app'
+    'no PRF - passkey not added; use another passkey or Password and authenticator app'
   );
   const { button } = await launchWithEscape(
     new Dialog({
       title: ADD_PAIR,
       body: trans.__(
-        'This passkey cannot hold the vault key, because it has no PRF. It can still be used with a new unlock password: the password decrypts the vault, and the server checks the passkey. A copy of the vault file opens with the password alone.'
+        'No PRF: the passkey cannot hold the vault key. A new unlock password decrypts the vault and the server checks the passkey; a copy of the vault opens with the password alone.'
       ),
       hasClose: false,
       buttons: [
@@ -1539,7 +1539,7 @@ export async function registerWithProof(
   const name = await nameNewPasskey(
     label,
     'prf' in proof
-      ? 'Your passkey was accepted. Your browser creates the new passkey next.'
+      ? 'Passkey accepted - your browser creates the new passkey next'
       : 'Your browser creates the passkey next.'
   );
   if (name === null) {
@@ -1558,7 +1558,7 @@ export async function registerWithProof(
 
 /** The prompt of a new vault's passphrase, the first step of every set-up in the tab. */
 export const NEW_RECOVERY =
-  'Choose a recovery passphrase and store it offline - it opens the vault when no other unlock method can.';
+  'Choose a recovery passphrase and store it offline - it opens the vault when no other method can';
 
 /**
  * The last step of a set-up: the user adds an unlock method or leaves the recovery
@@ -1611,7 +1611,7 @@ export async function chooseFirstMethod(
 function stepError(outcome: string): VaultError {
   return new VaultError(
     0,
-    `the recovery passphrase step ${outcome} - run the command again to continue the vault set-up`
+    `recovery passphrase step ${outcome} - rerun the command to continue`
   );
 }
 

@@ -22,14 +22,19 @@ jest.mock('@jupyterlab/apputils', () => ({
     launch(): any {
       return mockLaunch(this.options);
     }
-  }
+  },
+  Notification: { emit: jest.fn(), dismiss: jest.fn() }
 }));
 jest.mock('@jupyterlab/services', () => ({ ServerConnection: {} }));
 jest.mock('../request');
 
+import { Notification } from '@jupyterlab/apputils';
 import { requestAPI } from '../request';
 import { runShow } from '../show';
 
+const mockEmit = Notification.emit as jest.MockedFunction<
+  typeof Notification.emit
+>;
 const mockRequestAPI = requestAPI as jest.MockedFunction<typeof requestAPI>;
 
 const serverSettings = {} as ServerConnection.ISettings;
@@ -76,7 +81,10 @@ describe('runShow', () => {
   it('closes the accessibility channel - the image carries no alt text', async () => {
     // The code must not re-enter the accessibility tree the image exists to keep it
     // out of, so the alt is deliberately empty.
-    await runShow({ nonce: NONCE }, serverSettings);
+    await runShow(
+      { nonce: NONCE, label: 'Authenticator code' },
+      serverSettings
+    );
 
     const img = dialogBodyNode().querySelector('img') as HTMLImageElement;
     expect(img.getAttribute('alt')).toBe('');
@@ -92,18 +100,25 @@ describe('runShow', () => {
     expect(label?.textContent).toBe('Authenticator code');
   });
 
-  it('omits the label element when no label is given', async () => {
+  it('refuses a code with no secret name before fetching anything', async () => {
+    // A nameless dialog cannot say what the code is for, so nothing is delivered.
     await runShow({ nonce: NONCE }, serverSettings);
 
-    expect(dialogBodyNode().querySelector('.jp-PasskeyCode-label')).toBeNull();
+    expect(mockRequestAPI).not.toHaveBeenCalled();
+    expect(mockCtor).not.toHaveBeenCalled();
+    expect(mockEmit).toHaveBeenCalledWith(
+      'Code refused - no secret name',
+      'warning',
+      { autoClose: false }
+    );
   });
 
   it('propagates a failed render, e.g. a relay already consumed (404)', async () => {
     mockRequestAPI.mockRejectedValue(new Error('404'));
 
-    await expect(runShow({ nonce: NONCE }, serverSettings)).rejects.toThrow(
-      '404'
-    );
+    await expect(
+      runShow({ nonce: NONCE, label: 'Authenticator code' }, serverSettings)
+    ).rejects.toThrow('404');
     expect(mockCtor).not.toHaveBeenCalled();
   });
 });

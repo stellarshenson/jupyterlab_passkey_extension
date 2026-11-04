@@ -346,7 +346,14 @@ class VaultService:
             raise VaultError("a recovery unlock needs the passphrase")
         path = store.vault_path()
         doc = store.load(path)
-        root = store.unwrap_recovery(doc, passphrase)
+        try:
+            root = store.unwrap_recovery(doc, passphrase)
+        except VaultError as e:
+            if str(e) != "wrong recovery passphrase":
+                raise
+            # A refused credential is 403, as a wrong passkey or code is; a malformed
+            # request stays 400.
+            raise Denied(str(e)) from None
         self._hold(*self._finish_unlock(path, doc, root, "recovery", passphrase))
 
     def unlock_password(self, password, code=None):
@@ -467,7 +474,8 @@ class VaultService:
         for e in entries:
             if e["name"] == name:
                 return e
-        raise NotFound(f"no entry named {name!r}")
+        raise NotFound(f"no entry named {name!r} - run `jupyterlab-passkey vault list "
+                       "--json` to see the names")
 
     def _mark_used(self, name):
         """Record the entry's last use. The stamp is auxiliary: it must not fail a read."""

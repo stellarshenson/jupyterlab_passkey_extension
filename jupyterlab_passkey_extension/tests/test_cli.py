@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -114,7 +115,15 @@ def test_trigger_starts_the_message_with_who_asks(posted):
     # Several projects call the vault: the person who clicks reads which one asks.
     cli._trigger("passkey:run", {"nonce": "n" * 20}, "Approve", "Approve the request.")
 
-    assert posted[0]["payload"]["message"] == "Asked by the tests: Approve the request."
+    assert posted[0]["payload"]["message"] == "**the tests**: Approve the request."
+
+
+def test_the_message_starts_with_the_bold_caller(posted):
+    cli._trigger("passkey:run", {"nonce": "n" * 20}, "Approve", "Approve the request.")
+
+    message = posted[0]["payload"]["message"]
+    assert re.match(r"\*\*[^*]+\*\*: .", message)
+    assert "Asked by" not in message
 
 
 def test_the_caller_is_the_project_the_command_runs_in(tmp_path, monkeypatch):
@@ -164,13 +173,14 @@ def test_caller_option_names_who_asks_and_outranks_the_variable(relay_dir, tmp_p
     src = tmp_path / "token.txt"
     src.write_text(COPY_SECRET)
     monkeypatch.setattr(sys, "argv", [
-        "jupyterlab-passkey", "copy", str(src), "--caller", "invoice-processing",
+        "jupyterlab-passkey", "copy", str(src), "--label", "GitHub token",
+        "--caller", "invoice-processing",
     ])
 
     assert cli.main() == 0
 
     message = posted[0]["payload"]["message"]
-    assert message.startswith("Asked by invoice-processing: ")
+    assert message.startswith("**invoice-processing**: ")
     # The command that `vault exec` runs inherits the name.
     assert os.environ["JLAB_PASSKEY_CALLER"] == "invoice-processing"
 
@@ -178,11 +188,13 @@ def test_caller_option_names_who_asks_and_outranks_the_variable(relay_dir, tmp_p
 def test_an_empty_caller_option_falls_back(relay_dir, tmp_path, posted, monkeypatch):
     src = tmp_path / "token.txt"
     src.write_text(COPY_SECRET)
-    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "copy", str(src), "--caller", ""])
+    monkeypatch.setattr(sys, "argv", [
+        "jupyterlab-passkey", "copy", str(src), "--label", "GitHub token", "--caller", "",
+    ])
 
     assert cli.main() == 0
 
-    assert posted[0]["payload"]["message"].startswith("Asked by the tests: ")
+    assert posted[0]["payload"]["message"].startswith("**the tests**: ")
 
 
 def test_every_subcommand_takes_the_caller_option(monkeypatch, capsys):
@@ -344,7 +356,7 @@ def test_rp_id_mismatch_gives_an_actionable_message(relay_dir, monkeypatch, no_w
 
     monkeypatch.setattr(cli, "_trigger", fake_trigger)
 
-    with pytest.raises(SystemExit, match="--rp-id does not match"):
+    with pytest.raises(SystemExit, match="--rp-id must be the tab's hostname"):
         cli.cmd_get(_ns(rp_id="wrong.example", cred_id="CID", prf_salt=None, timeout=1.0))
 
 
@@ -427,7 +439,7 @@ def test_passphrase_removes_the_secret_when_its_reference_cannot_be_written(rela
             [sys.executable, "-c", script], stdout=full, stderr=subprocess.PIPE, text=True
         )
     assert r.returncode == 1, r.stderr
-    assert "the secret was removed" in r.stderr
+    assert "secret removed" in r.stderr
     assert not list(relay_dir.glob("*.pass"))
 
 
@@ -438,7 +450,7 @@ def test_passphrase_started_with_stdout_closed_removes_the_secret(relay_dir, mon
         lambda c, a, l, m: (relay_dir / f"{a['nonce']}.pass").write_text("hunter2"),
     )
     monkeypatch.setattr(sys, "stdout", None)
-    with pytest.raises(SystemExit, match="the secret was removed"):
+    with pytest.raises(SystemExit, match="secret removed"):
         cli.cmd_passphrase(_ns(prompt=None, twice=False, timeout=1.0))
     assert not list(relay_dir.glob("*.pass"))
 
@@ -543,12 +555,12 @@ def test_copy_never_puts_the_secret_in_the_notification(relay_dir, tmp_path, pos
     src = tmp_path / "token.txt"
     src.write_text(COPY_SECRET)
 
-    assert cli.cmd_copy(_copy_ns(file=str(src), label=None)) == 0
+    assert cli.cmd_copy(_copy_ns(file=str(src), label="GitHub token")) == 0
 
     payload = posted[0]["payload"]
     assert COPY_SECRET not in json.dumps(payload)
     args_obj = payload["actions"][0]["args"]
-    assert set(args_obj) == {"nonce"}
+    assert set(args_obj) == {"nonce", "label"}
     assert payload["actions"][0]["commandId"] == "passkey:copy"
     assert NONCE_RE.fullmatch(args_obj["nonce"])
 
@@ -690,7 +702,7 @@ def test_copy_label_names_the_secret_without_carrying_it(relay_dir, tmp_path, po
     cli.cmd_copy(_copy_ns(file=str(src), label="GitHub token"))
 
     payload = posted[0]["payload"]
-    assert payload["message"] == "Asked by the tests: A secret is waiting: GitHub token"
+    assert payload["message"] == "**the tests**: Copy **GitHub token**"
     # The label names the secret; it must not become a place to leak one.
     assert COPY_SECRET not in json.dumps(payload)
     # It rides in the command args too, so the frontend can name the secret if
@@ -796,7 +808,7 @@ def test_copy_defaults_to_stdin_through_main(relay_dir, monkeypatch):
     seen = {}
     monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(COPY_SECRET + "\n"))
     monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: seen.update(a))
-    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "copy"])
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "copy", "--label", "GitHub token"])
 
     assert cli.main() == 0
     assert (relay_dir / f"{seen['nonce']}.secret").read_text() == COPY_SECRET
@@ -901,7 +913,7 @@ def test_copy_rejects_a_non_positive_or_non_finite_block_timeout(relay_dir, monk
     monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(COPY_SECRET + "\n"))
     monkeypatch.setattr(cli, "_trigger", _never_triggered)
 
-    with pytest.raises(SystemExit, match="positive, finite number of seconds"):
+    with pytest.raises(SystemExit, match="positive and finite"):
         cli.cmd_copy(_copy_ns(file="-", label=None, block=True, timeout=bad))
     assert list(relay_dir.iterdir()) == []
 
@@ -929,7 +941,7 @@ def test_copy_block_through_main_waits_and_defaults_its_timeout(relay_dir, monke
         cli, "_wait_gone",
         lambda nonce, kind, timeout, on_timeout: waited.update(kind=kind, timeout=timeout),
     )
-    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "copy", "--block"])
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "copy", "--label", "GitHub token", "--block"])
 
     assert cli.main() == 0
     assert waited["timeout"] == cli.CLICK_TIMEOUT
@@ -1119,7 +1131,7 @@ def test_a_named_lab_that_is_not_running_stops_instead_of_using_another_server(
     other_lab = {"port": 8890, "base_url": "/", "token": "OTHER"}
     _server_list(monkeypatch, [test_server, other_lab])
 
-    with pytest.raises(SystemExit, match=f"no running Jupyter server matches {variable}="):
+    with pytest.raises(SystemExit, match=f"no server matches {variable}"):
         cli._server_list()
 
 
@@ -1168,7 +1180,7 @@ def test_with_no_variable_set_the_cli_stops_unless_one_server_carries_a_token(
     # unnamed. Either way the CLI does not guess.
     _server_list(monkeypatch, records)
 
-    with pytest.raises(SystemExit, match="cannot tell which running Jupyter server is the lab"):
+    with pytest.raises(SystemExit, match="cannot tell which server is the lab"):
         cli._server_list()
 
 
@@ -1178,7 +1190,7 @@ def test_an_empty_server_list_with_no_variable_set_stops(monkeypatch):
         cli.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError)
     )
 
-    with pytest.raises(SystemExit, match="reports no server"):
+    with pytest.raises(SystemExit, match="no server found"):
         cli._server()
 
 
@@ -1438,12 +1450,12 @@ def _copy_ns(**kw):
 
 
 def test_copy_defaults_match_the_parser(monkeypatch):
-    """_copy_ns must be what argparse actually hands cmd_copy for a bare `copy`."""
+    """_copy_ns must be what argparse actually hands cmd_copy for `copy`."""
     seen = {}
     monkeypatch.setattr(cli, "cmd_copy", lambda a: seen.update(vars(a)) or 0)
-    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "copy"])
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "copy", "--label", "GitHub token"])
     cli.main()
-    defaults = vars(_copy_ns())
+    defaults = vars(_copy_ns(label="GitHub token"))
     for name, value in defaults.items():
         assert seen[name] == value, f"copy --{name} defaults to {seen[name]!r}, not {value!r}"
 
@@ -1463,13 +1475,35 @@ def _show_ns(**kw):
 
 
 def test_show_defaults_match_the_parser(monkeypatch):
-    """_show_ns must be what argparse actually hands cmd_show for a bare `show`."""
+    """_show_ns must be what argparse actually hands cmd_show for `show`."""
     seen = {}
     monkeypatch.setattr(cli, "cmd_show", lambda a: seen.update(vars(a)) or 0)
-    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "show"])
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "show", "--label", "Pairing code"])
     cli.main()
-    for name, value in vars(_show_ns()).items():
+    for name, value in vars(_show_ns(label="Pairing code")).items():
         assert seen[name] == value, f"show --{name} defaults to {seen[name]!r}, not {value!r}"
+
+
+@pytest.mark.parametrize("command, secret", [("copy", COPY_SECRET), ("show", SHOW_CODE)])
+@pytest.mark.parametrize("args", [[], ["--label", ""], ["--label", "   "]])
+def test_copy_and_show_refuse_a_missing_or_blank_label_before_reading(
+    command, secret, args, relay_dir, monkeypatch
+):
+    # A delivery that states no name is never offered: the parser refuses before the
+    # input is read or a relay is staged, so nothing waits for a click that cannot say
+    # which secret it hands over.
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(secret))
+    dispatched = []
+    monkeypatch.setattr(cli, "cmd_copy", lambda a: dispatched.append("copy") or 0)
+    monkeypatch.setattr(cli, "cmd_show", lambda a: dispatched.append("show") or 0)
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", command, *args])
+
+    with pytest.raises(SystemExit) as e:
+        cli.main()
+
+    assert e.value.code == 2
+    assert dispatched == []
+    assert list(relay_dir.iterdir()) == []
 
 
 def test_show_stages_the_code_and_triggers_passkey_show(
@@ -1598,7 +1632,7 @@ def test_main_installs_the_hangup_ignore_before_dispatch(monkeypatch):
     order = []
     monkeypatch.setattr(cli, "_ignore_hangup", lambda: order.append("ignore"))
     monkeypatch.setattr(cli, "cmd_show", lambda a: order.append("dispatch") or 0)
-    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "show"])
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "show", "--label", "Pairing code"])
 
     cli.main()
 
@@ -1726,3 +1760,134 @@ def test_copy_on_keyctl_stages_the_secret_in_the_keyring(tmp_path, capsys, monke
         assert relay.collect(seen["nonce"], "secret") == COPY_SECRET
     finally:
         relay.unstage(seen.get("nonce", "n" * 20), "secret")
+
+
+# --- --json: one object on stdout, nothing on stderr ---
+
+
+def _run_main(monkeypatch, *argv):
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", *argv])
+    return cli.main()
+
+
+def _one_object(capsys):
+    """The one line on stdout as an object, and no stderr beside it."""
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.endswith("\n") and out.count("\n") == 1
+    return json.loads(out)
+
+
+def _leaf_parsers(parser, path=()):
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for name, sub in action.choices.items():
+                yield from _leaf_parsers(sub, (*path, name))
+    if path:
+        yield path, parser
+
+
+def test_every_subcommand_takes_json_and_knows_its_name():
+    parser = cli._parser()
+    leaves = [(path, p) for path, p in _leaf_parsers(parser)
+              if not any(isinstance(action, argparse._SubParsersAction) for action in p._actions)]
+    assert len(leaves) > 20
+    for path, p in leaves:
+        assert "--json" in p._option_string_actions, path
+        assert isinstance(p.get_default("command"), str), path
+
+
+def test_create_json_prints_one_object(relay_dir, capsys, monkeypatch, no_wait):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
+        (relay_dir / f"{args_obj['nonce']}.json").write_text(
+            json.dumps({"nonce": args_obj["nonce"], "ok": True, "cred_id": "NEWCID"}))
+
+    monkeypatch.setattr(cli, "_trigger", fake_trigger)
+
+    assert _run_main(monkeypatch, "create", "--rp-id", "h", "--json") == 0
+    assert _one_object(capsys) == {"ok": True, "command": "create",
+                                   "result": {"cred_id": "NEWCID"}}
+
+
+@pytest.mark.parametrize("salt, expected", [
+    ("SALT", {"prf": "PRFVALUE"}),
+    (None, {"cred_id": "CID"}),
+], ids=["with the prf", "without the salt"])
+def test_get_json_result_is_the_value_text_mode_prints(
+        relay_dir, capsys, monkeypatch, no_wait, salt, expected):
+    def fake_trigger(command_id, args_obj, label, message, seconds=None):
+        body = {"nonce": args_obj["nonce"], "ok": True, "cred_id": "CID"}
+        if "prf_salt" in args_obj:
+            body["prf"] = "PRFVALUE"
+        (relay_dir / f"{args_obj['nonce']}.json").write_text(json.dumps(body))
+
+    monkeypatch.setattr(cli, "_trigger", fake_trigger)
+    argv = ["get", "--rp-id", "h", "--cred-id", "CID", "--json"]
+    if salt:
+        argv += ["--prf-salt", salt]
+
+    assert _run_main(monkeypatch, *argv) == 0
+    assert _one_object(capsys) == {"ok": True, "command": "get", "result": expected}
+
+
+def test_passphrase_json_prints_the_reference(relay_dir, capsys, monkeypatch, no_wait):
+    def fake_trigger(command_id, args_obj, label, message):
+        (relay_dir / f"{args_obj['nonce']}.pass").write_text("value")
+
+    monkeypatch.setattr(cli, "_trigger", fake_trigger)
+
+    assert _run_main(monkeypatch, "passphrase", "--json", "--prompt", "Recovery passphrase") == 0
+    obj = _one_object(capsys)
+    assert obj["ok"] is True and obj["command"] == "passphrase"
+    ref = obj["result"]["reference"]
+    assert ref.startswith("file:") and os.path.exists(ref[len("file:"):])
+
+
+def test_copy_json_prints_the_posted_object(relay_dir, capsys, monkeypatch):
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(COPY_SECRET + "\n"))
+    monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: None)
+
+    assert _run_main(monkeypatch, "copy", "--label", "GitHub token", "--json") == 0
+    assert _one_object(capsys) == {"ok": True, "command": "copy",
+                                   "result": {"posted": True, "label": "GitHub token"}}
+
+
+def test_show_json_prints_the_posted_object(relay_dir, capsys, monkeypatch):
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(SHOW_CODE + "\n"))
+    monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: None)
+
+    assert _run_main(monkeypatch, "show", "--label", "Pairing code", "--json") == 0
+    assert _one_object(capsys) == {"ok": True, "command": "show",
+                                   "result": {"posted": True, "label": "Pairing code"}}
+
+
+def test_json_failure_carries_the_relay_code(relay_dir, capsys, monkeypatch):
+    monkeypatch.setattr(cli, "_trigger", lambda *a, **k: None)
+
+    assert _run_main(monkeypatch, "get", "--rp-id", "h", "--cred-id", "CID",
+                     "--json", "--timeout", "0.01") == 1
+    obj = _one_object(capsys)
+    assert obj["ok"] is False and obj["command"] == "get" and obj["code"] == "relay"
+    assert obj["error"].startswith("no relay after")
+
+
+def test_json_failure_carries_the_no_server_code(relay_dir, capsys, monkeypatch):
+    def no_server():
+        raise cli.Fail("no server found - start JupyterLab", "no-server")
+
+    monkeypatch.setattr(cli, "_server", no_server)
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(COPY_SECRET + "\n"))
+
+    assert _run_main(monkeypatch, "copy", "--label", "GitHub token", "--json") == 1
+    obj = _one_object(capsys)
+    assert obj["ok"] is False and obj["command"] == "copy" and obj["code"] == "no-server"
+
+
+def test_argparse_usage_error_keeps_its_text_and_exit_2(capsys, monkeypatch):
+    # The parser fails before the command runs, so --json cannot turn this into an object.
+    with pytest.raises(SystemExit) as exc:
+        _run_main(monkeypatch, "copy", "--json")
+    assert exc.value.code == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "--label" in err

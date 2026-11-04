@@ -152,20 +152,19 @@ const CHALLENGE = 'Y2hhbGxlbmdlLWNoYWxsZW5nZS1jaGFsbGVuZ2UtMzI';
 
 /** What a lost answer or a 5xx of the request that adds an unlock method says. */
 const MAYBE_ADDED =
-  'the server did not confirm the new unlock method - it may have been added; check under Vault settings and security (the cog)';
+  'the server did not confirm the method - it may have been added; check the cog';
 
 /**
  * What an action the vault did not confirm says: the reason, then where its outcome
  * shows. Create's points at whether the vault exists, with no advice to create again.
  */
-const NOT_CONFIRMED =
-  'Not confirmed by the vault - the server stopped answering; once it answers, the panel shows whether it was done.';
+const NOT_CONFIRMED = 'Not confirmed - no server answer; wait for the panel.';
 const CREATE_NOT_CONFIRMED =
-  'Vault creation not confirmed by the vault - the server stopped answering; once it answers, the panel shows whether the vault exists.';
+  'Vault creation not confirmed - the server stopped answering.';
 
 /** The line of a declined Password and passkey: what happened, then the ways in. */
 const NO_PRF =
-  'passkey not added, no PRF - use another passkey or Password and authenticator app';
+  'no PRF - passkey not added; use another passkey or Password and authenticator app';
 
 /** A refusal of a slot request too long to fit a notification with the unused passkey. */
 const TOO_MANY_CODES =
@@ -572,7 +571,7 @@ describe('unlockWithPasskey', () => {
   it('refuses when no passkey was added for the host', async () => {
     await expect(
       unlockWithPasskey(fakeApi(), status(), 'localhost')
-    ).rejects.toThrow('no passkey was added for localhost');
+    ).rejects.toThrow('no passkey for localhost - add one with the cog');
   });
 
   it('refuses an authenticator that returns no PRF', async () => {
@@ -860,7 +859,7 @@ it('names localhost as a place on the computer that runs JupyterLab, and every p
       slot('localhost')
     ])
   ).toBe(
-    'an IP address cannot hold a passkey - open JupyterLab at localhost (when it runs on this computer) or lab.example.com, where your passkeys were added, or by its hostname over HTTPS'
+    'an IP address cannot hold a passkey - open JupyterLab at localhost (when it runs on this computer) or lab.example.com'
   );
 });
 
@@ -925,7 +924,7 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(mockAskSecret).toHaveBeenCalledWith(
-      'Choose a recovery passphrase and store it offline - it opens the vault when no other unlock method can.',
+      'Choose a recovery passphrase and store it offline - it opens the vault when no other method can',
       2,
       'Create vault'
     );
@@ -1106,7 +1105,7 @@ describe('VaultPanel', () => {
       expect(notes).toEqual([
         null,
         expect.stringMatching(
-          /^Passkey not added, no PRF - use another passkey or Password and authenticator app; delete the unused passkey dated .+ UTC\.$/
+          /^No PRF - passkey not added; use another passkey or Password and authenticator app; delete the unused passkey dated .+ UTC\.$/
         )
       ]);
       expect(api.addPasskey).not.toHaveBeenCalled();
@@ -1158,7 +1157,7 @@ describe('VaultPanel', () => {
       );
       expect(notes).toEqual([
         null,
-        'Wrong recovery passphrase; the entry your authenticator app added is unused - you can delete it in the app.'
+        'Wrong recovery passphrase; the authenticator entry is unused - delete it in the app.'
       ]);
     });
   });
@@ -1204,7 +1203,7 @@ describe('VaultPanel', () => {
     // Jupyter prints http://127.0.0.1:8888 at start; a passkey needs a domain name.
     const ip = '127.0.0.1';
     // The vault has a passkey for HOST: that is where to go.
-    const there = `an IP address cannot hold a passkey - open JupyterLab at ${HOST}, where your passkey was added, or by its hostname over HTTPS`;
+    const there = `an IP address cannot hold a passkey - open JupyterLab at ${HOST}`;
     await expect(unlockWithPasskey(fakeApi(), status(), ip)).rejects.toThrow(
       there
     );
@@ -1217,7 +1216,7 @@ describe('VaultPanel', () => {
       { host: ip }
     );
     expect(text(locked)).toContain(
-      `An IP address cannot hold a passkey - open JupyterLab at ${HOST}, where your passkey was added, or by its hostname over HTTPS.`
+      `An IP address cannot hold a passkey - open JupyterLab at ${HOST}.`
     );
     locked.dispose();
     const panel = await panelWith(fakeApi(), { host: ip });
@@ -1229,7 +1228,7 @@ describe('VaultPanel', () => {
     // The dialog that offers the kinds says why a passkey cannot be chosen here.
     button(panel, 'Add unlock method').click();
     expect(mockChoose.mock.calls[0][0].passkey).toEqual({
-      unavailable: `An IP address cannot hold a passkey - open JupyterLab at ${HOST}, where your passkey was added, or by its hostname over HTTPS.`
+      unavailable: `An IP address cannot hold a passkey - open JupyterLab at ${HOST}.`
     });
   });
 
@@ -1256,7 +1255,7 @@ describe('VaultPanel', () => {
     const panel = await panelWith(api, { host: '192.168.1.10' });
     // No passkey anywhere yet: the hostname, or localhost on this computer.
     expect(text(panel)).toContain(
-      'An IP address cannot hold a passkey - open JupyterLab by its hostname over HTTPS, or at localhost when it runs on this computer.'
+      'An IP address cannot hold a passkey - open by hostname over HTTPS, or at localhost.'
     );
     answerDialogs({ 'Add unlock method': ['later'] });
     button(panel, 'Create vault').click();
@@ -1313,10 +1312,7 @@ describe('VaultPanel', () => {
     expect(api.unlockPasskey).not.toHaveBeenCalled();
     expect(lines(panel)).toEqual([]);
     expect(toasts()).toEqual([
-      [
-        'error',
-        'The authenticator returned no PRF - this passkey cannot unlock the vault.'
-      ]
+      ['error', 'No PRF - this passkey cannot unlock the vault.']
     ]);
   });
 
@@ -1328,7 +1324,7 @@ describe('VaultPanel', () => {
         .mockRejectedValue(
           new VaultError(
             403,
-            'the vault did not answer (HTTP 403) - reload the page or start the server'
+            'the vault did not answer (HTTP 403) - reload or restart'
           )
         )
     });
@@ -1372,10 +1368,7 @@ describe('VaultPanel', () => {
       ['error', 'cannot reach the Jupyter server']
     ]);
     expect(toasts()).toEqual([
-      [
-        'error',
-        'The authenticator returned no PRF - this passkey cannot unlock the vault.'
-      ]
+      ['error', 'No PRF - this passkey cannot unlock the vault.']
     ]);
   });
 
@@ -1489,7 +1482,10 @@ describe('VaultPanel', () => {
     expect(button(panel, 'Use recovery passphrase').className).toBe(
       'jp-PasskeyVaultPanel-link'
     );
-    expect(text(panel)).toContain(`No passkey was added for ${HOST}`);
+    // Exactly the line, with no advice appended.
+    expect(
+      panel.node.querySelector('.jp-PasskeyVaultPanel-hint')?.textContent
+    ).toBe('No passkey configured');
   });
 
   it('shows a dismissed passkey prompt as a warning, not an error', async () => {
@@ -2045,7 +2041,7 @@ describe('VaultPanel', () => {
     await flush();
     expect(mockEditEntry).not.toHaveBeenCalled();
     expect(lines(panel)).toEqual([]);
-    expect(toasts()).toEqual([['warn', 'nas/ugos was deleted elsewhere.']]);
+    expect(toasts()).toEqual([['warn', 'nas/ugos was deleted.']]);
   });
 
   it('shows one failure notification at a time: a refusal outside an action replaces the last one', async () => {
@@ -2074,7 +2070,7 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(mockEditEntry).not.toHaveBeenCalled();
-    expect(toasts()).toEqual([['warn', 'nas/ugos was deleted elsewhere.']]);
+    expect(toasts()).toEqual([['warn', 'nas/ugos was deleted.']]);
   });
 
   it('opens Edit when the entries could not be read, not calling the entry deleted', async () => {
@@ -2112,7 +2108,7 @@ describe('VaultPanel', () => {
     expect(toasts()).toEqual([
       [
         'error',
-        'Change to nas/ugos not confirmed by the vault - do it again once the server answers.'
+        'Change to nas/ugos not confirmed - retry when the server answers.'
       ]
     ]);
   });
@@ -2251,9 +2247,7 @@ describe('VaultPanel', () => {
       await flush();
       await flush();
       expect(mockEditEntry).not.toHaveBeenCalled();
-      expect(toasts()).toEqual([
-        ['warn', 'The vault locked - unlock it, then try again.']
-      ]);
+      expect(toasts()).toEqual([['warn', 'Vault locked - unlock and retry.']]);
       // The locked view, with its unlock, not the list under a stale status line.
       expect(
         panel.node.querySelector('.jp-PasskeyVaultPanel-stateText')?.textContent
@@ -2280,9 +2274,7 @@ describe('VaultPanel', () => {
       await flush();
       await flush();
       expect(mockEditEntry).not.toHaveBeenCalled();
-      expect(toasts()).toEqual([
-        ['warn', 'The vault locked - unlock it, then try again.']
-      ]);
+      expect(toasts()).toEqual([['warn', 'Vault locked - unlock and retry.']]);
       expect(lines(panel)).toEqual([]);
       expect(button(panel, 'Unlock with passkey')).toBeTruthy();
     } finally {
@@ -2306,7 +2298,7 @@ describe('VaultPanel', () => {
         panel.node.querySelector('button[title="Add an entry"]') as HTMLElement
       ).click();
       await flush();
-      const locked = ['warn', 'The vault locked - unlock it, then try again.'];
+      const locked = ['warn', 'Vault locked - unlock and retry.'];
       expect(toasts()).toEqual([locked]);
       // `vault unlock` from the CLI; the notification's click reads again.
       await panel.refresh();
@@ -2344,7 +2336,7 @@ describe('VaultPanel', () => {
         ).click();
         await flush();
         expect(toasts()).toEqual([
-          ['warn', 'The vault locked - unlock it, then try again.']
+          ['warn', 'Vault locked - unlock and retry.']
         ]);
         // A Refresh while the server restarts, then `vault unlock` from the CLI.
         await panel.refresh();
@@ -2380,9 +2372,7 @@ describe('VaultPanel', () => {
     await flush();
     expect(mockEditEntry).not.toHaveBeenCalled();
     expect(lines(panel)).toEqual([]);
-    expect(toasts()).toEqual([
-      ['warn', 'The vault locked - unlock it, then try again.']
-    ]);
+    expect(toasts()).toEqual([['warn', 'Vault locked - unlock and retry.']]);
   });
 
   it("reveals through a passkey request, sending the server that request's PRF", async () => {
@@ -2976,7 +2966,7 @@ describe('VaultPanel', () => {
       expect(toasts()).toEqual([
         [
           'error',
-          'Recovery passphrase change not confirmed by the vault - do it again once the server answers.'
+          'Recovery change not confirmed - retry when the server answers.'
         ]
       ]);
     });
@@ -3000,10 +2990,7 @@ describe('VaultPanel', () => {
         ['error', 'cannot reach the Jupyter server']
       ]);
       expect(toasts()).toEqual([
-        [
-          'error',
-          'Adding the passkey not confirmed by the vault - do it again once the server answers.'
-        ]
+        ['error', 'Passkey add not confirmed - retry when the server answers.']
       ]);
     });
 
@@ -3196,12 +3183,12 @@ describe('VaultPanel', () => {
       // The naming dialog says what comes next and holds the only field.
       const naming = bodies['Name the new passkey'].node as HTMLElement;
       expect(naming.textContent).toContain(
-        'Your passkey was accepted. Your browser creates the new passkey next.'
+        'Passkey accepted - your browser creates the new passkey next'
       );
       expect(naming.querySelectorAll('input')).toHaveLength(1);
       // The confirm dialog is text: the name chosen, and nothing to type.
       expect(bodies['Confirm the new passkey']).toBe(
-        'The passkey "Work laptop" was created. Confirm it once more so the vault can derive its key from it.'
+        'Passkey "Work laptop" created - confirm it to derive the vault key'
       );
       expect(api.addPasskey.mock.calls[0][0].label).toBe('Work laptop');
     });
@@ -3342,7 +3329,7 @@ describe('VaultPanel', () => {
       // What happened, then the ways in, then the passkey to delete: a retry on the
       // same authenticator would fail again, so none is advised.
       expect(line).toMatch(
-        /^Passkey not added, no PRF - use another passkey or Password and authenticator app; delete the unused passkey dated \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\.$/
+        /^No PRF - passkey not added; use another passkey or Password and authenticator app; delete the unused passkey dated \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\.$/
       );
       expect(lines(panel)).toEqual([]);
     });
@@ -3583,7 +3570,7 @@ describe('VaultPanel', () => {
       expect(toasts()).toEqual([
         [
           'error',
-          'Recovery passphrase change not confirmed by the vault - do it again once the server answers.'
+          'Recovery change not confirmed - retry when the server answers.'
         ]
       ]);
     });
@@ -5037,7 +5024,7 @@ describe('the password and authenticator app', () => {
     expect(toasts()).toEqual([
       [
         'error',
-        'Adding the password and authenticator app not confirmed by the vault - do it again once the server answers.'
+        'Password and app add not confirmed - retry when the server answers.'
       ]
     ]);
   });
@@ -5051,9 +5038,14 @@ describe('the password and authenticator app', () => {
         value: 'a long password'
       });
       const refused = await notTheVault(code);
+      // The proxy page's line is short now; a long reason keeps the cut exercised.
+      const long = new VaultError(
+        refused.status,
+        `${refused.message} ${'the proxy page answered instead. '.repeat(3)}`
+      );
       const api = fakeApi({
         status: jest.fn().mockResolvedValue(status({ authenticator: null })),
-        addMfa: jest.fn().mockRejectedValue(refused)
+        addMfa: jest.fn().mockRejectedValue(long)
       });
       const panel = await openCog(api);
       answerDialogs({ [ADD]: true }, '222222');
@@ -5064,11 +5056,11 @@ describe('the password and authenticator app', () => {
       expect(more).toEqual([]);
       expect(kind).toBe('error');
       expect(line).toMatch(
-        /…; the entry your authenticator app added is unused - you can delete it in the app\.$/
+        /…; the authenticator entry is unused - delete it in the app\.$/
       );
       expect(line).toHaveLength(TOAST_LIMIT);
       const cut = line.slice(0, line.indexOf('…'));
-      expect(sentence(refused.message).startsWith(cut)).toBe(true);
+      expect(sentence(long.message).startsWith(cut)).toBe(true);
     }
   );
 
@@ -5243,7 +5235,7 @@ describe('the password and authenticator app', () => {
     expect(refused).toBeInstanceOf(VaultError);
     expect(refused.status).toBe(403);
     expect(refused.message).toBe(
-      'wrong recovery passphrase; the entry your authenticator app added is unused - you can delete it in the app'
+      'wrong recovery passphrase; the authenticator entry is unused - delete it in the app'
     );
     expect(api.addMfa).toHaveBeenCalledTimes(1);
     // A lost answer and a 5xx answer are not refusals: the two may have been added,
@@ -6190,7 +6182,7 @@ describe('Password and passkey', () => {
       ]);
       const offer = mockLaunch.mock.calls[2][0].options;
       expect(offer.body).toBe(
-        'This passkey cannot hold the vault key, because it has no PRF. It can still be used with a new unlock password: the password decrypts the vault, and the server checks the passkey. A copy of the vault file opens with the password alone.'
+        'No PRF: the passkey cannot hold the vault key. A new unlock password decrypts the vault and the server checks the passkey; a copy of the vault opens with the password alone.'
       );
       expect(offer.buttons.map((b: any) => b.label)).toEqual([
         'Decline',
@@ -6285,9 +6277,7 @@ describe('Password and passkey', () => {
       await expect(
         registerWithProof(api, { current: 'recovery words' }, 'Phone', HOST)
       ).rejects.toThrow(
-        unused(
-          'the vault already has a password and passkey - remove them first'
-        )
+        unused('Password and passkey already added - remove it first')
       );
       expect(titles()).toEqual([
         'Name the new passkey',
@@ -6552,7 +6542,7 @@ describe('Password and passkey', () => {
       });
       const panel = await panelWith(api);
       expect(button(panel, UNLOCK_PAIR).classList).toContain('jp-mod-accept');
-      expect(text(panel)).not.toContain('No passkey was added');
+      expect(text(panel)).not.toContain('No passkey configured');
       mockAskSecret.mockResolvedValueOnce({ accepted: true, value: 'pw' });
       button(panel, UNLOCK_PAIR).click();
       for (let i = 0; i < 4; i++) {
@@ -6572,7 +6562,7 @@ describe('Password and passkey', () => {
       );
       await other.refresh();
       expect(() => button(other, UNLOCK_PAIR)).toThrow();
-      expect(text(other)).toContain(`No passkey was added for ${HOST}`);
+      expect(text(other)).toContain('No passkey configured');
       // ACC-PANEL-226: with the app pair as well, Unlock with password stays beside it.
       api.status.mockResolvedValue(
         locked([{ type: 'recovery' }, APP_SLOT, PAIR_SLOT])
@@ -6582,7 +6572,7 @@ describe('Password and passkey', () => {
       expect(button(other, 'Unlock with password')).toBeTruthy();
     });
 
-    it('names the address where Password and passkey was added at another port of this host, in place of the advice to add a passkey', async () => {
+    it('names the address where Password and passkey was added at another port of this host', async () => {
       const there = `https://${HOST}:8443`;
       const api = fakeApi({
         status: jest
@@ -6602,7 +6592,7 @@ describe('Password and passkey', () => {
           hint => hint.textContent
         )
       ).toEqual([
-        `Password and passkey was added at ${there}. Open JupyterLab at that address to unlock with it.`
+        `Password and passkey added at ${there} - open JupyterLab there`
       ]);
       expect(button(panel, 'Use recovery passphrase')).toBeTruthy();
       panel.dispose();
@@ -6618,9 +6608,7 @@ describe('Password and passkey', () => {
         ])
       );
       const other = await panelWith(api);
-      expect(text(other)).toContain(
-        `No passkey was added for ${HOST}. Add one under Vault settings and security (the cog) with the recovery passphrase.`
-      );
+      expect(text(other)).toContain('No passkey configured');
     });
 
     it('reads Password and passkey added when the passkey added in the cog view has no PRF, and Passkey added for one with a PRF', async () => {

@@ -25,8 +25,7 @@ const COPY_COMMAND_ID = 'passkey:copy';
 const SHOW_COMMAND_ID = 'passkey:show';
 
 /** What every bridge command's `nonce` argument is. */
-const NONCE =
-  'Names the one-shot relay of this request; [A-Za-z0-9_-]{16,128}.';
+const NONCE = 'The one-shot relay of this request; [A-Za-z0-9_-]{16,128}';
 
 /**
  * Initialization data for the @stellarshenson/jupyterlab-passkey-extension extension.
@@ -34,7 +33,7 @@ const NONCE =
 const plugin: JupyterFrontEndPlugin<void> = {
   id: '@stellarshenson/jupyterlab-passkey-extension:plugin',
   description:
-    "Jupyterlab extension to allow passkeys to be captured by Jupyterlab with supporting API, CLI etc - to allow internal functionality such as vaults or secrets to be using the passkey functionality of the user's browser or operating system",
+    'Capture browser passkeys for the API and CLI, so vaults and secrets use the passkey of the browser or operating system',
   autoStart: true,
   optional: [ICommandPalette, ITranslator],
   activate: (
@@ -62,7 +61,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
             rp_id: {
               type: 'string',
               description:
-                'WebAuthn RP ID: the hostname of the JupyterLab tab, never an IP address.'
+                'WebAuthn RP ID: the tab hostname, never an IP address'
             },
             cred_id: {
               type: 'string',
@@ -72,12 +71,11 @@ const plugin: JupyterFrontEndPlugin<void> = {
             prf_salt: {
               type: 'string',
               description:
-                'A base64url 32-byte salt; the PRF is evaluated when it is present.'
+                'A base64url 32-byte salt; PRF is evaluated when present'
             },
             user: {
               type: 'object',
-              description:
-                'For create: id (base64url), name and displayName of the user.'
+              description: 'For create: id (base64url), name and displayName'
             }
           },
           required: ['op', 'nonce', 'rp_id']
@@ -104,8 +102,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
             },
             twice: {
               type: 'boolean',
-              description:
-                'true asks the value in two fields that must match; the calling agent decides.'
+              description: 'true asks the value in two fields that must match'
             }
           },
           required: ['nonce']

@@ -407,7 +407,7 @@ test('copy hands a piped secret to the clipboard through the real binary', async
   // The notification starts with who asks. The label is the only thing telling two
   // staged secrets of one caller apart.
   await expect(page.locator('.jp-toast-message').first()).toContainText(
-    'Asked by the copy test: A secret is waiting: GitHub token'
+    '**the copy test**: Copy **GitHub token**'
   );
   await buttons.first().click();
 
@@ -436,7 +436,13 @@ test('copy --block stays alive until the browser collects the secret', async ({
 
   // NOT awaited: with --block the CLI is still running, waiting for the click that
   // this test is about to perform. Awaiting first would deadlock until its timeout.
-  const cli = runCopy(SECRET, ['--block', '--timeout', CLI_TIMEOUT]);
+  const cli = runCopy(SECRET, [
+    '--label',
+    'GitHub token',
+    '--block',
+    '--timeout',
+    CLI_TIMEOUT
+  ]);
 
   // Still staged and still waiting: the whole point of the flag.
   await expect.poll(() => stagedSecrets().length, { timeout: 15000 }).toBe(1);
@@ -468,6 +474,8 @@ test('copy --block shreds the secret it gave up on', async ({ page }) => {
   // Deliberately never clicked. 3s rather than CLI_TIMEOUT: this test waits out the
   // whole timeout on purpose, so the shorter the better.
   const { code, stderr } = await runCopy('ghp_abandoned_token', [
+    '--label',
+    'abandoned token',
     '--block',
     '--timeout',
     '3'
@@ -481,7 +489,12 @@ test('copy --block shreds the secret it gave up on', async ({ page }) => {
 test('copy rejects a --timeout that would do nothing', async () => {
   // Without --block nothing waits, so accepting --timeout and ignoring it would tell a
   // caller they had bounded something they had not.
-  const { code, stderr } = await runCopy('ghp_token', ['--timeout', '5']);
+  const { code, stderr } = await runCopy('ghp_token', [
+    '--label',
+    'GitHub token',
+    '--timeout',
+    '5'
+  ]);
 
   expect(code).toBe(1);
   expect(stderr).toContain('--timeout only applies with --block');
@@ -524,7 +537,11 @@ test('copy stages nothing when the trigger cannot reach a server', async () => {
     delete env[name];
   }
 
-  const child = spawn('jupyterlab-passkey', ['copy'], { env });
+  const child = spawn(
+    'jupyterlab-passkey',
+    ['copy', '--label', 'GitHub token'],
+    { env }
+  );
   const result = await new Promise<IResult>(resolve => {
     let stdout = '';
     let stderr = '';

@@ -69,9 +69,16 @@ _warned = False
 # the fallback warning and --debug can name the real cause instead of guessing.
 _probe_detail = None
 
+# --json mode: _say collects its lines here instead of writing stderr, so nothing
+# outside the one object reaches the streams. None means text mode.
+SAY_LINES = None
+
 
 def _say(message: str) -> None:
     """Tell the user something on stderr, and never fail the command doing it.
+
+    With SAY_LINES a list, the line is collected for the result instead, and stderr
+    stays empty.
 
     Catching the write error is not enough on its own. stderr is buffered, so a
     failed write leaves the bytes sitting in it; CPython retries that flush at
@@ -89,8 +96,10 @@ def _say(message: str) -> None:
     flush. It is not closed: in the server the log handlers write to the same object,
     and a closed one would drop every later log record.
     """
+    if SAY_LINES is not None:
+        SAY_LINES.extend(message.splitlines())
+        return
     stderr = sys.stderr
-    # None: started with `2>&-`, or an earlier call dropped it. print(file=None) falls
     # back to STDOUT, and stdout is load-bearing here - it carries the cred_id, the PRF,
     # the relay reference. Chatter must never land there.
     if stderr is None:

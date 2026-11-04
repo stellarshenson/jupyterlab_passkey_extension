@@ -64,9 +64,15 @@ def server(vault_env, monkeypatch):
         try:
             return table[action](svc, arg)
         except service.Locked as e:
-            raise client.VaultLocked(str(e))
+            raise client.VaultLocked(str(e), "locked")
+        except service.Denied as e:
+            raise client.VaultClientError(str(e), "denied")
+        except service.NotFound as e:
+            raise client.VaultClientError(str(e), "entry-not-found")
+        except service.Conflict as e:
+            raise client.VaultClientError(str(e), "conflict")
         except VaultError as e:
-            raise client.VaultClientError(str(e))
+            raise client.VaultClientError(str(e), "invalid")
 
     def browser_step(command, args, label, message, timeout, poll=None):
         calls.append(command)
@@ -118,8 +124,8 @@ def ready(server, monkeypatch, capsys):
 def test_init_sets_the_recovery_passphrase_and_registers_a_passkey(server, monkeypatch, capsys):
     assert run(monkeypatch, "vault", "init", stdin=PASS + "\n") == 0
     err = capsys.readouterr().err
-    assert f"vault created at {server.status()['path']};" in err
-    assert "it opens the vault when no other unlock method can" in err
+    assert f"vault created at {server.status()['path']} -" in err
+    assert "it opens the vault when no other method can" in err
     slots = server.status()["slots"]
     assert [s["type"] for s in slots] == ["recovery", "passkey"]
     assert server.calls == [client.REGISTER_COMMAND]
@@ -270,7 +276,7 @@ def test_unlock_with_the_unlock_password_and_a_code(ready, monkeypatch, capsys):
     code = totp.code(APP, step + 1)
     run(monkeypatch, "vault", "lock")
     # Two typed secrets: a pipe carries one, and is refused before anything is read.
-    with pytest.raises(SystemExit, match="run it at a terminal or with --in-browser"):
+    with pytest.raises(SystemExit, match="run at a terminal or with --in-browser"):
         run(monkeypatch, "vault", "unlock", "--password", stdin=UNLOCK + "\n")
 
     def typed(*answers):
@@ -279,8 +285,8 @@ def test_unlock_with_the_unlock_password_and_a_code(ready, monkeypatch, capsys):
         monkeypatch.setattr(sys, "stdin", FakeStdin("", tty=True))
         return prompts
 
-    for answers, refusal in [(("not the password", code), "^wrong unlock password$"),
-                             ((UNLOCK, "000000"), "^wrong code$")]:
+    for answers, refusal in [(("not the password", code), r"^wrong unlock password \[invalid\]$"),
+                             ((UNLOCK, "000000"), r"^wrong code \[denied\]$")]:
         typed(*answers)
         with pytest.raises(SystemExit, match=refusal):
             run(monkeypatch, "vault", "unlock", "--password")
@@ -365,7 +371,7 @@ def test_list_hides_passwords_and_filters(ready, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "github/api\tme\tinfra\thttps://github.com" in out and SECRET not in out
     run(monkeypatch, "vault", "list", "--category", "home", "--json")
-    assert [e["name"] for e in json.loads(capsys.readouterr().out)] == ["nas/ugos"]
+    assert [e["name"] for e in json.loads(capsys.readouterr().out)["result"]["entries"]] == ["nas/ugos"]
 
 
 def test_add_refuses_a_duplicate(ready, monkeypatch):
@@ -392,6 +398,178 @@ def test_rm_and_missing_names(ready, monkeypatch):
     run(monkeypatch, "vault", "rm", "github/api")
     with pytest.raises(SystemExit, match="no entry named"):
         run(monkeypatch, "vault", "get", "github/api")
+
+
+# --------------------------------------------------------------------------- #
+# one call from a locked vault to a value
+# --------------------------------------------------------------------------- #
+
+
+class ReadVault:
+    """A locked vault that records every call, in order."""
+
+    def __init__(self, unlocked=False, authenticator=None, pair=False, fail=None):
+        self.state = {
+            "initialized": True,
+            "unlocked": unlocked,
+            "path": "/vault/vault.json",
+            "slots": [{"type": store.PAIR}] if pair else [{"type": "recovery"}],
+            "authenticator": authenticator,
+        }
+        self.calls = []
+        self.fail = fail
+
+    def status(self):
+        self.calls.append(("status",))
+        return dict(self.state)
+
+    def unlock(self, recovery=None, password=None, code=None):
+        self.calls.append(("unlock", recovery, password, code))
+        if self.fail is not None:
+            raise self.fail
+        self.state["unlocked"] = True
+        return dict(self.state)
+
+    def list(self):
+        self.calls.append(("list",))
+        return []
+
+    def get(self, name, field="password"):
+        self.calls.append(("get", name, field))
+        return "value"
+
+    def _unlocked(self, call):
+        self.calls.append(("stage",))
+        return call()
+
+
+def _read_ns(**values):
+    base = dict(recovery=False, password=False, in_browser=False, timeout=1.0,
+                category=None, json=False, name="github/api", field="password",
+                env=["TOKEN=github/api"], command=["true"])
+    base.update(values)
+    return argparse.Namespace(**base)
+
+
+READ_COMMANDS = [
+    (vcli.cmd_list, ("list",)),
+    (vcli.cmd_get, ("get", "github/api", "password")),
+    (vcli.cmd_copy, ("stage",)),
+    (vcli.cmd_show, ("stage",)),
+    (vcli.cmd_exec, ("get", "github/api", "password")),
+]
+
+
+@pytest.mark.parametrize("command, read", READ_COMMANDS, ids=lambda value: getattr(value, "__name__", ""))
+def test_a_read_command_unlocks_with_the_recovery_passphrase_first(monkeypatch, command, read):
+    vault = ReadVault()
+    asked = []
+    monkeypatch.setattr(vcli, "_read_secret",
+                        lambda a, prompt, twice, blind_twice=False: asked.append((prompt, twice)) or PASS)
+    monkeypatch.setattr(vcli, "request", lambda *a, **k: {"nonce": "n" * 20})
+    monkeypatch.setattr(vcli._cli, "_trigger", lambda *a, **k: None)
+    monkeypatch.setattr(vcli.os, "execvpe", lambda *a: None)
+    command(_read_ns(recovery=True), vault)
+    assert asked == [("Recovery passphrase", False)]
+    assert vault.calls == [("status",), ("unlock", PASS, None, None), read]
+
+
+@pytest.mark.parametrize("command, read", READ_COMMANDS, ids=lambda value: getattr(value, "__name__", ""))
+def test_an_unlocked_vault_ignores_the_method(monkeypatch, command, read):
+    vault = ReadVault(unlocked=True)
+    monkeypatch.setattr(vcli, "_read_secret", lambda *a, **k: pytest.fail("a secret was asked"))
+    monkeypatch.setattr(vcli, "request", lambda *a, **k: {"nonce": "n" * 20})
+    monkeypatch.setattr(vcli._cli, "_trigger", lambda *a, **k: None)
+    monkeypatch.setattr(vcli.os, "execvpe", lambda *a: None)
+    command(_read_ns(recovery=True), vault)
+    assert ("unlock", PASS, None, None) not in vault.calls
+    assert [call[0] for call in vault.calls] == ["status", read[0]]
+
+
+def test_a_read_command_with_a_wrong_passphrase_propagates_the_code(monkeypatch):
+    vault = ReadVault(fail=client.VaultClientError("wrong recovery passphrase", "denied"))
+    monkeypatch.setattr(vcli, "_read_secret", lambda *a, **k: PASS + "x")
+    with pytest.raises(client.VaultClientError) as caught:
+        vcli.cmd_get(_read_ns(recovery=True), vault)
+    assert caught.value.code == "denied"
+    assert [call[0] for call in vault.calls] == ["status", "unlock"]
+
+
+def test_a_password_read_from_a_pipe_is_refused_before_a_secret_is_read(monkeypatch):
+    # A pipe carries one secret; the unlock password and the code are two.
+    vault = ReadVault(authenticator={"created": "2026-01-02T03:04:05Z"})
+    monkeypatch.setattr(sys, "stdin", FakeStdin(UNLOCK + "\n"))
+    monkeypatch.setattr(vcli, "_read_secret", lambda *a, **k: pytest.fail("a secret was asked"))
+    with pytest.raises(SystemExit, match="--password needs the unlock password and an app code"):
+        vcli.cmd_get(_read_ns(password=True), vault)
+    assert [call[0] for call in vault.calls] == ["status"]
+
+
+def test_a_password_read_in_the_browser_asks_the_password_then_the_code(monkeypatch):
+    vault = ReadVault(authenticator={"created": "2026-01-02T03:04:05Z"})
+    asked = []
+
+    def secret(a, prompt, twice, blind_twice=False):
+        asked.append(prompt)
+        return UNLOCK if len(asked) == 1 else "123456"
+
+    monkeypatch.setattr(vcli, "_read_secret", secret)
+    assert vcli.cmd_get(_read_ns(password=True, in_browser=True), vault) == 0
+    assert asked == ["Unlock password", "Code of the authenticator app"]
+    assert vault.calls == [("status",), ("unlock", None, UNLOCK, "123456"),
+                           ("get", "github/api", "password")]
+
+
+@pytest.mark.parametrize("argv", [
+    ["list", "--recovery", "--in-browser"],
+    ["list", "--password", "--in-browser"],
+    ["get", "github/api", "--recovery", "--in-browser"],
+    ["get", "github/api", "--password", "--in-browser"],
+    ["copy", "github/api", "--recovery", "--in-browser"],
+    ["copy", "github/api", "--password", "--in-browser"],
+    ["show", "github/api", "--recovery", "--in-browser"],
+    ["show", "github/api", "--password", "--in-browser"],
+    ["exec", "--recovery", "--in-browser", "--", "true"],
+    ["exec", "--password", "--in-browser", "--", "true"],
+])
+def test_every_read_command_takes_the_method_and_the_browser_flag(monkeypatch, argv):
+    parsed = []
+    monkeypatch.setattr(vcli, "run",
+                        lambda a: parsed.append((a.recovery, a.password, a.in_browser)) or 0)
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "vault", *argv])
+    assert cli.main() == 0
+    assert parsed == [(bool(argv.count("--recovery")), bool(argv.count("--password")), True)]
+
+
+def test_a_read_command_takes_one_method_at_a_time(monkeypatch, capsys):
+    monkeypatch.setattr(vcli, "run", lambda a: 0)
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "vault", "get", "x",
+                                      "--recovery", "--password"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_the_cli_error_line_carries_the_code(ready, monkeypatch):
+    with pytest.raises(SystemExit) as caught:
+        run(monkeypatch, "vault", "get", "absent/entry")
+    assert str(caught.value.code) == (
+        "no entry named 'absent/entry' - run `jupyterlab-passkey vault list --json` "
+        "to see the names [entry-not-found]")
+    run(monkeypatch, "vault", "lock")
+    with pytest.raises(SystemExit) as caught:
+        run(monkeypatch, "vault", "get", "github/api", "--recovery", stdin=PASS + "-wrong\n")
+    assert str(caught.value.code) == "wrong recovery passphrase [denied]"
+
+
+def test_the_locked_line_carries_the_code(monkeypatch):
+    def refused(vault, call):
+        raise client.VaultLocked("the vault is locked", "locked")
+
+    monkeypatch.setattr(vcli, "ensure_vault", refused)
+    with pytest.raises(SystemExit) as caught:
+        run(monkeypatch, "vault", "status")
+    assert str(caught.value.code) == vcli.LOCKED + " [locked]"
 
 
 def test_no_option_takes_a_secret_as_its_value():
@@ -447,7 +625,7 @@ def test_import(ready, monkeypatch, capsys, tmp_path):
 def _names(monkeypatch, capsys):
     capsys.readouterr()
     run(monkeypatch, "vault", "list", "--json")
-    return {e["name"]: e for e in json.loads(capsys.readouterr().out)}
+    return {e["name"]: e for e in json.loads(capsys.readouterr().out)["result"]["entries"]}
 
 
 def test_import_refuses_a_field_it_does_not_know_and_imports_nothing(ready, monkeypatch, capsys):
@@ -587,6 +765,7 @@ def test_copy_stages_on_the_server_and_the_value_never_reaches_the_cli(ready, mo
     monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: seen.append((c, a, l, m)))
     run(monkeypatch, "vault", "copy", "github/api")
     [(command, args, label, message)] = seen
+    assert message == "Copy **github/api**"
     assert command == cli.COPY_COMMAND and set(args) == {"nonce", "label"}
     assert SECRET not in json.dumps(seen)
     out, err = capsys.readouterr()
@@ -710,10 +889,10 @@ def test_a_server_the_cli_cannot_tell_is_a_client_error_not_an_exit(monkeypatch)
     # The Python Vault class runs in a notebook kernel, where SystemExit is the wrong
     # answer: the refusal must arrive as the class's own error.
     def refuse():
-        raise SystemExit("cannot tell which running Jupyter server is the lab")
+        raise SystemExit("cannot tell which server is the lab")
 
     monkeypatch.setattr(cli, "_server_list", refuse)
-    with pytest.raises(client.VaultClientError, match="cannot tell which running"):
+    with pytest.raises(client.VaultClientError, match="cannot tell which server"):
         client.request("GET", "status")
 
 
@@ -911,7 +1090,7 @@ def test_a_server_without_the_vault_says_to_restart_it(monkeypatch):
     monkeypatch.setattr(cli, "_found", ("http://127.0.0.1:1", "token"))
     monkeypatch.setattr(cli._LOOPBACK, "open", missing)
     with pytest.raises(client.VaultClientError,
-                       match="the vault is not loaded on this Jupyter server - restart the server"):
+                       match="the vault is not loaded - restart the Jupyter server"):
         client.request("GET", "status")
 
 
@@ -939,6 +1118,54 @@ def test_a_refused_proof_keeps_the_found_server(monkeypatch):
     assert cli._found == ("http://127.0.0.1:1", "token")
 
 
+@pytest.mark.parametrize("status, body, expected", [
+    (423, {"error": "the vault is locked", "code": "locked"}, "locked"),
+    (400, {"error": "the vault is locked", "code": "locked"}, "locked"),
+    (423, {"error": "the vault is locked"}, "locked"),
+], ids=["the code", "the code on another status", "the status alone"])
+def test_the_client_reads_a_locked_vault_from_the_body_or_the_status(
+        monkeypatch, status, body, expected):
+    # The status alone is an older server, which carries no code.
+    import urllib.error
+
+    def locked(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, status, "Locked", {},
+                                     io.BytesIO(json.dumps(body).encode()))
+
+    monkeypatch.setattr(cli, "_found", ("http://127.0.0.1:1", "token"))
+    monkeypatch.setattr(cli._LOOPBACK, "open", locked)
+    with pytest.raises(client.VaultLocked, match="the vault is locked") as caught:
+        client.request("GET", "entries")
+    assert caught.value.code == expected
+
+
+@pytest.mark.parametrize("status, body, exception", [
+    (403, {"error": "wrong recovery passphrase", "code": "denied"}, client.VaultClientError),
+    (404, {"error": "no entry named 'x' - run `jupyterlab-passkey vault list --json`",
+           "code": "entry-not-found"}, client.VaultClientError),
+    (400, {"error": "field must be one of password, username", "code": "invalid"},
+     client.VaultClientError),
+    (423, {"error": "the vault is locked", "code": "locked"}, client.VaultLocked),
+    (500, {"error": "the vault broke"}, client.VaultClientError),
+])
+def test_the_client_carries_the_server_code(monkeypatch, status, body, exception):
+    import urllib.error
+
+    def answer(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, status, "No", {},
+                                     io.BytesIO(json.dumps(body).encode()))
+
+    monkeypatch.setattr(cli, "_found", ("http://127.0.0.1:1", "token"))
+    monkeypatch.setattr(cli._LOOPBACK, "open", answer)
+    with pytest.raises(exception) as caught:
+        client.request("GET", "entries")
+    assert caught.value.code == body.get("code")
+
+
+def test_a_client_error_with_no_code_is_none():
+    assert client.VaultClientError("one line").code is None
+
+
 def test_recovery_needs_the_current_passphrase_not_an_unlock(ready, monkeypatch):
     run(monkeypatch, "vault", "lock")
     ready.calls.clear()
@@ -952,8 +1179,8 @@ def test_recovery_needs_the_current_passphrase_not_an_unlock(ready, monkeypatch)
         run(monkeypatch, "vault", "recovery", stdin="another passphrase\n")
 
 
-NEXT_STEP = (r"vault exists without a passkey - run `jupyterlab-passkey vault passkey add`, "
-             r"or add Password and authenticator app under Vault settings and security \(the cog\)")
+NEXT_STEP = (r"vault has no passkey - run `jupyterlab-passkey vault passkey add`, "
+             r"or add a method with the cog")
 
 
 def test_init_names_the_next_step_when_the_passkey_step_fails(server, monkeypatch):
@@ -998,7 +1225,7 @@ def test_rotate_replaces_the_data_key_with_the_recovery_proof(ready, monkeypatch
     before = ready.holder().get(ready._vault_id())
     run(monkeypatch, "vault", "rotate", stdin=PASS + "\n")
     out, err = capsys.readouterr()
-    assert "data key: created " in err and "period 365 days" in err and "not due" in err
+    assert "data key: " in err and "days old" in err and "period 365 days" in err and "not due" in err
     assert ready.holder().get(ready._vault_id()) != before
     assert ready.read("github/api") == SECRET
 
@@ -1099,7 +1326,7 @@ def test_a_missing_vault_is_left_alone_on_no(server, monkeypatch):
     monkeypatch.setattr(sys, "stdin", FakeStdin("", tty=True))
     monkeypatch.setattr(sys, "stdout", FakeTty())
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
-    with pytest.raises(SystemExit, match=r"^no vault at .+ - run `jupyterlab-passkey vault init`$"):
+    with pytest.raises(SystemExit, match=r"^no vault at .+ - run `jupyterlab-passkey vault init` \[invalid\]$"):
         run(monkeypatch, "vault", "list")
     assert server.status()["initialized"] is False
     assert server.calls == []
@@ -1203,3 +1430,220 @@ def test_git_help_says_a_store_value_out_of_reach_gets_its_line(monkeypatch, cap
     text = " ".join(_help(monkeypatch, capsys, "vault", "git", "migrate").split())
     assert "print it as written with the git config command that restores it" in text
     assert "only a plain path, ~ and a set variable" in text
+
+
+# --------------------------------------------------------------------------- #
+# --json: one object on stdout, nothing on stderr
+# --------------------------------------------------------------------------- #
+
+
+def _one(capsys):
+    """The one line on stdout as an object, and no stderr beside it."""
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.endswith("\n") and out.count("\n") == 1
+    return json.loads(out)
+
+
+@pytest.fixture
+def git_home(tmp_path, monkeypatch):
+    """A throwaway HOME and git config, so no command reads or writes the real ones."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    return home
+
+
+def test_init_json_names_the_vault_path(server, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "init", "--no-passkey", "--json", stdin=PASS) == 0
+    assert _one(capsys) == {"ok": True, "command": "vault init",
+                            "result": {"path": server.status()["path"]}}
+
+
+def test_status_json_is_the_status_object(ready, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "status", "--json") == 0
+    obj = _one(capsys)
+    assert obj["ok"] is True and obj["command"] == "vault status"
+    assert obj["result"]["initialized"] is True and obj["result"]["unlocked"] is True
+    assert obj["result"]["path"].endswith("vault.json")
+
+
+def test_lock_and_unlock_json(ready, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "lock", "--json") == 0
+    assert _one(capsys) == {"ok": True, "command": "vault lock", "result": {"locked": True}}
+    assert run(monkeypatch, "vault", "unlock", "--json") == 0
+    obj = _one(capsys)
+    assert obj["ok"] is True and obj["command"] == "vault unlock"
+    assert obj["result"]["unlocked"] is True
+
+
+def test_list_json_nests_entries_under_result(ready, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "list", "--json") == 0
+    obj = _one(capsys)
+    assert obj["command"] == "vault list"
+    assert [e["name"] for e in obj["result"]["entries"]] == ["github/api"]
+
+
+def test_get_json_names_field_and_value(ready, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "get", "github/api", "--json") == 0
+    assert _one(capsys) == {"ok": True, "command": "vault get",
+                            "result": {"name": "github/api", "field": "password",
+                                       "value": SECRET}}
+
+
+def test_add_edit_rm_json(ready, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "add", "nas/ugos", "--json", stdin="p\n") == 0
+    assert _one(capsys) == {"ok": True, "command": "vault add",
+                            "result": {"added": "nas/ugos"}}
+    assert run(monkeypatch, "vault", "edit", "nas/ugos", "--notes", "n", "--json") == 0
+    assert _one(capsys) == {"ok": True, "command": "vault edit",
+                            "result": {"updated": "nas/ugos"}}
+    assert run(monkeypatch, "vault", "rm", "nas/ugos", "--json") == 0
+    assert _one(capsys) == {"ok": True, "command": "vault rm",
+                            "result": {"removed": "nas/ugos"}}
+
+
+def test_generate_json_prints_the_value(ready, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "generate", "--length", "16", "--json") == 0
+    obj = _one(capsys)
+    assert obj["command"] == "vault generate"
+    assert len(obj["result"]["value"]) == 16
+
+
+def test_copy_and_show_json_report_posted(ready, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m: None)
+    assert run(monkeypatch, "vault", "copy", "github/api", "--json") == 0
+    assert _one(capsys) == {"ok": True, "command": "vault copy",
+                            "result": {"posted": True, "name": "github/api"}}
+    assert run(monkeypatch, "vault", "show", "github/api", "--json") == 0
+    assert _one(capsys) == {"ok": True, "command": "vault show",
+                            "result": {"posted": True, "name": "github/api"}}
+
+
+def test_exec_json_captures_the_command(ready, monkeypatch, capsys):
+    argv = ["vault", "exec", "--json", "--env", "TOKEN=github/api", "--", sys.executable,
+            "-c", "import os, sys; print(os.environ['TOKEN']); print('e', file=sys.stderr)"]
+    assert run(monkeypatch, *argv) == 0
+    obj = _one(capsys)
+    assert obj["command"] == "vault exec"
+    assert obj["result"] == {"exit": 0, "stdout": SECRET + "\n", "stderr": "e\n"}
+
+
+def test_exec_json_keeps_the_childs_exit_status(ready, monkeypatch, capsys):
+    argv = ["vault", "exec", "--json", "--", sys.executable, "-c", "import sys; sys.exit(3)"]
+    assert run(monkeypatch, *argv) == 3
+    obj = _one(capsys)
+    assert obj["result"]["exit"] == 3
+
+
+def test_import_json_counts_what_it_did(ready, monkeypatch, capsys):
+    items = [{"name": "new/one", "password": "p"}]
+    assert run(monkeypatch, "vault", "import", "--json", stdin=json.dumps(items)) == 0
+    obj = _one(capsys)
+    assert obj["command"] == "vault import"
+    assert obj["result"] == {"added": 1, "skipped": [], "totp": []}
+
+
+def test_passkey_json_commands(ready, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "passkey", "add", "--json", "--label", "Work laptop") == 0
+    assert _one(capsys) == {"ok": True, "command": "vault passkey add",
+                            "result": {"added": "passkey"}}
+    assert run(monkeypatch, "vault", "passkey", "list", "--json") == 0
+    obj = _one(capsys)
+    assert obj["command"] == "vault passkey list"
+    assert [p["cred_id"] for p in obj["result"]["passkeys"]] == ["cred-1", "cred-2"]
+    assert run(monkeypatch, "vault", "passkey", "rm", "--cred-id", "cred-2", "--json") == 0
+    assert _one(capsys) == {"ok": True, "command": "vault passkey rm",
+                            "result": {"removed": "cred-2"}}
+
+
+def test_recovery_json_names_what_it_replaced(ready, monkeypatch, capsys):
+    _dialogs(monkeypatch)
+    assert run(monkeypatch, "vault", "recovery", "--in-browser", "--json") == 0
+    assert _one(capsys) == {"ok": True, "command": "vault recovery",
+                            "result": {"replaced": "recovery passphrase"}}
+
+
+def test_rotate_json_returns_the_rotation(ready, monkeypatch, capsys):
+    _dialogs(monkeypatch)
+    assert run(monkeypatch, "vault", "rotate", "--in-browser", "--json") == 0
+    obj = _one(capsys)
+    assert obj["command"] == "vault rotate"
+    assert obj["result"]["rotation"]["due"] is False
+
+
+def test_git_uninstall_json_puts_its_lines_in_the_result(git_home, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "git", "uninstall", "--json") == 0
+    obj = _one(capsys)
+    assert obj["command"] == "vault git uninstall"
+    assert obj["result"]["lines"] == [
+        "credential.helper = jupyterlab-passkey is not set in the global git config"]
+
+
+def test_git_migrate_dry_run_json_puts_its_lines_in_the_result(git_home, ready, monkeypatch, capsys):
+    store = git_home / ".git-credentials"
+    store.write_text("https://me:secret@github.com\n")
+    assert run(monkeypatch, "vault", "git", "migrate", "--dry-run", "--json") == 0
+    lines = _one(capsys)["result"]["lines"]
+    assert f"read {store}" in lines
+    assert "git/me@github.com\tgithub.com" in lines
+
+
+def test_aws_uninstall_json_puts_its_lines_in_the_result(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "aws" / "config"
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(path))
+    assert run(monkeypatch, "vault", "aws", "uninstall", "work", "--json") == 0
+    obj = _one(capsys)
+    assert obj["command"] == "vault aws uninstall"
+    assert obj["result"]["lines"] == [f"no AWS config at {path}"]
+
+
+def test_json_failure_names_the_no_vault_code(server, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "list", "--json") == 1
+    obj = _one(capsys)
+    assert obj["ok"] is False and obj["command"] == "vault list"
+    assert obj["code"] == "no-vault" and obj["error"].startswith("no vault at ")
+
+
+def test_json_failure_names_the_entry_not_found_code(ready, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "get", "missing/entry", "--json") == 1
+    obj = _one(capsys)
+    assert obj["ok"] is False and obj["code"] == "entry-not-found"
+    assert "missing/entry" in obj["error"]
+
+
+def test_json_failure_names_the_locked_code(ready, monkeypatch, capsys):
+    run(monkeypatch, "vault", "lock")
+    capsys.readouterr()
+    assert run(monkeypatch, "vault", "rotate", "--json") == 1
+    obj = _one(capsys)
+    assert obj["ok"] is False and obj["code"] == "locked"
+
+
+def test_json_failure_names_the_no_server_code(monkeypatch, capsys):
+    def no_server():
+        raise cli.Fail("no server found - start JupyterLab", "no-server")
+
+    monkeypatch.setattr(cli, "_server", no_server)
+    assert run(monkeypatch, "vault", "status", "--json") == 1
+    obj = _one(capsys)
+    assert obj["ok"] is False and obj["code"] == "no-server"
+
+
+def test_json_failure_names_the_usage_code(ready, monkeypatch, capsys):
+    assert run(monkeypatch, "vault", "edit", "github/api", "--json") == 1
+    obj = _one(capsys)
+    assert obj["ok"] is False and obj["code"] == "usage"
+    assert obj["error"].startswith("nothing to change")
+
+
+def test_a_set_up_question_goes_to_stderr_with_json(server, monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda: "n")
+    monkeypatch.setattr(sys, "argv", ["jupyterlab-passkey", "vault", "list", "--json"])
+    monkeypatch.setattr(sys, "stdin", FakeStdin("", tty=True))
+    assert cli.main() == 1
+    out, err = capsys.readouterr()
+    assert "Create it now?" in err
+    assert json.loads(out)["code"] == "no-vault"

@@ -26,6 +26,9 @@ def _relay_backend(request, monkeypatch):
     monkeypatch.setattr(relay, "_warned", False)
     # And the found server, which the CLI keeps for the rest of its process.
     monkeypatch.setattr(cli, "_found", None)
+    # main() fills this recorder in --json mode; a test that calls a command directly
+    # starts in text mode, whatever a test before it left behind.
+    monkeypatch.setattr(relay, "SAY_LINES", None)
     # Start from an environment that names no Jupyter server, so the developer's own
     # lab never decides which server record a test picks.
     for name in ("JUPYTER_SERVER_URL", "JUPYTER_SERVER_ROOT", "JUPYTERHUB_SERVICE_PREFIX",

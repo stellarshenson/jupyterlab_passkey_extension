@@ -121,16 +121,16 @@ def test_the_wait_for_the_notification_ends_when_status_reports_unlocked(vault, 
 def test_a_process_with_a_pending_unlock_raises_none_and_goes_on_when_it_opens(
         vault, monkeypatch, capsys):
     raised = _steps(monkeypatch)
-    assert client._claim_unlock(30) is None
+    assert client._claim_unlock(30, client.UNLOCK_COMMAND) is None
     monkeypatch.setattr(client, "WAIT_POLL", 0.05)
     threading.Timer(0.2, vault.unlock_recovery, [PASS]).start()
     assert client.Vault(timeout=30).unlock()["unlocked"] is True
     assert raised == []
-    assert "waiting for the unlock notification" in capsys.readouterr().err
+    assert "waiting for the notification" in capsys.readouterr().err
 
 
 def test_a_shared_wait_ends_at_its_own_deadline_and_blocks_nobody(vault, monkeypatch):
-    assert client._claim_unlock(30) is None
+    assert client._claim_unlock(30, client.UNLOCK_COMMAND) is None
     monkeypatch.setattr(client, "WAIT_POLL", 0.05)
     start = time.monotonic()
     with pytest.raises(client.VaultClientError) as refused:
@@ -144,12 +144,13 @@ def test_a_new_claim_ends_the_wait_on_the_unlock_before_it(vault, monkeypatch):
     # A process that starts as soon as a failed one exits can claim before a wait reads
     # the failure: its claim keeps the failure's line, and the wait ends with it.
     why = "ceremony failed: the unlock was cancelled"
-    client._end_unlock("failed", client.FAILED_SECONDS, why)
-    assert client._claim_unlock(40) is None
+    client._end_unlock("failed", client.FAILED_SECONDS, why, client.UNLOCK_COMMAND)
+    assert client._claim_unlock(40, client.UNLOCK_COMMAND) is None
     assert (_record()["state"], _record()["why"]) == ("pending", why)
-    client._put_wait("pending", 30)
+    client._put_wait("pending", 30, "", client.UNLOCK_COMMAND)
     monkeypatch.setattr(client, "WAIT_POLL", 0.05)
-    threading.Timer(0.2, client._put_wait, ["pending", 40, why]).start()
+    threading.Timer(0.2, client._put_wait,
+                    ["pending", 40, why, client.UNLOCK_COMMAND]).start()
     start = time.monotonic()
     with pytest.raises(client.VaultClientError, match="the unlock was cancelled"):
         client.Vault(timeout=30).unlock()
@@ -157,11 +158,11 @@ def test_a_new_claim_ends_the_wait_on_the_unlock_before_it(vault, monkeypatch):
 
 
 def _claimed_by(pid):
-    client._put_wait("pending", 600)
+    client._put_wait("pending", 600, "", client.UNLOCK_COMMAND)
     record = _record()
     record["pid"] = pid
-    with open(os.path.join(relay.relay_dir(), relay.UNLOCK_WAIT), "w") as f:
-        json.dump(record, f)
+    # Atomic, as _put_wait writes it: a reader must never see a half-written record.
+    relay.write_relay("unlock-wait", relay.UNLOCK_WAIT, json.dumps(record))
 
 
 def test_a_wait_on_a_process_that_stops_raises_its_own_notification(vault, monkeypatch):
@@ -186,6 +187,8 @@ def test_a_wait_on_a_process_that_stops_raises_its_own_notification(vault, monke
 
 def test_a_wait_shares_the_claim_that_replaced_one_whose_process_stopped(vault, monkeypatch):
     # Another waiting process claimed first: this one shares that claim, and raises none.
+    # Events, not delays: the test knows the wait has claimed and has read the claim
+    # that replaced the stopped process's before it opens the vault, whatever the load.
     first = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     second = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -193,15 +196,37 @@ def test_a_wait_shares_the_claim_that_replaced_one_whose_process_stopped(vault, 
         raised = _steps(monkeypatch)
         monkeypatch.setattr(client, "WAIT_POLL", 0.05)
 
-        def first_stops_and_second_claims():
-            _claimed_by(second.pid)
-            first.kill()
+        claimed, shared = threading.Event(), threading.Event()
+        real_claim, real_record = client._claim_unlock, client._wait_record
 
-        threading.Timer(0.2, first_stops_and_second_claims).start()
-        threading.Timer(1.0, vault.unlock_recovery, [PASS]).start()
-        start = time.monotonic()
-        assert client.Vault(timeout=30).unlock()["unlocked"] is True
-        assert time.monotonic() - start < 10
+        def claim(seconds, command):
+            record = real_claim(seconds, command)
+            claimed.set()
+            return record
+
+        def wait_record():
+            record = real_record()
+            if record is not None and record.get("pid") == second.pid:
+                shared.set()
+            return record
+
+        monkeypatch.setattr(client, "_claim_unlock", claim)
+        monkeypatch.setattr(client, "_wait_record", wait_record)
+        result = {}
+
+        def wait():
+            result["status"] = client.Vault(timeout=30).unlock()
+
+        thread = threading.Thread(target=wait, daemon=True)
+        thread.start()
+        assert claimed.wait(30)
+        _claimed_by(second.pid)
+        first.kill()
+        assert shared.wait(30)
+        vault.unlock_recovery(PASS)
+        thread.join(30)
+        assert not thread.is_alive()
+        assert result["status"]["unlocked"] is True
         assert raised == []
     finally:
         for p in (first, second):
@@ -215,7 +240,8 @@ def test_a_set_up_wait_raises_no_set_up_for_a_vault_made_and_locked(vault_env, m
     svc = handlers._service
     monkeypatch.setattr(client, "request", lambda method, action, body=None, params=None:
                         handlers._GET[action](svc, params or {}))
-    assert client._claim_unlock(30) is None
+    # Another process raised the set-up, the operation this wait belongs to.
+    assert client._claim_unlock(30, client.SETUP_COMMAND) is None
     raised = _steps(monkeypatch)
     monkeypatch.setattr(client, "WAIT_POLL", 0.05)
 
@@ -265,7 +291,7 @@ def test_a_press_in_the_last_round_of_the_wait_is_no_failure(vault, monkeypatch)
 def test_the_refusal_lasts_ten_minutes(vault, monkeypatch):
     raised = _steps(monkeypatch)
     start = time.time()
-    client._put_wait("unanswered", 600, "the vault is locked")
+    client._put_wait("unanswered", 600, "the vault is locked", client.UNLOCK_COMMAND)
     monkeypatch.setattr(client.time, "time", lambda: start + 599)
     with pytest.raises(client.VaultClientError, match="the vault is locked"):
         client.Vault().list()
@@ -278,7 +304,7 @@ def test_the_refusal_lasts_ten_minutes(vault, monkeypatch):
 
 def test_a_clock_set_back_ends_a_refusal(vault, monkeypatch):
     raised = _steps(monkeypatch)
-    client._put_wait("unanswered", 600, "the vault is locked")
+    client._put_wait("unanswered", 600, "the vault is locked", client.UNLOCK_COMMAND)
     start = time.time()
     monkeypatch.setattr(client.time, "time", lambda: start - 3600)
     with pytest.raises(client.VaultLocked):
@@ -288,8 +314,119 @@ def test_a_clock_set_back_ends_a_refusal(vault, monkeypatch):
 
 def test_an_explicit_unlock_asks_anew_through_a_refusal(vault, monkeypatch):
     raised = _steps(monkeypatch, lambda _: vault.unlock_recovery(PASS))
-    client._put_wait("unanswered", 600, "the vault is locked")
+    client._put_wait("unanswered", 600, "the vault is locked", client.UNLOCK_COMMAND)
     assert client.Vault().unlock()["unlocked"] is True
+    assert len(raised) == 1
+
+
+def _nobody(_):
+    raise client.NoClick("no relay after 1s")
+
+
+def test_an_unlock_refusal_does_not_answer_for_a_set_up(vault_env, monkeypatch):
+    # The record is one per user: the locked line of another vault's unlock must not
+    # make a context with no vault report it locked instead of offering set-up.
+    client._put_wait("unanswered", 600, client.LOCKED, client.UNLOCK_COMMAND)
+    svc = handlers._service
+    monkeypatch.setattr(client, "request", lambda method, action, body=None, params=None:
+                        handlers._GET[action](svc, params or {}))
+    raised = _steps(monkeypatch, _nobody)
+    with pytest.raises(client.VaultClientError) as refused:
+        client.Vault()._setup(30)
+    assert len(raised) == 1
+    line = str(refused.value)
+    assert "the vault is locked" not in line
+    assert line.startswith("no vault yet")
+    assert "`jupyterlab-passkey vault init`" in line
+
+
+def test_a_set_up_refusal_does_not_answer_for_an_unlock(vault, monkeypatch):
+    # The mirror: the no-vault line of a set-up nobody answered must not make an
+    # existing locked vault report no vault.
+    client._put_wait("unanswered", 600, client.NOT_SET_UP, client.SETUP_COMMAND)
+    raised = _steps(monkeypatch, _nobody)
+    with pytest.raises(client.VaultClientError) as refused:
+        client.Vault().list()
+    assert len(raised) == 1
+    line = str(refused.value)
+    assert "no vault yet" not in line
+    assert line.startswith("the vault is locked")
+
+
+def test_a_set_up_claim_over_an_unlock_end_starts_with_no_line(vault_env):
+    # The line of another operation's end says nothing about this one: it must not ride
+    # into the set-up's claim and be raised as this wait's own.
+    client._put_wait("unanswered", 600, client.LOCKED, client.UNLOCK_COMMAND)
+    assert client._claim_unlock(30, client.SETUP_COMMAND) is None
+    record = _record()
+    assert (record["state"], record["why"], record["command"]) == (
+        "pending", "", client.SETUP_COMMAND)
+
+
+def test_a_set_up_claim_over_a_set_up_end_keeps_its_line(vault_env):
+    # The same operation's end is this claim's own line, kept for the waits behind it.
+    client._put_wait("unanswered", 600, client.NOT_SET_UP, client.SETUP_COMMAND)
+    assert client._claim_unlock(30, client.SETUP_COMMAND) is None
+    record = _record()
+    assert (record["state"], record["why"], record["command"]) == (
+        "pending", client.NOT_SET_UP, client.SETUP_COMMAND)
+
+
+def test_a_set_up_wait_over_an_unlock_end_raises_the_set_up_line(vault_env, monkeypatch):
+    # A set-up takes an unanswered unlock record over: its deadline must name the
+    # set-up, never the unlock's locked line.
+    client._put_wait("unanswered", 600, client.LOCKED, client.UNLOCK_COMMAND)
+    assert client._claim_unlock(30, client.SETUP_COMMAND) is None
+    svc = handlers._service
+    monkeypatch.setattr(client, "request", lambda method, action, body=None, params=None:
+                        handlers._GET[action](svc, params or {}))
+    monkeypatch.setattr(client, "WAIT_POLL", 0.05)
+    with pytest.raises(client.VaultClientError) as refused:
+        client.Vault()._setup(0.05)
+    line = str(refused.value)
+    assert "the vault is locked" not in line
+    assert line.startswith("no vault yet")
+    assert "`jupyterlab-passkey vault init`" in line
+
+
+def test_a_pending_unlock_is_not_shared_by_a_set_up(vault_env, monkeypatch):
+    # Sharing belongs to the operation: a set-up raises its own notification beside a
+    # pending unlock of another vault, and a window nobody answers names the set-up.
+    client._claim_unlock(30, client.UNLOCK_COMMAND)
+    svc = handlers._service
+    monkeypatch.setattr(client, "request", lambda method, action, body=None, params=None:
+                        handlers._GET[action](svc, params or {}))
+    raised = _steps(monkeypatch, _nobody)
+    with pytest.raises(client.VaultClientError) as refused:
+        client.Vault()._setup(30)
+    assert len(raised) == 1
+    line = str(refused.value)
+    assert "the vault is locked" not in line
+    assert line.startswith("no vault yet")
+    assert "`jupyterlab-passkey vault init`" in line
+    assert _record()["command"] == client.SETUP_COMMAND
+
+
+def test_a_pending_set_up_is_not_shared_by_an_unlock(vault, monkeypatch):
+    # The mirror: an unlock raises its own notification beside a pending set-up, and a
+    # window nobody answers names the unlock.
+    client._claim_unlock(30, client.SETUP_COMMAND)
+    raised = _steps(monkeypatch, _nobody)
+    with pytest.raises(client.VaultClientError) as refused:
+        client.Vault().list()
+    assert len(raised) == 1
+    line = str(refused.value)
+    assert "no vault yet" not in line
+    assert line.startswith("the vault is locked")
+    assert "`jupyterlab-passkey vault unlock`" in line
+    assert _record()["command"] == client.UNLOCK_COMMAND
+
+
+def test_an_unanswered_record_from_an_older_version_refuses_nothing(vault, monkeypatch):
+    # A record with no command cannot say which operation raised it: it stays inert.
+    client._put_wait("unanswered", 600, client.LOCKED)
+    raised = _steps(monkeypatch, lambda _: vault.unlock_recovery(PASS))
+    assert [entry["name"] for entry in client.Vault().list()] == ["github/api"]
     assert len(raised) == 1
 
 
@@ -298,13 +435,13 @@ def test_an_explicit_unlock_asks_anew_through_a_refusal(vault, monkeypatch):
     lambda svc: svc.unlock_passkey("cred-1", PRF),
 ], ids=["recovery", "passkey"])
 def test_any_unlock_ends_a_refusal_on_the_server(vault, unlock):
-    client._put_wait("unanswered", 600, "the vault is locked")
+    client._put_wait("unanswered", 600, "the vault is locked", client.UNLOCK_COMMAND)
     unlock(vault)
     assert not os.path.exists(os.path.join(relay.relay_dir(), relay.UNLOCK_WAIT))
 
 
 def test_a_refused_unlock_keeps_the_record(vault):
-    client._put_wait("unanswered", 600, "the vault is locked")
+    client._put_wait("unanswered", 600, "the vault is locked", client.UNLOCK_COMMAND)
     with pytest.raises(Exception):
         vault.unlock_recovery("not the passphrase")
     assert _record()["why"] == "the vault is locked"
@@ -376,10 +513,11 @@ def test_a_relay_directory_that_refuses_the_end_of_an_unlock_is_one_line(vault, 
 
 
 def test_the_record_holds_no_secret(vault):
-    assert client._claim_unlock(30) is None
-    assert set(_record()) == {"at", "seconds", "state", "why", "pid"}
+    assert client._claim_unlock(30, client.UNLOCK_COMMAND) is None
+    assert set(_record()) == {"at", "seconds", "state", "why", "pid", "command"}
     assert _record()["why"] == ""
     assert _record()["pid"] == os.getpid()
+    assert _record()["command"] == client.UNLOCK_COMMAND
 
 
 # --------------------------------------------------------------------------- #
@@ -435,7 +573,7 @@ def test_a_failed_status_read_does_not_end_the_wait_of_the_one_that_asked(vault,
 
 def test_a_failed_status_read_does_not_end_a_shared_wait(vault, monkeypatch):
     raised = _steps(monkeypatch)
-    assert client._claim_unlock(30) is None
+    assert client._claim_unlock(30, client.UNLOCK_COMMAND) is None
     monkeypatch.setattr(client, "WAIT_POLL", 0.05)
     reads = _status_fails(monkeypatch, after=1, times=3)
     timer = threading.Timer(0.5, vault.unlock_recovery, [PASS])
@@ -481,9 +619,9 @@ def _unlock_before_the_claim(monkeypatch, unlock):
     elsewhere, which removes no record yet, then this process's claim."""
     real = client._claim_unlock
 
-    def claim(seconds):
+    def claim(seconds, command):
         unlock()
-        return real(seconds)
+        return real(seconds, command)
 
     monkeypatch.setattr(client, "_claim_unlock", claim)
     return real
@@ -568,7 +706,7 @@ def test_the_end_of_a_wait_leaves_the_claim_of_another_process(vault, monkeypatc
 
 def test_an_end_on_record_outlives_its_process(vault):
     # Only a claim dies with its process: the 10 minutes after nobody answered do not.
-    client._put_wait("unanswered", 600, "the vault is locked")
+    client._put_wait("unanswered", 600, "the vault is locked", client.UNLOCK_COMMAND)
     record = _record()
     record["pid"] = 2 ** 22 + 1
     with open(os.path.join(relay.relay_dir(), relay.UNLOCK_WAIT), "w") as f:
@@ -660,7 +798,7 @@ def test_a_process_waiting_on_another_set_up_waits_the_set_up_time(vault_env, mo
     monkeypatch.setattr(client, "request", lambda method, action, body=None, params=None:
                         handlers._GET[action](svc, params or {}))
     # Another process raised the set-up and nobody answers it.
-    assert client._claim_unlock(vcli.REGISTER_TIMEOUT) is None
+    assert client._claim_unlock(vcli.REGISTER_TIMEOUT, client.SETUP_COMMAND) is None
     clock = _Clock()
     monkeypatch.setattr(client, "time", clock)
     monkeypatch.setattr(client, "WAIT_POLL", 50)
@@ -860,7 +998,7 @@ def test_nobody_pressing_gives_one_wait_then_failures_at_once(vault, lab):
         assert (code, out) == (1, "")
         assert "the vault is locked" in err
         assert "`jupyterlab-passkey vault unlock`" in err
-        assert "waiting for the unlock notification" not in err
+        assert "waiting for the notification" not in err
         # Measured in the process: starting 8 interpreters is not part of the wait.
         assert float(err.rsplit("took ", 1)[1]) < wait
 
@@ -909,7 +1047,7 @@ def test_a_process_that_stops_leaves_no_claim(vault, lab, stop, code):
     _press(vault, _Lab.notifications[1])
     ((out, err), status), = _finish([next_one])
     assert status == 0, err
-    assert "waiting for the unlock notification" not in err
+    assert "waiting for the notification" not in err
 
 
 @pytest.mark.parametrize("stop", [signal.SIGKILL, signal.SIGINT], ids=["a kill", "Ctrl-C"])

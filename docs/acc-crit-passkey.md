@@ -1175,6 +1175,66 @@ The `jupyterlab-passkey vault` subcommands
   - test-tags: FUNCTIONAL
   - log: 2026-11-01T12:02:30Z @kj added
   - log: 2026-11-01T12:38:01Z @kj closed
+- [x] `ACC-VAULT-286-NO-VAULT` **No vault, locked, unlocked and empty are told apart** - HIGH; every surface distinguishes no vault, locked, unlocked and an empty unlocked vault; the no-vault text names `vault init`; the shipped agent skill states how to tell them apart and what to do for each
+  - evidence: test_vault_unlock.py 76 passed; fix2 probes A1-A6 and the four-state probe; pytest 967 passed; skill lines 13, 17 and 18
+  - related: DEF-VAULT-90-NO-VAULT
+  - test: point a client at an absent vault, an initialized locked vault, an unlocked vault and an unlocked empty vault; assert each surface says its own state and the no-vault line names vault init; read the shipped skill for the four states and their actions
+  - test-tags: UNIT, MANUAL
+  - log: 2026-11-04T11:46:08Z @kj added
+  - log: 2026-11-04T13:39:30Z @kj closed: closed: every surface tells no vault, locked, unlocked and empty apart; the no-vault line names vault init; the shipped skill states each state and action
+- [x] `ACC-VAULT-289-ERROR-CODE` **locked vault error code** - MEDIUM; a locked vault answers HTTP 423 with body {"error": "...", "code": "locked"}; the CLI and Python client raise VaultLocked from that code; a server without the code still maps 423; the shipped skill and `docs/usage.md` state the code
+  - evidence: test_vault_cli.py 109 passed; 423, 400-with-code and status-only cases; test_vault_routes.py asserts the 423 body; pytest 967 passed
+  - related: DEF-VAULT-93-LOCKED-CODE
+  - test: lock the vault, call a vault action, assert 423 body code "locked"; stub a 423 body without code, assert VaultLocked
+  - test-tags: UNIT
+  - log: 2026-11-04T11:53:31Z @kj added
+  - log: 2026-11-04T13:39:30Z @kj closed: closed: a locked vault answers 423 with body code 'locked'; the client raises VaultLocked from the code, with the status fallback; docs state it
+- [x] `ACC-VAULT-290-AWS-HELPER` **AWS credentials from the vault** - HIGH; `aws-credential-jupyterlab-passkey <profile>` prints the credential-process JSON for vault entry `aws/<profile>`: `username` is the access key id, `password` the secret key. A locked vault raises the unlock notification and waits. A missing entry exits 1 naming `vault add aws/<profile>`. No key enters argv.
+  - evidence: Output shape: one JSON line {Version, AccessKeyId=username, SecretAccessKey=password}, stderr empty. test_a_locked_vault_raises_one_unlock_notification_then_answers sends one UNLOCK_COMMAND then answers. Missing entry exits 1 naming aws/absent and vault add aws/absent -u. Install test checks aws configure set credential_process. SKILL.md description names AWS CLI and AWS credentials triggers. test_vault_aws.py 22 passed; pytest gate 987 passed.
+  - test: temporary HOME and a test vault with aws/demo; run the helper for demo and parse stdout as credential-process JSON; lock the vault and assert one unlock notification; run for a missing profile and assert exit 1 with the entry name on stderr
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-11-04T13:26:51Z @kj Python console script jupyterlab_passkey_extension.vault.awscred:main; Vault.get opens a locked vault through the shared notification; vault aws install <profile> writes credential_process through aws configure set
+  - log: 2026-11-04T13:26:51Z @kj added
+  - log: 2026-11-04T15:06:20Z @kj closed
+- [x] `ACC-VAULT-291-UNLOCK-TOAST` **Every unlock shows one success notification** - MEDIUM; After the vault changes from locked to unlocked by any route - the panel, a CLI command, a passkey notification or another tab - one success notification appears; a status read of an already unlocked vault adds none.
+  - evidence: vault-plugin.spec.ts one success notification per unlock: test 1 asserts no emit on the locked read, one emit of Vault unlocked, success, {autoClose: 4000} on the locked to unlocked read, and still one after the timer poll. jlpm jest spec 53 passed, 3 targeted; jest gate 409 of 409 passed.
+  - test: lock the vault; unlock from the panel and from a CLI command; assert one success notification per transition and none from repeated status reads
+  - test-tags: UNIT, E2E
+  - mechanism: 2026-11-04T13:26:51Z @kj the vault plugin compares the previous and current status and emits a success notification only on the locked-to-unlocked edge
+  - log: 2026-11-04T13:26:51Z @kj added
+  - log: 2026-11-04T15:06:24Z @kj closed
+- [x] `ACC-VAULT-292-AWS-UNINSTALL` **AWS credential_process line is removed** - MEDIUM; `vault aws uninstall <profile>` removes only the `credential_process` line that names this extension helper from the profile in `~/.aws/config`; every other line stays byte for byte; an absent line succeeds and says so; a line naming another helper stays and the command exits 1.
+  - evidence: test_uninstall_removes_only_our_line_and_keeps_the_mode asserts the file equals the original with only our line removed, byte for byte, mode 0600 kept. test_a_second_uninstall_says_there_is_no_line asserts exit 0 and no credential_process of ours. test_a_foreign_credential_process_stays_and_exits_one and test_a_foreign_helper_holding_our_name_stays_and_exits_one assert exit 1 and an unchanged file. test_vault_aws.py 22 passed; pytest gate 987 passed.
+  - test: temporary HOME config with a profile holding region, a comment, our credential_process and another key; run uninstall and diff the file; run again; a line naming another helper stays with exit 1
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-11-04T13:31:51Z @kj line scan of the profile section, remove only credential_process values naming aws-credential-jupyterlab-passkey; atomic replace preserving mode; AWS_CONFIG_FILE honored
+  - log: 2026-11-04T13:31:51Z @kj added
+  - log: 2026-11-04T15:06:22Z @kj closed
+- [x] `ACC-VAULT-294-AWS-E2E` **AWS helper drives a local S3 endpoint** - MEDIUM; A functional test runs `aws s3api list-buckets` with a temp profile whose `credential_process` is the helper and whose `endpoint_url` is a local S3 stub, and a temp vault entry `aws/<profile>`; success and the stub Credential access key id must match the entry; no local S3 server skips with the missing tool named.
+  - evidence: jupyterlab_passkey_extension/tests/test_aws_e2e.py 2 passed; the real /usr/local/bin/aws (aws-cli 2.39.3, from shutil.which) runs `aws s3 ls --endpoint-url http://127.0.0.1:<port> --profile jlab-test` with a temp HOME, temp AWS_CONFIG_FILE and credential_process set to the installed aws-credential-jupyterlab-passkey helper reading vault entry aws/jlab-test; the stdlib http.server S3 stub answers ListBuckets and records every Authorization header; each header must contain Credential=AKIAJLABTESTFAKE0001/ and Signature=, and the secret must be absent from headers, stdout and stderr; test_the_signed_key_follows_the_vault_entry then calls vault.edit(aws/jlab-test, username=AKIAJLABTESTFAKE0002) and a second real aws invocation must sign with the new id; when aws or the helper is off PATH the test skips with the missing tool named (`<tool> not on PATH - cannot run the AWS credential_process end to end`), so the skip is explicit and not a pass.
+  - test: temp HOME and Jupyter server, local S3 stub; run aws s3api list-buckets --profile demo; assert exit 0 and the stub Credential id equals the vault username
+  - test-tags: FUNCTIONAL
+  - mechanism: 2026-11-04T14:39:06Z @kj stdlib HTTP stub answers ListBuckets and parses the SigV4 Credential; the real aws CLI consumes the helper; no network, no real keys
+  - log: 2026-11-04T14:39:06Z @kj added; reason: the criterion names the temp config, the local stub and the skip path
+  - log: 2026-11-04T15:54:15Z @kj closed; reason: the criterion requires naming the real aws invocation, the S3 stub, the key-id comparison, the entry change and the skip reason
+- [x] `ACC-VAULT-296-INLINE-UNLOCK` **Same-call unlock on read commands** - HIGH; `list`, `get`, `copy`, `show` and `exec` take `--recovery` and `--password` with `--in-browser`; a locked vault unlocks by the supplied method in the same call, and an unlocked vault ignores them and asks nothing; without them the existing passkey auto-unlock applies; the agent supplies the method, never the secret in argv.
+  - evidence: list, get, copy, show, exec accept --recovery/--password with --in-browser; test_a_read_command_unlocks_with_the_recovery_passphrase_first, test_an_unlocked_vault_ignores_the_method and test_every_read_command_takes_the_method_and_the_browser_flag; help line "--recovery or --password unlocks a locked vault in the same call" at vault/cli.py:1296; docs/cli-reference.md "Unlock on demand", docs/usage.md "One-call unlock"; gates jest 411/411, pytest 1070/1070, Galata 55/55
+  - test: lock the vault, run `vault get NAME --recovery --in-browser`, enter the passphrase in the dialog, and the value prints in the same call; with no flag the passkey notification is raised as today
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-11-04T15:57:58Z @kj added
+  - log: 2026-11-04T18:20:15Z @kj closed
+- [x] `ACC-VAULT-297-FAILURE-CODE` **Stable failure codes on unlock and retrieval** - HIGH; An unsuccessful unlock (wrong recovery passphrase, unlock password or authenticator code) and an unsuccessful secret retrieval (missing entry or field, locked vault) answer non-2xx with `error` and a stable `code`; `VaultClientError` exposes the code and the CLI prints it in its one-line error; wrong credentials `denied`, missing entry `entry-not-found` naming the entry and pointing at `jupyterlab-passkey vault list --json`, missing field `invalid`, locked vault `locked`.
+  - evidence: Route tests test_recovery_unlock and test_each_failure_carries_its_stable_code cover denied, entry-not-found, invalid and locked; client test_the_client_carries_the_server_code; CLI test_the_cli_error_line_carries_the_code and test_the_locked_line_carries_the_code; gates jest 411/411, pytest 1070/1070, Galata 55/55
+  - test: each wrong credential answers `denied`; a missing entry answers `entry-not-found` and names `vault list --json`; a missing field answers `invalid`; a locked vault answers `locked`; the CLI error line carries each code
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-11-04T15:58:02Z @kj added; reason: names the four codes and the failure each answers
+  - log: 2026-11-04T18:20:17Z @kj closed
+- [x] `ACC-VAULT-298-JSON-OUTPUT` **JSON output on every subcommand** - HIGH; Every `jupyterlab-passkey` subcommand takes `--json`: stdout is one object, `{"ok": true, "command", "result"}` on success and `{"ok": false, "command", "error", "code"}` on failure with exit 1; `result` holds every value the text output shows; the shipped skill always passes `--json` and reads that object.
+  - evidence: test_every_subcommand_takes_json_and_knows_its_name walks every leaf; success objects per command class (create, get, passphrase, copy, show, vault status/list/get/add, git, aws, passkey, recovery, rotate); failure object tests cover entry-not-found, locked, no-server, usage, relay; skill examples all pass --json; gates jest 411/411, pytest 1070/1070, Galata 55/55
+  - test: run each subcommand with `--json`: success prints one object with ok true and result; a failure prints ok false with error and code and exits 1
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-11-04T15:58:05Z @kj added
+  - log: 2026-11-04T18:20:19Z @kj closed
 
 ## Vault Python API `PYAPI`
 
@@ -2199,6 +2259,7 @@ A 6-digit code app as a proof on an unlocked vault
 The notification that the CLI and the Python Vault class raise in the JupyterLab tab
 
 - [x] `ACC-NOTIFY-231` **Notification names who asks** - HIGH; every notification the CLI or the Python Vault class raises starts with 'Asked by <name>:' before its request: create, get, passphrase, copy, show, vault unlock, vault copy, vault show, vault passkey add and --in-browser
+  - overridden-by: ACC-NOTIFY-295-BOLD-CALLER
   - evidence: pytest test_trigger_starts_the_message_with_who_asks and test_copy_label_names_the_secret_without_carrying_it; Galata cli.spec copy toast reads 'Asked by the copy test: A secret is waiting: GitHub token'; build 1.1.41, pytest 459, Galata 40
   - test: pytest test_trigger_starts_the_message_with_who_asks; Galata cli.spec: the copy toast reads 'Asked by the copy test: A secret is waiting: GitHub token'
   - test-tags: UNIT, E2E
@@ -2255,6 +2316,36 @@ The notification that the CLI and the Python Vault class raise in the JupyterLab
   - mechanism: 2026-10-20T21:21:29Z @kj _pick_server filters the JUPYTER_SERVER_URL matches by root_dir == abspath(JUPYTER_SERVER_ROOT); jupyter_server_terminals sets both variables from the same serverapp, and the record's root_dir is abspath(root_dir)
   - log: 2026-10-20T21:21:29Z @kj added
   - log: 2026-10-20T21:46:25Z @kj closed
+- [x] `ACC-NOTIFY-287-SECRET-NAME` **Every secret-delivery notification states the name** - HIGH; every notification or dialog that hands a secret or a code to the user states a non-empty secret name; the name identifies the secret or its destination, never the value; vault copy and show use their NAME, and generic copy and show require --label
+  - evidence: test_cli.py 130 passed; show.spec.ts 6 passed; jest 406 of 406; copy.spec.ts asserts the labelled and nameless-refusal texts; pytest 967 passed
+  - related: DEF-VAULT-91-SECRET-NAME
+  - test: run vault copy NAME, vault show NAME, generic copy FILE --label NAME and generic show FILE --label NAME; assert each notification and the clipboard-recovery toast carries NAME; run generic copy without --label and assert it is refused before anything is staged
+  - test-tags: UNIT, E2E
+  - log: 2026-11-04T11:46:10Z @kj added
+  - log: 2026-11-04T13:39:30Z @kj closed: closed: every secret-delivery notification states a non-empty name; --label is required and non-blank; vault copy and show use NAME
+- [x] `ACC-NOTIFY-288-SHORT-NOTIFY` **Action notifications are short and name the object** - MEDIUM; an action notification names the object and the action, is at most 60 characters where the object name allows, and contains no instruction to click; a failure notification keeps its reason and the way forward
+  - evidence: test_cli.py:696 and :1513; passphrase.spec.ts:258,557; vault.spec.ts:1628,1670; jest 406 of 406, Galata 55 of 55, pytest 967 passed
+  - related: DEF-PANEL-92-VERBOSE
+  - test: test_cli.py:696 asserts 'Copy GitHub token'; test_cli.py:1513 asserts 'Show the code'; src/__tests__/passphrase.spec.ts:258,557 assert the passphrase dialog text; ui-tests/tests/vault.spec.ts:1628,1670 assert 'Unlock the vault'; a collector test is not needed
+  - test-tags: UNIT, E2E
+  - log: 2026-11-04T11:46:12Z @kj added
+  - log: 2026-11-04T13:39:15Z @kj edited test "collect the action notification texts from the CLI and the page and assert each is at most 60 characters, names its object and says no 'click'; drive a failure and assert its text keeps the reason and the way forward" -> "test_cli.py:696 asserts 'Copy GitHub token'; test_cli.py:1513 asserts 'Show the code'; src/__tests__/passphrase.spec.ts:258,557 assert the passphrase dialog text; ui-tests/tests/vault.spec.ts:1628,1670 assert 'Unlock the vault'; a collector test is not needed"
+  - log: 2026-11-04T13:39:30Z @kj closed: closed: action notifications are short and name the object; the exact texts are pinned by the named assertions, so a collector test is not needed
+- [x] `ACC-NOTIFY-293-COLLECTOR` **Functional test collects every notification text** - HIGH; A functional test collects every CLI `_trigger` and `_one_notification` call site and every page `Notification.emit` call site, and asserts the full rendered text with the bold caller prefix `**<caller>**: `, the action label, at most 60 characters after the prefix, no click instruction, and one collected row per call site.
+  - evidence: jupyterlab_passkey_extension/tests/test_notification_texts.py 11 passed; its two scan surfaces are the Python CLI modules (cli.py, vault/cli.py, vault/client.py, AST) and the TypeScript page modules (src/copy.ts, src/show.ts, src/vault/plugin.ts, source text), collecting 12 call sites, 8 CLI + 4 page, pinned by test_the_notification_call_site_count_is_exact against EXPECTED_CALL_SITES=12; test_inventory_matches_the_declared_call_sites asserts both the missing and the gone file:line sets are empty, so a new, removed or moved call site fails until the table is updated; 28 rows (EXPECTED_ROWS) assert bold caller prefix **<caller>**:, action and label parity, at most 60 characters after the prefix, no click instruction, no URL or command-id, helper callers outside the helper, and one row per call site; probes adding a 13th site, renaming a site, rewording a literal, a 61-character row and a dropped row each failed and were restored.
+  - test: run the collector; delete one table row and add a 61-character message; each breaks the test
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-11-04T14:39:01Z @kj AST scan of cli.py, vault/cli.py and client.py plus a TS source scan for Notification.emit; one canonical table, coverage asserted
+  - log: 2026-11-04T14:39:01Z @kj added
+  - log: 2026-11-04T14:53:00Z @kj amended text "A functional test collects every CLI `_trigger` and `_one_notification` call site and every page `Notification.emit` call site, and asserts the full rendered text with `Asked by <caller>:`, the action label, at most 60 characters after the prefix, no click instruction, and one collected row per call site." -> "A functional test collects every CLI `_trigger` and `_one_notification` call site and every page `Notification.emit` call site, and asserts the full rendered text with the bold caller prefix `**<caller>**: `, the action label, at most 60 characters after the prefix, no click instruction, and one collected row per call site."
+  - log: 2026-11-04T15:54:11Z @kj closed; reason: the criterion requires naming the modules, the inventory rule, the rows and text rules, and the call-site count
+- [x] `ACC-NOTIFY-295-BOLD-CALLER` **Notification text starts with the bold caller** - HIGH; every CLI notification is `**<caller>**: <message>`, the --caller name in markdown bold, a colon, then the message; The words Asked by are gone; a message about one entry bolds the entry name, such as `Copy **github**`; page notifications bold their name and carry no caller.
+  - evidence: cli.py:322 renders `**<caller>**: `; copy/show bold the entry (`Copy **<label>**`); pytest 988 passed; Jest 409/409 in 10 suites; Galata full suite 55 passed; SKILL.md:15 states the prefix; page tmp/notification-texts (texts.json 24 items, 38/38 CLI texts prefixed) served HTTP 200; no product text says Asked by
+  - overrides: ACC-NOTIFY-231
+  - test: pytest test_cli.py and the jest copy spec read the bold caller prefix; Galata cli.spec reads the toast
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-11-04T14:52:57Z @kj added
+  - log: 2026-11-04T15:31:56Z @kj closed
 
 ## Lint `LINT`
 

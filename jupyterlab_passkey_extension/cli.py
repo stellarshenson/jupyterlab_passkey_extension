@@ -10,22 +10,16 @@ browser ceremony into a blocking call.
     cred_id=$(jupyterlab-passkey create --rp-id lab.example)
     prf=$(jupyterlab-passkey get --rp-id lab.example --cred-id "$cred_id" --prf-salt "$salt")
     pass_ref=$(jupyterlab-passkey passphrase) || exit 1
-    PASS_RECOVERY_REF=$pass_ref pass-cli-open --ensure
 
 Secrets move both ways. `passphrase` takes one FROM you in a dialog and stages it in a
 relay for a vault or a .env to read; `copy` sends one TO the clipboard of the browser
 you are sitting in front of, to paste wherever it is wanted:
 
     tok_ref=$(jupyterlab-passkey passphrase --prompt "GitHub token") || exit 1
-    PASS_SECRET_REF=$tok_ref pass-cli-save github/api -u me -c infrastructure
-
-    pass-cli get github/api --field password --quiet --no-clipboard | jupyterlab-passkey copy
 
 `passphrase` prints a scheme-prefixed reference (keyctl:... or file:...), never the
 value; the consumer resolves it. Take the `|| exit 1` seriously: a prefix assignment
-does not propagate the exit status of a command substitution, so
-`PASS_RECOVERY_REF=$(jupyterlab-passkey passphrase) pass-cli-open` would run the consumer
-with an EMPTY reference after a timeout or a cancel.
+does not propagate the exit status of a command substitution.
 
 Run it in a terminal on the same Jupyter server, keep a JupyterLab tab open, and click
 the button when it pops.
@@ -77,6 +71,29 @@ _COPY_BLOCK_TTL_MARGIN = 60
 # would self-destruct mid-wait and be misread as a collection. This cap sits far below
 # that wrap (and far beyond any real click wait), keeping the staged TTL faithful.
 _MAX_BLOCK_TIMEOUT = 10**8
+
+
+class Fail(SystemExit):
+    """A command failure: the one-line message, and the stable code --json reports.
+
+    `text` overrides what text mode prints, so a server code still ends the stderr
+    line in brackets there while --json keeps `message` bare.
+    """
+
+    def __init__(self, message: str, code: str = "usage", text: str | None = None):
+        super().__init__(text if text is not None else message)
+        self.message = message
+        self.json_code = code
+
+
+def _json(a) -> bool:
+    return bool(getattr(a, "json", False))
+
+
+def _emit(a, command: str, result) -> None:
+    """With --json, print the one object a caller reads; text mode prints its own."""
+    if _json(a):
+        print(json.dumps({"ok": True, "command": command, "result": result}))
 
 
 def b64url(data: bytes) -> str:
@@ -207,17 +224,16 @@ def _pick_server(records: list[dict]) -> dict:
         variable, matches = named
         if matches:
             return first_with_token(matches)
-        raise SystemExit(
-            f"no running Jupyter server matches {variable} - is JupyterLab running? "
-            f"Running: {running}"
+        raise Fail(
+            f"no server matches {variable} - running: {running}", "no-server"
         )
 
     with_token = [r for r in records if r.get("token")]
     if len(with_token) == 1:
         return with_token[0]
-    raise SystemExit(
-        "cannot tell which running Jupyter server is the lab - run the command in a "
-        f"JupyterLab terminal, or set JUPYTER_PORT to the lab's port. Running: {running}"
+    raise Fail(
+        "cannot tell which server is the lab - run in a JupyterLab terminal or "
+        f"set JUPYTER_PORT. Running: {running}", "no-server"
     )
 
 
@@ -229,9 +245,9 @@ def _base_url(info: dict) -> str:
     prefix = os.environ.get("JUPYTERHUB_SERVICE_PREFIX", "")
     if not port and not prefix:
         # Nothing names the lab, and 8888 can be a test server's port.
-        raise SystemExit(
-            "`jupyter server list` reports no server and neither JUPYTER_PORT nor "
-            "JUPYTERHUB_SERVICE_PREFIX names one - is JupyterLab running?"
+        raise Fail(
+            "no server found - start JupyterLab, or set JUPYTER_PORT or "
+            "JUPYTERHUB_SERVICE_PREFIX", "no-server"
         )
     return f"http://127.0.0.1:{port or 8888}{prefix.rstrip('/')}"
 
@@ -325,7 +341,7 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str,
     (`dismissStale` in src/vault/plugin.ts)."""
     base, token = _server()
     payload = {
-        "message": f"Asked by {_caller()}: {message}",
+        "message": f"**{_caller()}**: {message}",
         "type": "info",
         "autoClose": False,
         "immediate": True,
@@ -333,7 +349,6 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str,
             "label": label,
             "displayType": "default",
             "commandId": command_id,
-            "caption": f"Execute: {command_id}",
             "args": args_obj,
         }],
     }
@@ -356,13 +371,13 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str,
             _forget_server()
         if e.code == 404:
             raise SystemExit(
-                f"trigger rejected (404) by {base}/{INGEST} - the notifications extension "
-                "is not installed in that lab; the CLI needs it to raise the button"
+                f"trigger rejected (404) - the notifications extension "
+                "is not installed in that lab"
             )
         raise SystemExit(f"trigger rejected ({e.code} {e.reason}) by {base}/{INGEST}")
     except urllib.error.URLError as e:
         _forget_server()
-        raise SystemExit(f"cannot reach {base} ({e.reason}) - is JupyterLab running?")
+        raise Fail(f"cannot reach {base} ({e.reason}) - is JupyterLab running?", "no-server")
     except OSError as e:
         # Must come after URLError, which subclasses OSError. TimeoutError and
         # ConnectionResetError are OSError but NOT URLError, and open() raises them
@@ -370,17 +385,20 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str,
         # exists to bound, a server that accepts the connection and then wedges, ends
         # in a traceback instead of the sentence that names the problem.
         _forget_server()
-        raise SystemExit(f"cannot reach {base} ({e}) - is JupyterLab running?")
+        raise Fail(f"cannot reach {base} ({e}) - is JupyterLab running?", "no-server")
 
     # The POST has landed by here and the button is live in the browser, so a broken
     # stderr (a full log volume, a pipe whose reader has gone) must not report the
     # trigger as failed - `copy`'s caller answers that by unstaging the secret the
     # live button is about to ask for. See _say.
-    _say(f"click '{label}' in your JupyterLab tab - the notification went to {base}")
+    _say(f"click '{label}' in your JupyterLab tab")
 
 
-class NoRelay(SystemExit):
+class NoRelay(Fail):
     """`_wait` ran out: nobody answered."""
+
+    def __init__(self, message: str):
+        super().__init__(message, "relay")
 
 
 def _wait(nonce: str, kind: str, timeout: float, on_timeout: str,
@@ -443,7 +461,7 @@ def _wait_gone(nonce: str, kind: str, timeout: float, on_timeout: str) -> None:
     # otherwise report as a timeout - and then destroy the secret it just delivered.
     if not relay.relay_exists(nonce, kind):
         return
-    raise SystemExit(f"not copied after {timeout:.0f}s - {on_timeout}")
+    raise Fail(f"not copied after {timeout:.0f}s - {on_timeout}", "relay")
 
 
 def _run(args_obj: dict, label: str, message: str, timeout: float,
@@ -472,14 +490,14 @@ def _run(args_obj: dict, label: str, message: str, timeout: float,
         raw = relay.collect(nonce, "json")
         if raw is None:
             # _wait saw it a tick ago; gone now means it expired or lost a race.
-            raise SystemExit("the ceremony relay vanished before it could be read")
+            raise Fail("the ceremony relay vanished before it could be read", "relay")
         data = json.loads(raw)
     except json.JSONDecodeError as e:
-        raise SystemExit(f"unreadable relay: {e}")
+        raise Fail(f"unreadable relay: {e}", "relay")
     except OSError as e:
         # A squatted shm dir surfaces here (PermissionError is an OSError) rather
         # than as a traceback out of the guard.
-        raise SystemExit(f"cannot read the relay: {e}")
+        raise Fail(f"cannot read the relay: {e}", "relay")
     finally:
         # A relay that landed in the final wait window, or after a timeout, is key
         # material nobody is left to collect - destroy it whichever way we leave. A
@@ -493,11 +511,10 @@ def _run(args_obj: dict, label: str, message: str, timeout: float,
             # the hostname the JupyterLab tab is open at, or a parent domain of it. A
             # bare "rp-id-mismatch" leaves the caller guessing which of the two is wrong.
             raise SystemExit(
-                "ceremony failed: rp-id-mismatch - --rp-id does not match the "
-                "JupyterLab tab's URL. It must be the tab's hostname, or a parent "
-                "domain of it, with no scheme, port or path - and a name: a tab "
-                "open at an IP address such as 127.0.0.1 has no valid RP ID, so "
-                "open JupyterLab by name - over HTTPS, or at localhost."
+                "ceremony failed: rp-id-mismatch - --rp-id must be the tab's "
+                "hostname or a parent domain, with no scheme, port or path. An "
+                "IP address is no RP ID: open JupyterLab by name, over HTTPS or "
+                "at localhost."
             )
         raise SystemExit(f"ceremony failed: {error}")
     return data
@@ -511,7 +528,7 @@ def cmd_create(a) -> int:
     }
     data = _run(
         {"op": "create", "nonce": secrets.token_urlsafe(24), "rp_id": a.rp_id, "user": user},
-        "Register passkey", "Register a passkey - click to approve.", a.timeout,
+        "Register passkey", "Register a passkey", a.timeout,
     )
     # .get, not [..]: the server writes any authenticated body verbatim, so an ok:true
     # relay with no cred_id is reachable - and every failure here answers with a line,
@@ -519,7 +536,10 @@ def cmd_create(a) -> int:
     cred_id = data.get("cred_id")
     if not cred_id:
         raise SystemExit("malformed relay - the ceremony result carries no cred_id")
-    print(cred_id)
+    if _json(a):
+        _emit(a, "create", {"cred_id": cred_id})
+    else:
+        print(cred_id)
     return 0
 
 
@@ -530,19 +550,25 @@ def cmd_get(a) -> int:
     }
     if a.prf_salt:
         args_obj["prf_salt"] = a.prf_salt
-    data = _run(args_obj, "Approve passkey", "Approve the passkey request - click to approve.", a.timeout)
+    data = _run(args_obj, "Approve passkey", "Approve the passkey request", a.timeout)
 
     if a.prf_salt:
         if not data.get("prf"):
-            raise SystemExit("no PRF returned - the authenticator did not evaluate the salt")
-        print(data["prf"])
+            raise SystemExit("no PRF - the authenticator did not evaluate the salt")
+        if _json(a):
+            _emit(a, "get", {"prf": data["prf"]})
+        else:
+            print(data["prf"])
     else:
         # Same guard as cmd_create: an ok:true relay without the field is a malformed
         # writer, not a KeyError of ours.
         cred_id = data.get("cred_id")
         if not cred_id:
             raise SystemExit("malformed relay - the ceremony result carries no cred_id")
-        print(cred_id)
+        if _json(a):
+            _emit(a, "get", {"cred_id": cred_id})
+        else:
+            print(cred_id)
     return 0
 
 
@@ -568,8 +594,7 @@ def cmd_passphrase(a) -> int:
     _trigger(
         PASSPHRASE_COMMAND, args_obj,
         "Enter passphrase" if a.twice else "Enter secret",
-        "Enter the passphrase - click to open the dialog." if a.twice
-        else "Enter the secret - click to open the dialog.",
+        "Enter the passphrase" if a.twice else "Enter the secret",
     )
     # A cancel stages a marker that ends the wait at once, and two entries that differ
     # cannot be submitted, so a timeout means the dialog was never finished.
@@ -581,18 +606,22 @@ def cmd_passphrase(a) -> int:
         # An operator who forced JLAB_PASSKEY_RELAY_BACKEND=keyctl on a host whose
         # keyring is not functional gets a clean line here, not a traceback - the same
         # bar the other commands hold. (A missing/quota'd backend surfaces the same way.)
-        raise SystemExit(f"relay backend unavailable: {e}")
+        raise Fail(f"relay backend unavailable: {e}", "relay")
     # Flushed here, not at shutdown: a caller who cannot receive the reference (stdout
     # closed, its reader gone) would leave the secret staged with nobody to remove it.
     try:
         if sys.stdout is None:
             raise OSError("stdout is closed")
-        print(ref, flush=True)
+        if _json(a):
+            print(json.dumps({"ok": True, "command": "passphrase",
+                              "result": {"reference": ref}}), flush=True)
+        else:
+            print(ref, flush=True)
     except (OSError, ValueError) as e:
         relay.unstage(nonce, "pass")
         # Dropped, so shutdown does not retry the flush and exit 120 over this line.
         sys.stdout = None
-        raise SystemExit(f"could not write the reference ({e}) - the secret was removed")
+        raise Fail(f"could not write the reference ({e}) - secret removed", "relay")
     return 0
 
 
@@ -610,8 +639,8 @@ def _read_stdin_or_file(file_arg, noun, empty_msg, nontext_msg):
         # Reading a terminal echoes the value onto the screen and into the scrollback,
         # the one thing this bridge exists to avoid. Typing one is `passphrase`'s job.
         raise SystemExit(
-            f"refusing to read a {noun} from a terminal - pipe it in or pass a FILE "
-            "(to type one, use `jupyterlab-passkey passphrase`)"
+            f"refusing to read a {noun} from a terminal - pipe it in, pass a FILE, "
+            "or use `passphrase`"
         )
     source = "stdin" if file_arg == "-" else file_arg
     try:
@@ -665,7 +694,7 @@ def cmd_copy(a) -> int:
         # Without --block nothing here waits, so a --timeout would be accepted and then
         # ignored - and a caller who set it would believe the command had bounded
         # something. Refuse rather than lie.
-        raise SystemExit("--timeout only applies with --block - without it, copy waits for nothing")
+        raise SystemExit("--timeout only applies with --block")
     timeout = CLICK_TIMEOUT if a.timeout is None else a.timeout
     if a.block and not (0 < timeout <= _MAX_BLOCK_TIMEOUT):
         # argparse(type=float) accepts inf/nan/negatives/huge values; one range test
@@ -675,7 +704,7 @@ def cmd_copy(a) -> int:
         # secret key); a value beyond the cap would wrap the 32-bit keyctl TTL below the
         # wait. Refuse before staging so the staged TTL always outlives the wait.
         raise SystemExit(
-            f"--timeout must be a positive, finite number of seconds (at most {_MAX_BLOCK_TIMEOUT})"
+            f"--timeout must be positive and finite, at most {_MAX_BLOCK_TIMEOUT}"
         )
 
     secret = _read_stdin_or_file(
@@ -686,10 +715,7 @@ def cmd_copy(a) -> int:
     )
 
     nonce = secrets.token_urlsafe(24)
-    message = (
-        f"A secret is waiting: {a.label}" if a.label
-        else "A secret is waiting - click to copy it to the clipboard."
-    )
+    message = f"Copy **{a.label}**"
 
     # With --block the CLI itself waits for and cleans up the key, but the key must
     # outlive that wait: on keyctl a key that self-destructs at its TTL mid-wait looks
@@ -705,11 +731,10 @@ def cmd_copy(a) -> int:
         # A full /dev/shm or an exhausted keyctl quota is the realistic one. Every
         # other failure here answers with a line; this should not answer with a
         # traceback. A squatted shm dir (PermissionError) also lands here.
-        raise SystemExit(f"cannot stage the secret: {e}")
+        raise Fail(f"cannot stage the secret: {e}", "relay")
 
-    # The label rides along so the frontend can name the secret if it has to ask
-    # for a second click (a clipboard write refused past its retry window).
-    command_args = {"nonce": nonce, "label": a.label} if a.label else {"nonce": nonce}
+    # The label rides along so the recovery offer names the secret it hands over.
+    command_args = {"nonce": nonce, "label": a.label}
     try:
         _trigger(COPY_COMMAND, command_args, "Copy to clipboard", message)
     except BaseException:
@@ -734,6 +759,7 @@ def cmd_copy(a) -> int:
             # next, long after the caller gave up and moved on. Already gone on the
             # success path, where the unstage is a no-op.
             relay.unstage(nonce, "secret")
+        _emit(a, "copy", {"posted": True, "label": a.label})
         return 0
 
     # _trigger has just said "click ...", which after every other command is followed
@@ -742,6 +768,7 @@ def cmd_copy(a) -> int:
     # button is live, and a stderr that cannot be written to is no reason to destroy
     # the secret it is about to collect.
     _say("nothing is reported back here - the click is what copies it")
+    _emit(a, "copy", {"posted": True, "label": a.label})
     return 0
 
 
@@ -768,23 +795,20 @@ def cmd_show(a) -> int:
         # A code is short by definition; a large value is a mistaken `show` of a file,
         # and rendering it would tie up the server. Refuse before staging.
         raise SystemExit(
-            f"code too long ({len(code)} chars, max {relay.MAX_CODE_CHARS}) - `show` is "
-            "for a short code to read on screen, not a file; did you mean `copy`?"
+            f"code too long ({len(code)} chars, max {relay.MAX_CODE_CHARS}) - "
+            "use `copy` for a file"
         )
 
     nonce = secrets.token_urlsafe(24)
-    message = (
-        f"A code is waiting: {a.label}" if a.label
-        else "A code is waiting - click to show it."
-    )
+    message = f"Show **{a.label}**"
     try:
         relay.stage(nonce, "code", code)
     except OSError as e:
         # A full /dev/shm or an exhausted keyctl quota is the realistic one - a line,
         # not a traceback. A squatted shm dir (PermissionError) lands here too.
-        raise SystemExit(f"cannot stage the code: {e}")
+        raise Fail(f"cannot stage the code: {e}", "relay")
 
-    command_args = {"nonce": nonce, "label": a.label} if a.label else {"nonce": nonce}
+    command_args = {"nonce": nonce, "label": a.label}
     try:
         _trigger(SHOW_COMMAND, command_args, "Show the code", message)
     except BaseException:
@@ -796,6 +820,7 @@ def cmd_show(a) -> int:
         raise
 
     _say("nothing is reported back here - the click is what shows it")
+    _emit(a, "show", {"posted": True, "label": a.label})
     return 0
 
 
@@ -843,11 +868,17 @@ def _sub(sub, name: str, help_: str, description: str, epilog: str, parents=()):
     )
 
 
-def main() -> int:
-    # Before anything else: a command backgrounded and then orphaned by its terminal
-    # must keep waiting for its click, not die on SIGHUP. See _ignore_hangup.
-    _ignore_hangup()
+def _secret_label(value: str) -> str:
+    """--label of `copy` and `show`: the secret's name, which the notification states.
+    Stripped, and refused while parsing so a nameless delivery is never staged."""
+    name = value.strip()
+    if not name:
+        raise argparse.ArgumentTypeError("the name must not be blank")
+    return name
 
+
+def _parser() -> argparse.ArgumentParser:
+    """The one parser: every command and its flags, for main and the parser test."""
     p = argparse.ArgumentParser(
         prog="jupyterlab-passkey",
         description=__doc__,
@@ -908,6 +939,13 @@ environment:
              "command raises (default: JLAB_PASSKEY_CALLER, else the project directory "
              "the command runs in)",
     )
+    # --json rides it too: stdout is one object and stderr stays empty, for a caller
+    # that reads fields instead of parsing lines.
+    debugp.add_argument(
+        "--json", action="store_true",
+        help="stdout is one object {ok, command, result} or {ok, command, error, code}; "
+             "stderr stays empty",
+    )
     sub = p.add_subparsers(dest="op", required=True, metavar="COMMAND")
 
     c = _sub(
@@ -934,7 +972,7 @@ example:
         "--user-name", default="jupyterlab-passkey", metavar="NAME",
         help="credential user name, shown in the browser's passkey picker (default jupyterlab-passkey)",
     )
-    c.set_defaults(func=cmd_create)
+    c.set_defaults(func=cmd_create, command="create")
 
     g = _sub(
         sub, "get", "assert a passkey; prints its PRF (with --prf-salt) or cred_id",
@@ -966,7 +1004,7 @@ example:
         "--prf-salt", metavar="B64URL",
         help="base64url 32-byte salt; prints the PRF it yields instead of the cred_id",
     )
-    g.set_defaults(func=cmd_get)
+    g.set_defaults(func=cmd_get, command="get")
 
     s = _sub(
         sub, "passphrase", "capture a secret from a dialog; prints a reference to it",
@@ -990,7 +1028,6 @@ two fields, and Submit stays disabled until they match. Cancelling exits 1 at on
 examples:
   # a passphrase being set - two fields. The consumer resolves the ref:
   pass_ref=$(jupyterlab-passkey passphrase --twice --prompt "Recovery passphrase") || exit 1
-  PASS_RECOVERY_REF="$pass_ref" pass-cli-open --ensure
 
   # a token being pasted - one field, nothing to confirm
   tok_ref=$(jupyterlab-passkey passphrase --prompt "GitHub token") || exit 1
@@ -1015,7 +1052,7 @@ examples:
         "--twice", action="store_true",
         help="ask for the value in two fields that must match",
     )
-    s.set_defaults(func=cmd_passphrase)
+    s.set_defaults(func=cmd_passphrase, command="passphrase")
 
     # No `common` here: without --block this command waits for nothing, and a --timeout
     # it accepted and then ignored would be a lie about what it does. It declares its
@@ -1047,12 +1084,12 @@ scrollback; pipe it in, pass a FILE, or use `passphrase` to type one.
         """
 examples:
   # out of a vault, into the clipboard, ready to paste into a web form
-  pass-cli get github/api --field password --quiet --no-clipboard | jupyterlab-passkey copy
+  jupyterlab-passkey vault get github/api --field password | jupyterlab-passkey copy --label "GitHub token"
 
   # straight from a file
-  jupyterlab-passkey copy ~/.config/some-service/token
+  jupyterlab-passkey copy ~/.config/some-service/token --label "some-service token"
 
-  # two in flight - name them, the notifications are otherwise identical
+  # two in flight - the label tells the notifications apart
   ... | jupyterlab-passkey copy --label "GitHub token"
   ... | jupyterlab-passkey copy --label "DB password"
 
@@ -1066,8 +1103,8 @@ examples:
         help="file to read the secret from; omit or '-' to read stdin",
     )
     cp.add_argument(
-        "--label", metavar="NAME",
-        help="name shown in the notification - the only way to tell two staged secrets apart",
+        "--label", type=_secret_label, required=True, metavar="NAME",
+        help="name of the secret, required: shown in the notification and its recovery offer",
     )
     cp.add_argument(
         "--block", action="store_true",
@@ -1077,7 +1114,7 @@ examples:
         "--timeout", type=float, default=None, metavar="SECONDS",
         help=f"with --block: how long to wait before giving up (default {CLICK_TIMEOUT:.0f}); rejected without --block",
     )
-    cp.set_defaults(func=cmd_copy)
+    cp.set_defaults(func=cmd_copy, command="copy")
 
     # No `common` here either: `show` posts and returns like `copy` without --block,
     # so there is nothing for a --timeout to bound.
@@ -1104,7 +1141,7 @@ examples:
   printf '%s' "$totp_secret" | jupyterlab-passkey show --label "Authenticator code"
 
   # from a file
-  jupyterlab-passkey show ~/pairing-code.txt
+  jupyterlab-passkey show --label "Pairing code" ~/pairing-code.txt
 """,
         parents=[debugp],
     )
@@ -1113,15 +1150,23 @@ examples:
         help="file to read the code from; omit or '-' to read stdin",
     )
     sh.add_argument(
-        "--label", metavar="NAME",
-        help="name shown in the notification and above the code image",
+        "--label", type=_secret_label, required=True, metavar="NAME",
+        help="name of the code, required: shown in the notification and above the image",
     )
-    sh.set_defaults(func=cmd_show)
+    sh.set_defaults(func=cmd_show, command="show")
 
     from .vault.cli import add_vault_parser
 
     add_vault_parser(sub, common, debugp)
+    return p
 
+
+def main() -> int:
+    # Before anything else: a command backgrounded and then orphaned by its terminal
+    # must keep waiting for its click, not die on SIGHUP. See _ignore_hangup.
+    _ignore_hangup()
+
+    p = _parser()
     argv = _glue_b64url(sys.argv[1:])
     if not argv:
         # argparse answers a bare invocation with a usage line and "the following
@@ -1133,6 +1178,10 @@ examples:
         return 2
 
     a = p.parse_args(argv)
+    # A recorder in --json mode: _say collects instead of writing stderr, so nothing
+    # but the one object reaches stdout, and a command that prints lines (a git helper)
+    # reports them in its result. Text mode leaves it None and _say writes as before.
+    relay.SAY_LINES = [] if _json(a) else None
     if getattr(a, "caller", None):
         # In the environment, where _caller reads it: the command of `vault exec`
         # inherits it, so a notification that command raises names the same caller.
@@ -1141,7 +1190,15 @@ examples:
         # Before the command runs, so the backend is on the record even if what follows
         # times out. _say, not print: a closed stderr must not fail the command.
         _say(relay.debug_report())
-    return a.func(a)
+    try:
+        return a.func(a)
+    except SystemExit as e:
+        if not _json(a):
+            raise
+        error = getattr(e, "message", None) or (e.code if isinstance(e.code, str) else "command failed")
+        print(json.dumps({"ok": False, "command": getattr(a, "command", ""),
+                          "error": error, "code": getattr(e, "json_code", "usage")}))
+        return 1
 
 
 if __name__ == "__main__":

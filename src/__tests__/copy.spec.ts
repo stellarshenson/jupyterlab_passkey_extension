@@ -155,7 +155,7 @@ describe('runCopy', () => {
 
       expect(mockEmit).toHaveBeenCalledTimes(1);
       const [message, type, options] = mockEmit.mock.calls[0];
-      expect(message).toContain('DB password');
+      expect(message).toBe('Clipboard refused - copy **DB password** again');
       expect(message).not.toContain(SECRET);
       expect(type).toBe('warning');
       expect((options as any).autoClose).toBe(false);
@@ -178,7 +178,10 @@ describe('runCopy', () => {
       writeText.mockRejectedValue(new Error('Document is not focused'));
 
       mockEmit.mockReturnValue('offer-1' as any);
-      const run = runCopy({ nonce: NONCE }, serverSettings);
+      const run = runCopy(
+        { nonce: NONCE, label: 'DB password' },
+        serverSettings
+      );
       await jest.advanceTimersByTimeAsync(20000);
       await run;
       expect(mockEmit).toHaveBeenCalledTimes(1);
@@ -191,6 +194,30 @@ describe('runCopy', () => {
       // And the SPENT offer is dismissed as it is clicked - otherwise a stale
       // button holding the secret stacks up beside every fresh offer.
       expect(mockDismiss).toHaveBeenCalledWith('offer-1');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('drops a refused copy that has no label instead of offering a nameless delivery', async () => {
+    // The label names the secret in every delivery. Called with none - not through
+    // the CLI, which requires it - a button would hand over a secret it cannot name,
+    // so the failure is reported with no action and nothing to click.
+    jest.useFakeTimers();
+    try {
+      mockRequestAPI.mockResolvedValue({ value: SECRET } as any);
+      writeText.mockRejectedValue(new Error('Document is not focused'));
+
+      const run = runCopy({ nonce: NONCE }, serverSettings);
+      await jest.advanceTimersByTimeAsync(20000);
+      await run;
+
+      expect(mockEmit).toHaveBeenCalledTimes(1);
+      const [message, type, options] = mockEmit.mock.calls[0];
+      expect(message).toBe('Clipboard refused - no secret name');
+      expect(type).toBe('warning');
+      expect((options as any).actions).toBeUndefined();
+      expect(message).not.toContain(SECRET);
     } finally {
       jest.useRealTimers();
     }

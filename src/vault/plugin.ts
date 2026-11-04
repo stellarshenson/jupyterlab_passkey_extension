@@ -123,7 +123,7 @@ export function dismissStale(status: IStatus | null, since = 0): boolean {
 export const vaultPlugin: JupyterFrontEndPlugin<void> = {
   id: VAULT_PLUGIN_ID,
   description:
-    'A password vault the Jupyter server keeps, unlocked with a passkey, with an unlock password and an authenticator code, or with the recovery passphrase',
+    'A password vault the Jupyter server keeps, unlocked by passkey, password and code, or recovery passphrase',
   autoStart: true,
   optional: [ISettingRegistry, ITranslator],
   activate: async (
@@ -153,7 +153,18 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
     // waits for it. A hidden tab reads when it is shown again, as the panel's own poll
     // does.
     let timer: number | null = null;
+    // The unlocked value of the last read, from the panel's poll or the timer's: the
+    // two share it, so one locked -> unlocked change gives one toast.
+    let wasUnlocked: boolean | null = null;
     const watch = (status: IStatus | null = null, since = 0): void => {
+      if (status) {
+        if (wasUnlocked === false && status.unlocked) {
+          Notification.emit(trans.__('Vault unlocked'), 'success', {
+            autoClose: 4000
+          });
+        }
+        wasUnlocked = status.unlocked;
+      }
       const left = dismissStale(status, since);
       if (left && timer === null) {
         timer = window.setInterval(read, REFRESH_MS);
@@ -188,7 +199,7 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
       try {
         return await api.status();
       } catch (e) {
-        const line = `the vault state could not be read (${describeFailure(e)}) - run the command again`;
+        const line = `Vault state unreadable (${describeFailure(e)}) - rerun the command`;
         panel.fail(sentence(line), false);
         throw new VaultError(0, line);
       }
@@ -207,13 +218,13 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
             nonce: {
               type: 'string',
               description:
-                'Names the relay a failure is posted to; a success shows in vault status. With none, nothing is posted.'
+                'The relay a failure is posted to; success shows in vault status'
             },
             method: {
               type: 'string',
               enum: ['passkey', 'choose'],
               description:
-                'How to unlock: a passkey (default), or a choice of a passkey, the password and a code, Password and passkey, or the recovery passphrase.'
+                "'passkey' (default), or 'choose' for every unlock method"
             }
           }
         }
@@ -270,8 +281,7 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
           properties: {
             nonce: {
               type: 'string',
-              description:
-                'Names the relay the outcome is posted to; with none, nothing is posted.'
+              description: 'The relay the outcome is posted to'
             },
             label: {
               type: 'string',
@@ -324,7 +334,7 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
             nonce: {
               type: 'string',
               description:
-                'Names the relay a failure is posted to; a success shows in vault status. With none, nothing is posted.'
+                'The relay a failure is posted to; success shows in vault status'
             }
           }
         }

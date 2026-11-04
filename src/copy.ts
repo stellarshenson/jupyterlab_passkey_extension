@@ -138,9 +138,15 @@ function nextAttempt(deadline: number, reason: unknown): Promise<void> {
  * the one below which there is nothing.
  */
 function offerRecovery(value: string, label?: string): void {
-  const message = label
-    ? `The clipboard needs another click - the secret is still waiting: ${label}`
-    : 'The clipboard needs another click - the secret is still waiting.';
+  if (!label) {
+    // A delivery must state a name. Without one there is nothing to offer that
+    // would say which secret the click hands over, so the value is dropped.
+    Notification.emit('Clipboard refused - no secret name', 'warning', {
+      autoClose: false
+    });
+    return;
+  }
+  const message = `Clipboard refused - copy **${label}** again`;
   const id = Notification.emit(message, 'warning', {
     autoClose: false,
     actions: [

@@ -7,13 +7,15 @@ straight to the server. Through the result relay only the error of an unlock com
 here, and `ok` or the error of an added passkey; an unlock is read in vault status. So
 the PRF never passes through this process.
 
-Processes of one user share an unlock, and with no vault a set-up. A record in the relay
-directory, with no secret in it, says one is pending: the first process raises the
-notification and the others wait on vault status, so one press lets them all go on. Each
-process checks vault status itself, because the unlock can come from anywhere: the panel,
-another tab, a terminal. The server removes the record on every unlock, the claim names
-the process that holds it, and that process removes its claim when its wait ends. A claim
-that goes with its process ends no wait: a waiting process claims and raises its own.
+Processes of one user share a pending unlock, and with no vault a pending set-up, within
+their operation. A record in the relay directory, with no secret in it, says one is
+pending and which operation raised it: the first process of that operation raises the
+notification and the others wait on vault status, so one press lets them all go on, while
+a process of the other operation raises its own. Each process checks vault status itself,
+because the unlock can come from anywhere: the panel, another tab, a terminal. The server
+removes the record on every unlock, the claim names the process that holds it, and that
+process removes its claim when its wait ends. A claim that goes with its process ends no
+wait: a waiting process claims and raises its own.
 """
 
 import json
@@ -34,7 +36,7 @@ SETUP_COMMAND = "passkey:vault-setup"
 REQUEST_TIMEOUT = 30
 LOCKED = "the vault is locked - run `jupyterlab-passkey vault unlock`"
 NOT_SET_UP = "no vault yet - run `jupyterlab-passkey vault init`"
-WAITING_UNLOCK = "the vault is locked - waiting for the unlock notification in your JupyterLab tab"
+WAITING_UNLOCK = "the vault is locked - waiting for the notification in your JupyterLab tab"
 WAITING_SETUP = "no vault yet - waiting for the set-up notification in your JupyterLab tab"
 # After a notification nobody answered, a later process fails at once for this long.
 UNANSWERED_SECONDS = 600
@@ -49,7 +51,12 @@ def no_vault(path):
 
 
 class VaultClientError(Exception):
-    """A refusal from the vault or the server, as one line."""
+    """A refusal from the vault or the server, as one line. `code` is the server's
+    stable name for the kind of refusal, or None when the answer carried none."""
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 class VaultLocked(VaultClientError):
@@ -69,7 +76,7 @@ def request(method, action, body=None, params=None):
     try:
         base, token = _cli._server()
     except SystemExit as e:
-        raise VaultClientError(str(e)) from None
+        raise VaultClientError(str(e), "no-server") from None
     url = f"{base}/jupyterlab-passkey-extension/vault/{action}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -83,28 +90,30 @@ def request(method, action, body=None, params=None):
             raw = r.read()
     except urllib.error.HTTPError as e:
         try:
-            message = json.loads(e.read() or b"{}").get("error")
+            answer = json.loads(e.read() or b"{}")
+            message, code = answer.get("error"), answer.get("code")
         except (ValueError, AttributeError):
-            message = None
+            message = code = None
         # A refused token, not a refused proof: the vault's own 403 carries an error.
         if e.code == 401 or (e.code == 403 and not message):
             _cli._forget_server()
-        if e.code == 423:
-            raise VaultLocked(message or "the vault is locked")
+        # An older server carries no code; its status still says the vault is locked.
+        if code == "locked" or e.code == 423:
+            raise VaultLocked(message or "the vault is locked", code or "locked")
         if e.code == 404 and not message:
             # The server runs without the vault's routes, as after an install into a
             # running server - the panel says the same (src/vault/api.ts).
-            message = "the vault is not loaded on this Jupyter server - restart the server"
-        raise VaultClientError(message or f"the vault answered {e.code} {e.reason}")
+            message = "the vault is not loaded - restart the Jupyter server"
+        raise VaultClientError(message or f"the vault answered {e.code} {e.reason}", code)
     except OSError as e:
         _cli._forget_server()
         reason = getattr(e, "reason", e)
-        raise VaultClientError(f"cannot reach {base} ({reason}) - is JupyterLab running?")
+        raise VaultClientError(f"cannot reach {base} ({reason}) - is JupyterLab running?", "no-server")
     try:
         return json.loads(raw) if raw else None
     except ValueError:
         # A proxy or a login page can answer 200 with HTML: a failed read, as one line.
-        raise VaultClientError(f"the answer of {base} to vault/{action} is not JSON") from None
+        raise VaultClientError(f"the answer of {base} to vault/{action} is not JSON", "server") from None
 
 
 def browser_step(command, args, label, message, timeout, poll=None):
@@ -115,9 +124,9 @@ def browser_step(command, args, label, message, timeout, poll=None):
         return _cli._run({**args, "nonce": secrets.token_urlsafe(24)}, label, message, timeout,
                          command_id=command, poll=poll)
     except _cli.NoRelay as e:
-        raise NoClick(str(e)) from None
+        raise NoClick(str(e), "relay") from None
     except SystemExit as e:
-        raise VaultClientError(str(e)) from None
+        raise VaultClientError(str(e), getattr(e, "json_code", "usage")) from None
 
 
 def _unusable(error):
@@ -129,7 +138,7 @@ def _unusable(error):
     except OSError:
         keyctl = False
     if not keyctl:
-        raise VaultClientError(f"cannot use the relay directory: {error}") from None
+        raise VaultClientError(f"cannot use the relay directory: {error}", "relay") from None
 
 
 def _wait_path():
@@ -173,13 +182,13 @@ def _wait_record():
     return record if live else None
 
 
-def _put_wait(state, seconds, why=""):
+def _put_wait(state, seconds, why="", command=""):
     record = {"at": time.time(), "seconds": seconds, "state": state, "why": why,
-              "pid": os.getpid()}
+              "pid": os.getpid(), "command": command}
     relay.write_relay("unlock-wait", relay.UNLOCK_WAIT, json.dumps(record))
 
 
-def _claim_unlock(seconds):
+def _claim_unlock(seconds, command):
     """None for the process that raises the notification, else the pending unlock to
     share. The claim names its process: one that is gone holds none, and the one that
     raised the notification removes its claim when its wait ends (`_drop_claim`). A claim
@@ -190,7 +199,8 @@ def _claim_unlock(seconds):
             if record is not None and record["state"] == "pending":
                 return record
             # The trigger POST comes before the wait, and may take this long.
-            _put_wait("pending", seconds + _cli.TRIGGER_TIMEOUT, (record or {}).get("why", ""))
+            why = (record or {}).get("why", "") if (record or {}).get("command") == command else ""
+            _put_wait("pending", seconds + _cli.TRIGGER_TIMEOUT, why, command)
     except OSError as e:
         _unusable(e)
     return None
@@ -211,21 +221,24 @@ def _drop_claim():
         pass
 
 
-def _end_unlock(state, seconds, why):
+def _end_unlock(state, seconds, why, command):
     """Record how the unlock ended with the vault locked, for every other process."""
     try:
         with store._locked(_wait_path()):
-            _put_wait(state, seconds, why)
+            _put_wait(state, seconds, why, command)
     except OSError as e:
         _unusable(e)
 
 
-def _refuse_after_no_answer():
-    """Fail at once after a notification nobody answered, so a batch does not wait on
-    nobody process by process."""
+def _refuse_after_no_answer(command):
+    """Fail at once after a notification nobody answered for this operation, so a batch
+    does not wait on nobody process by process. The record is one per user, so only the
+    one this operation raised counts: a record with no command is from an older version
+    and refuses nothing."""
     record = _wait_record()
-    if record is not None and record["state"] == "unanswered":
-        raise VaultClientError(record["why"])
+    if record is not None and record["state"] == "unanswered" \
+            and record.get("command") == command:
+        raise VaultClientError(record["why"], "locked")
 
 
 class Vault:
@@ -253,14 +266,14 @@ class Vault:
             return request("POST", "unlock", {"password": password, "code": code})
         s = self.status()
         if not s["initialized"]:
-            raise VaultClientError(no_vault(s["path"]))
+            raise VaultClientError(no_vault(s["path"]), "no-vault")
         if s["unlocked"]:
             return s
         if any(slot["type"] == "passkey" for slot in s["slots"]):
             # The page falls back to its chooser when no passkey matches its hostname.
-            args, message = {}, "Unlock the vault with your passkey - click to approve."
+            args, message = {}, "Unlock the vault with your passkey"
         else:
-            args, message = {"method": "choose"}, "Choose how to unlock the vault - click to approve."
+            args, message = {"method": "choose"}, "Choose how to unlock the vault"
         self._one_notification(UNLOCK_COMMAND, args, "Unlock vault", message, self.timeout,
                                "unlocked", WAITING_UNLOCK, LOCKED)
         return self.status()
@@ -279,9 +292,9 @@ class Vault:
         """Raise the one notification of this user and wait until vault status reports
         `key`, or share the one another process raised. An end that does not come ends
         every other process's wait. The page posts only a failure."""
-        pending = _claim_unlock(seconds)
+        pending = _claim_unlock(seconds, command)
         if pending is not None:
-            seconds = self._share_unlock(pending, seconds, key, waiting, failure)
+            seconds = self._share_unlock(pending, seconds, key, waiting, failure, command)
             if seconds is None:
                 return
         try:
@@ -293,26 +306,34 @@ class Vault:
             # One last look, as `_wait` takes: a press in the final round is no failure.
             if not self.status()[key]:
                 why = failure.replace(" - run", f" - nobody answered within {seconds:.0f}s - run")
-                _end_unlock("unanswered", UNANSWERED_SECONDS, why)
-                raise VaultClientError(why) from None
+                _end_unlock("unanswered", UNANSWERED_SECONDS, why, command)
+                raise VaultClientError(why, "locked") from None
         except VaultClientError as e:
-            _end_unlock("failed", FAILED_SECONDS, str(e))
+            _end_unlock("failed", FAILED_SECONDS, str(e), command)
             raise
         finally:
             _drop_claim()
 
-    def _share_unlock(self, pending, seconds, key, waiting, failure):
-        """Wait until vault status reports `key`, for the unlock another process asked
-        for; None then. An end on record ends the wait with its line, and `failure` is
-        the line for a deadline with none. A claim that went with no end, because its
-        process stopped, ends no wait: a claim of another process in its place is
-        shared, or this process claims and gets the seconds left for its own notification."""
+    def _share_unlock(self, pending, seconds, key, waiting, failure, command):
+        """Wait until vault status reports `key`, for the notification another process
+        of this operation asked for; None then. A pending notification of the other
+        operation is not this one's: this process gets `seconds` and raises its own. An
+        end on record ends the wait with its line, and `failure` is the line for a
+        deadline with none. A claim that went with no end, because its process stopped,
+        ends no wait: a claim of another process of this operation in its place is
+        shared, or this process claims and gets the seconds left for its own
+        notification."""
+        if pending.get("command") != command:
+            return seconds
         _cli._say(waiting)
         deadline = time.monotonic() + seconds
         while True:
             # The record first: the server removes it only after the vault opened, so
             # no record and then status short of `key` means the claim went with no unlock.
             record = _wait_record()
+            if record is not None and record.get("command") != command:
+                # Another operation's notification is no record for this wait.
+                record = None
             try:
                 reached = self.status()[key]
             except VaultClientError:
@@ -322,26 +343,26 @@ class Vault:
                 return None
             left = deadline - time.monotonic()
             if left <= 0:
-                raise VaultClientError((record or {}).get("why") or failure)
+                raise VaultClientError((record or {}).get("why") or failure, "locked")
             if reached is not None and record != pending:
                 if record is None:
-                    record = _claim_unlock(left)
-                    if record is None:
+                    record = _claim_unlock(left, command)
+                    if record is None or record.get("command") != command:
                         return left
                 if record["state"] != "pending" or record["why"]:
-                    raise VaultClientError(record["why"] or failure)
+                    raise VaultClientError(record["why"] or failure, "locked")
                 pending = record
             time.sleep(WAIT_POLL)
 
     def _setup(self, seconds):
         """Set a vault that does not exist up from the page. One notification serves
-        every process of this user, by the record an unlock uses: the page's `init` is
-        an unlock, so it ends the others' wait. The process that raised the notification
-        waits until vault status shows a vault, made by its page or elsewhere, such as
-        the panel; the choice of a method then goes on in the tab."""
-        _refuse_after_no_answer()
+        every process of this user that sets up, by the record an unlock uses: the page's
+        `init` is an unlock, so it ends the others' wait. The process that raised the
+        notification waits until vault status shows a vault, made by its page or
+        elsewhere, such as the panel; the choice of a method then goes on in the tab."""
+        _refuse_after_no_answer(SETUP_COMMAND)
         self._one_notification(SETUP_COMMAND, {}, "Set up vault",
-                               "create the vault - click to open the set-up steps.", seconds,
+                               "Create the vault", seconds,
                                "initialized", WAITING_SETUP, NOT_SET_UP)
 
     def lock(self):
@@ -359,7 +380,7 @@ class Vault:
         try:
             return call()
         except VaultLocked:
-            _refuse_after_no_answer()
+            _refuse_after_no_answer(UNLOCK_COMMAND)
             self.unlock()
             return call()
 

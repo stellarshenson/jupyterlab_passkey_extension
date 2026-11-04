@@ -1,4 +1,4 @@
-import { Dialog } from '@jupyterlab/apputils';
+import { Dialog, Notification } from '@jupyterlab/apputils';
 
 import { ServerConnection } from '@jupyterlab/services';
 
@@ -33,6 +33,13 @@ export async function runShow(
   args: IShowArgs,
   serverSettings: ServerConnection.ISettings
 ): Promise<void> {
+  if (!args.label) {
+    // A delivery must state a name: without one the dialog cannot say what it shows.
+    Notification.emit('Code refused - no secret name', 'warning', {
+      autoClose: false
+    });
+    return;
+  }
   const { png } = await requestAPI<{ png: string }>('render', serverSettings, {
     method: 'POST',
     body: JSON.stringify({ nonce: args.nonce })

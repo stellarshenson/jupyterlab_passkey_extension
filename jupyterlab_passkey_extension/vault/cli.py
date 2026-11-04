@@ -16,9 +16,12 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 
 from .. import cli as _cli
@@ -59,7 +62,8 @@ def _read_secret(a, prompt, twice, blind_twice=False):
     if a.in_browser:
         nonce = secrets.token_urlsafe(24)
         args = {"nonce": nonce, "prompt": prompt, "twice": twice}
-        _cli._trigger(_cli.PASSPHRASE_COMMAND, args, "Enter secret", f"{prompt} - click to open the dialog.")
+        _cli._trigger(_cli.PASSPHRASE_COMMAND, args, "Enter secret",
+                      f"Enter {prompt[0].lower()}{prompt[1:]}")
         try:
             _cli._wait(nonce, "pass", a.timeout, "the button was never clicked, or the dialog "
                        "was left open", watch_cancel=True)
@@ -137,54 +141,79 @@ def cmd_init(a, vault):
         raise SystemExit(f"a vault already exists at {s['path']}")
     recovery = _read_secret(a, "Recovery passphrase", twice=True)
     request("POST", "init", {"recovery": recovery})
-    _cli._say(f"vault created at {s['path']}; store the recovery passphrase offline - it opens the vault when no other unlock method can")
+    _cli._say(
+        f"vault created at {s['path']} - store the recovery passphrase offline; "
+        "it opens the vault when no other method can"
+    )
     if not a.no_passkey:
-        hint = ("the vault exists without a passkey - run `jupyterlab-passkey vault passkey add`, "
-                "or add Password and authenticator app under Vault settings and security (the cog)")
+        hint = ("the vault has no passkey - run `jupyterlab-passkey vault passkey add`, "
+                "or add a method with the cog")
         try:
-            cmd_passkey_add(a, vault)
+            _add_passkey(a, vault)
         except VaultClientError as e:
             raise SystemExit(f"{e}\n{hint}")
         except KeyboardInterrupt:
             raise SystemExit(f"\n{hint}")
+    _cli._emit(a, "vault init", {"path": s["path"]})
     return 0
+
+
+def _unlock_method(a, vault, s):
+    """The unlock the options name: the recovery passphrase, or the unlock password and
+    a code of the authenticator app. A vault whose only unlock password goes with a
+    passkey raises the notification, as unlock with no option does."""
+    if a.recovery:
+        return vault.unlock(recovery=_read_secret(a, "Recovery passphrase", twice=False))
+    if a.password and not any(x["type"] == "password" for x in s["slots"]) and any(
+            x["type"] == store.PAIR for x in s["slots"]):
+        # Password and passkey: the unlock with no option; its password is typed in the tab.
+        return vault.unlock()
+    if a.password:
+        needs_code = bool(s.get("authenticator"))
+        if needs_code and not a.in_browser and not sys.stdin.isatty():
+            # A pipe carries one secret; this needs two.
+            raise SystemExit("--password needs the unlock password and an app code - "
+                             "run at a terminal or with --in-browser")
+        password = _read_secret(a, "Unlock password", twice=False)
+        # The code last: it stays right for less than a minute.
+        code = _read_secret(a, "Code of the authenticator app", twice=False) if needs_code else None
+        return vault.unlock(password=password, code=code)
+    return vault.unlock()
+
+
+def _unlock_before_read(a, vault):
+    """A read command with --recovery or --password unlocks a locked vault by that
+    method before its read; an unlocked vault ignores the flags and asks nothing."""
+    if not (a.recovery or a.password):
+        return
+    s = vault.status()
+    if s["initialized"] and not s["unlocked"]:
+        _unlock_method(a, vault, s)
 
 
 def cmd_unlock(a, vault):
     s = vault.status()
     if not s["initialized"]:
         # Before `--recovery` asks for a passphrase there is nothing to open with.
-        raise SystemExit(_say_status(s))
-    if a.recovery:
-        s = vault.unlock(recovery=_read_secret(a, "Recovery passphrase", twice=False))
-    elif a.password and not any(x["type"] == "password" for x in s["slots"]) and any(
-            x["type"] == store.PAIR for x in s["slots"]):
-        # Password and passkey: the unlock with no option; its password is typed in the tab.
-        s = vault.unlock()
-    elif a.password:
-        needs_code = bool(s.get("authenticator"))
-        if needs_code and not a.in_browser and not sys.stdin.isatty():
-            # A pipe carries one secret; this needs two.
-            raise SystemExit("vault unlock --password asks for the unlock password and a code of "
-                             "the authenticator app - run it at a terminal or with --in-browser")
-        password = _read_secret(a, "Unlock password", twice=False)
-        # The code last: it stays right for less than a minute.
-        code = _read_secret(a, "Code of the authenticator app", twice=False) if needs_code else None
-        s = vault.unlock(password=password, code=code)
-    else:
-        s = vault.unlock()
+        raise _cli.Fail(no_vault(s["path"]), "no-vault")
+    s = _unlock_method(a, vault, s)
     _cli._say(f"vault {_say_status(s)}")
+    _cli._emit(a, "vault unlock", s)
     return 0
 
 
 def cmd_lock(a, vault):
     vault.lock()
     _cli._say("vault locked")
+    _cli._emit(a, "vault lock", {"locked": True})
     return 0
 
 
 def cmd_status(a, vault):
     s = vault.status()
+    _cli._emit(a, "vault status", s)
+    if _cli._json(a):
+        return 0
     h = s["holder"]
     passkeys = [x for x in s["slots"] if x["type"] == "passkey"]
     print(f"vault: {s['path']}")
@@ -203,19 +232,23 @@ def cmd_status(a, vault):
 
 
 def cmd_list(a, vault):
+    _unlock_before_read(a, vault)
     entries = vault.list()
     if a.category:
         entries = [e for e in entries if e["category"] == a.category]
-    if a.json:
-        print(json.dumps(entries, indent=1))
-    else:
+    _cli._emit(a, "vault list", {"entries": entries})
+    if not _cli._json(a):
         for e in entries:
             print("\t".join((e["name"], e["username"], e["category"], e["url"])))
     return 0
 
 
 def cmd_get(a, vault):
-    print(vault.get(a.name, a.field))
+    _unlock_before_read(a, vault)
+    value = vault.get(a.name, a.field)
+    _cli._emit(a, "vault get", {"name": a.name, "field": a.field, "value": value})
+    if not _cli._json(a):
+        print(value)
     return 0
 
 
@@ -223,10 +256,11 @@ def cmd_add(a, vault):
     # The set-up offer runs before the secret is asked, so it is typed once.
     s = vault.status()
     if not s["initialized"]:
-        raise VaultClientError(no_vault(s["path"]))
+        raise VaultClientError(no_vault(s["path"]), "no-vault")
     password = _new_password(a)
     vault._unlocked(lambda: request("POST", "entries", {"name": a.name, "fields": {**_fields(a), "password": password}}))
     _cli._say(f"added {a.name}")
+    _cli._emit(a, "vault add", {"added": a.name})
     return 0
 
 
@@ -234,7 +268,7 @@ def cmd_edit(a, vault):
     # The set-up offer runs before the secret is asked, so it is typed once.
     s = vault.status()
     if not s["initialized"]:
-        raise VaultClientError(no_vault(s["path"]))
+        raise VaultClientError(no_vault(s["path"]), "no-vault")
     fields = _fields(a)
     if a.password or a.generate:
         fields["password"] = _new_password(a)
@@ -242,22 +276,28 @@ def cmd_edit(a, vault):
         raise SystemExit("nothing to change - give at least one field")
     vault._unlocked(lambda: request("PATCH", "entries", {"name": a.name, "fields": fields}))
     _cli._say(f"updated {a.name}")
+    _cli._emit(a, "vault edit", {"updated": a.name})
     return 0
 
 
 def cmd_rm(a, vault):
     vault._unlocked(lambda: request("POST", "delete", {"name": a.name}))
     _cli._say(f"removed {a.name}")
+    _cli._emit(a, "vault rm", {"removed": a.name})
     return 0
 
 
 def cmd_generate(a, vault):
     params = {**_length(a), "symbols": "0" if a.no_symbols else "1"}
-    print(request("GET", "generate", params=params)["value"])
+    value = request("GET", "generate", params=params)["value"]
+    _cli._emit(a, "vault generate", {"value": value})
+    if not _cli._json(a):
+        print(value)
     return 0
 
 
 def _stage_and_trigger(a, vault, kind, command, label, message, done):
+    _unlock_before_read(a, vault)
     body = {"name": a.name, "field": a.field, "kind": kind}
     nonce = vault._unlocked(lambda: request("POST", "stage", body))["nonce"]
     try:
@@ -271,13 +311,17 @@ def _stage_and_trigger(a, vault, kind, command, label, message, done):
 
 
 def cmd_copy(a, vault):
-    return _stage_and_trigger(a, vault, "secret", _cli.COPY_COMMAND, "Copy to clipboard",
-                              f"Copy {a.name} - click to copy it to the clipboard.", "copies")
+    _stage_and_trigger(a, vault, "secret", _cli.COPY_COMMAND, "Copy to clipboard",
+                       f"Copy **{a.name}**", "copies")
+    _cli._emit(a, "vault copy", {"posted": True, "name": a.name})
+    return 0
 
 
 def cmd_show(a, vault):
-    return _stage_and_trigger(a, vault, "code", _cli.SHOW_COMMAND, "Show",
-                              f"Show {a.name} - click to show it.", "shows")
+    _stage_and_trigger(a, vault, "code", _cli.SHOW_COMMAND, "Show",
+                       f"Show **{a.name}**", "shows")
+    _cli._emit(a, "vault show", {"posted": True, "name": a.name})
+    return 0
 
 
 def _env_spec(spec):
@@ -294,10 +338,21 @@ def cmd_exec(a, vault):
     command = a.command[1:] if a.command[:1] == ["--"] else a.command
     if not command:
         raise SystemExit("exec needs a command after --")
+    _unlock_before_read(a, vault)
     env = dict(os.environ)
     for spec in a.env:
         var, name, field = _env_spec(spec)
         env[var] = vault.get(name, field)
+    if _cli._json(a):
+        # The caller reads the object; the child's streams become fields of it.
+        try:
+            done = subprocess.run(command, env=env, capture_output=True)
+        except OSError as e:
+            raise SystemExit(f"cannot run {command[0]}: {e}")
+        _cli._emit(a, "vault exec", {"exit": done.returncode,
+                                     "stdout": done.stdout.decode(errors="replace"),
+                                     "stderr": done.stderr.decode(errors="replace")})
+        return done.returncode
     # This process becomes the command, so Ctrl+C, signals and the exit status are the
     # command's own. An ignored signal survives exec: main() ignores SIGHUP, so the
     # command gets the SIGHUP this process started with (still ignored under nohup);
@@ -360,12 +415,12 @@ def cmd_import(a, vault):
         # a locked one come before the master password and a read of a second an entry.
         s = vault.status()
         if not s["initialized"]:
-            raise SystemExit(_say_status(s))
+            raise _cli.Fail(no_vault(s["path"]), "no-vault")
         vault._unlocked(lambda: request("GET", "entries"))
         items, with_totp = _pass_cli_items(a)
     else:
         if a.file == "-" and sys.stdin.isatty():
-            raise SystemExit("refusing to read secrets from a terminal - pipe the JSON in or pass a FILE")
+            raise SystemExit("refusing to read secrets from a terminal - pipe or pass a FILE")
         raw = _cli._read_stdin_or_file(a.file, "JSON file", "nothing to import", "{source} is not text")
         try:
             items = json.loads(raw)
@@ -376,29 +431,37 @@ def cmd_import(a, vault):
     _cli._say(f"added {result['added']}, skipped {len(skipped)}" + (f": {', '.join(skipped)}" if skipped else ""))
     if with_totp:
         _cli._say(f"not imported, pass-cli holds a TOTP secret for them: {', '.join(with_totp)}")
+    _cli._emit(a, "vault import", {"added": result["added"], "skipped": skipped, "totp": with_totp})
     return 0
 
 
-def cmd_passkey_add(a, vault):
+def _add_passkey(a, vault):
+    """Add a passkey in the tab; returns the method the page stored."""
     s = vault.status()
     if not s["initialized"]:
-        raise SystemExit(_say_status(s))
+        raise _cli.Fail(no_vault(s["path"]), "no-vault")
     # The page gets the proof the server asks for a new slot - an existing passkey, a
     # code of the authenticator app or the recovery passphrase - so no secret has to
     # reach it through a relay.
     answer = browser_step(REGISTER_COMMAND, {"label": a.label or ""}, "Add passkey",
-                          "Add a passkey to the vault - click; a proof is asked first: a passkey "
-                          "you already have, a code of the authenticator app, or the recovery "
-                          "passphrase.",
+                          "Add a passkey to the vault",
                           a.timeout)
     # The page names the method it stored: a passkey with no PRF is Password and passkey.
-    _cli._say("password and passkey added" if answer.get("method") == store.PAIR else "passkey added")
+    return "password and passkey" if answer.get("method") == store.PAIR else "passkey"
+
+
+def cmd_passkey_add(a, vault):
+    added = _add_passkey(a, vault)
+    _cli._say(f"{added} added")
+    _cli._emit(a, "vault passkey add", {"added": added})
     return 0
 
 
 def cmd_passkey_list(a, vault):
-    for slot in vault.status()["slots"]:
-        if slot["type"] in ("passkey", store.PAIR):
+    slots = [slot for slot in vault.status()["slots"] if slot["type"] in ("passkey", store.PAIR)]
+    _cli._emit(a, "vault passkey list", {"passkeys": slots})
+    if not _cli._json(a):
+        for slot in slots:
             print("\t".join((slot["cred_id"], slot["label"], slot["rp_id"], slot["created"])))
     return 0
 
@@ -406,22 +469,24 @@ def cmd_passkey_list(a, vault):
 def cmd_passkey_rm(a, vault):
     request("POST", "passkeys-remove", {"cred_id": a.cred_id})
     _cli._say("passkey removed")
+    _cli._emit(a, "vault passkey rm", {"removed": a.cred_id})
     return 0
 
 
 def cmd_recovery(a, vault):
     if not a.in_browser and not sys.stdin.isatty():
         # A pipe carries one secret; this needs two.
-        raise SystemExit("vault recovery asks for the current and the new passphrase - "
-                         "run it at a terminal or with --in-browser")
+        raise SystemExit("vault recovery needs two passphrases - "
+                         "run at a terminal or with --in-browser")
     s = vault.status()
     if not s["initialized"]:
-        raise SystemExit(_say_status(s))
+        raise _cli.Fail(no_vault(s["path"]), "no-vault")
     # The server replaces it only with a proof: here, the current passphrase.
     current = _read_secret(a, "Current recovery passphrase", twice=False)
     passphrase = _read_secret(a, "New recovery passphrase", twice=True)
     request("POST", "recovery", {"recovery": passphrase, "proof": {"current": current}})
     _cli._say("recovery passphrase replaced; store the new one offline")
+    _cli._emit(a, "vault recovery", {"replaced": "recovery passphrase"})
     return 0
 
 
@@ -429,19 +494,20 @@ def _say_rotation(rotation):
     """The data key's creation date, age, period and due state, as one line."""
     period = f"{rotation['period_days']} days" if rotation["period_days"] else "off"
     due = "due" if rotation["due"] else "not due"
-    return (f"data key: created {rotation['created']}, {rotation['age_days']} days old, "
-            f"period {period}, {due}")
+    return (f"data key: {rotation['age_days']} days old, period {period}, {due}")
 
 
 def cmd_rotate(a, vault):
     s = vault.status()
     if not s["initialized"]:
-        raise SystemExit(_say_status(s))
+        raise _cli.Fail(no_vault(s["path"]), "no-vault")
     if not s["unlocked"]:
-        raise SystemExit(LOCKED)
+        raise _cli.Fail(LOCKED, "locked")
     # The proof is the current recovery passphrase, as `vault recovery` asks it.
     proof = {"current": _read_secret(a, "Recovery passphrase", twice=False)}
-    _cli._say(_say_rotation(vault.rotate(proof)["rotation"]))
+    rotation = vault.rotate(proof)["rotation"]
+    _cli._say(_say_rotation(rotation))
+    _cli._emit(a, "vault rotate", {"rotation": rotation})
     return 0
 
 
@@ -451,7 +517,7 @@ def cmd_rotate(a, vault):
 
 GIT_HELPER = "jupyterlab-passkey"
 HELPER_KEY = "credential.helper"
-NAMED_NO_MORE = "no helper names it now, so `jupyterlab-passkey vault git migrate` cannot read it"
+NAMED_NO_MORE = "no helper names it - `git migrate` cannot read it"
 Helper = collections.namedtuple("Helper", "scope file key value store_files")
 
 
@@ -608,9 +674,8 @@ def _say_way_back(local, removed, deleted=(), blocked=()):
         if files and ("--file" in helper.value or any(
                 os.path.exists(path) and path not in readable for path in files)):
             _cli._say(f"{helper.key} = {helper.value}: to read it again, run "
-                      f"`{_restore(local, helper)}`, then {first}`jupyterlab-passkey vault git "
-                      "migrate --remove-source`, which reads only a plain path, `~` and a set "
-                      "variable")
+                      f"`{_restore(local, helper)}`, then {first}`jupyterlab-passkey vault "
+                      "git migrate --remove-source` (a plain path, `~` or a set variable only)")
 
 
 def cmd_git_install(a, vault):
@@ -619,9 +684,10 @@ def cmd_git_install(a, vault):
     readable = _store_paths()
     for path in dict.fromkeys(left):
         _cli._say(f"git's plaintext store stays at {path}: " + (
-            "`jupyterlab-passkey vault git migrate --remove-source` imports it and removes it"
+            "`git migrate --remove-source` imports and removes it"
             if path in readable else NAMED_NO_MORE))
     _say_way_back(a.local, removed)
+    _cli._emit(a, "vault git install", {"lines": _lines()})
     return 0
 
 
@@ -631,6 +697,7 @@ def cmd_git_uninstall(a, vault):
         where = "repository" if a.local else "global"
         _cli._say(f"{HELPER_KEY} = {GIT_HELPER} is not set in the {where} git config")
     _remove_helpers(a.local, ours)
+    _cli._emit(a, "vault git uninstall", {"lines": _lines()})
     return 0
 
 
@@ -792,7 +859,7 @@ def _store_entries(path):
                         items.append(_store_entry(line))
                 except ValueError:
                     raise SystemExit(f"{path}, line {number}: expected "
-                                     "scheme://user:password@host[/path] in UTF-8") from None
+                                     "scheme://user:password@host[/path] (UTF-8)") from None
                 except store.VaultError as e:
                     raise SystemExit(f"{path}, line {number}: {e}") from None
     except OSError as e:
@@ -846,8 +913,8 @@ def _say_several(entries):
             hosts.setdefault(parts[1], {})[entry["name"]] = None
     for host, names in hosts.items():
         if len(names) > 1:
-            _cli._say(f"{host} has {len(names)} vault entries: {', '.join(names)}; "
-                      "a request with no username gets the newest changed")
+            _cli._say(f"{host} has {len(names)} vault entries: {', '.join(names)} - "
+                      "newest changed answers a request with no username")
 
 
 def _open_entries(vault):
@@ -875,9 +942,10 @@ def cmd_git_migrate(a, vault):
         _cli._say(f"{line}: a client certificate passphrase, not imported")
     if a.dry_run:
         for item in items:
-            print(f"{item['name']}\t{urllib.parse.urlsplit(item['url']).hostname or ''}")
+            _say_out(a, f"{item['name']}\t{urllib.parse.urlsplit(item['url']).hostname or ''}")
         entries = _open_entries(vault)
         _say_several(entries + _sort_lines(entries, items, lambda name: None)[0])
+        _cli._emit(a, "vault git migrate", {"lines": _lines()})
         return 0
     fresh, held, differ = _sort_lines(vault.list(), items, vault.get)
     # `store` answers its first line, and the helper the newest changed entry: the dates
@@ -899,14 +967,13 @@ def cmd_git_migrate(a, vault):
     readers = []
     gone = []
     if a.remove_source and blocked:
-        _cli._say(f"kept git's plaintext store at {sources}: "
-                  "the skipped lines already have a vault entry, so their passwords "
-                  "were not imported")
+        _cli._say(f"kept git's plaintext store at {sources} - "
+                  "the skipped lines already have a vault entry")
     elif a.remove_source and certs:
-        _cli._say(f"kept git's plaintext store at {sources}: it holds a client certificate "
-                  "passphrase, which was not imported")
+        _cli._say(f"kept git's plaintext store at {sources} - "
+                  "it holds a client certificate passphrase")
     elif a.remove_source and _terminal():
-        answer = input(f"Remove git's plaintext store at {sources}? [y/N] ")
+        answer = _ask(f"Remove git's plaintext store at {sources}? [y/N] ")
         if answer.strip().lower() in ("y", "yes"):
             # A store helper still configured would write the files back in plaintext.
             gone = _drop_store_helpers(paths)
@@ -945,6 +1012,125 @@ def cmd_git_migrate(a, vault):
             if path not in readable:
                 _cli._say(f"git's plaintext store stays at {path}: {NAMED_NO_MORE}")
     _say_way_back(False, gone, found if removed else (), blocked)
+    _cli._emit(a, "vault git migrate", {"lines": _lines()})
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# the AWS CLI's credential process
+# --------------------------------------------------------------------------- #
+
+AWS_HELPER = "aws-credential-jupyterlab-passkey"
+
+
+def _aws_config():
+    """The AWS config file, as the AWS CLI finds it."""
+    return os.environ.get("AWS_CONFIG_FILE") or os.path.expanduser("~/.aws/config")
+
+
+def _aws_profile(profile):
+    """A profile name the AWS CLI and the credential_process line can carry."""
+    if not profile or any(char.isspace() for char in profile):
+        raise SystemExit("the profile needs a name without whitespace")
+    return profile
+
+
+def cmd_aws_install(a, vault):
+    profile = _aws_profile(a.profile)
+    helper = shutil.which(AWS_HELPER)
+    if not helper:
+        raise SystemExit(f"{AWS_HELPER} is not on PATH - reinstall the package (make install)")
+    # The line runs the absolute path, so AWS needs no PATH of ours at its time.
+    helper = os.path.abspath(helper)
+    aws = shutil.which("aws")
+    if not aws:
+        raise SystemExit("no aws on PATH - set credential_process = "
+                         f"{helper} {profile} in {_aws_config()}")
+    done = subprocess.run([aws, "configure", "set", "credential_process",
+                           f"{helper} {profile}", "--profile", profile],
+                          capture_output=True, text=True)
+    if done.returncode:
+        raise SystemExit(f"aws configure failed: {done.stderr.strip() or f'exit {done.returncode}'}")
+    _cli._say(f"set credential_process for profile {profile} to run {helper}")
+    _cli._say(f"add vault entry aws/{profile} - username: access key id, "
+              "password: secret access key")
+    _cli._emit(a, "vault aws install", {"lines": _lines()})
+    return 0
+
+
+def _credential_process(line):
+    """The value of a credential_process line, or None for any other line."""
+    key, sep, value = line.partition("=")
+    if sep and key.strip().lower() == "credential_process":
+        return value.strip()
+    return None
+
+
+def _our_credential_process(value):
+    """Whether the value runs our helper: the basename of its first word is exactly
+    AWS_HELPER. A value that does not parse, or whose first word differs, is another
+    helper's, even when it holds our name as part of a longer one."""
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        return False
+    return bool(words) and os.path.basename(words[0]) == AWS_HELPER
+
+
+def _replace_lines(path, lines):
+    """Write `lines` over `path` through a temporary file in its directory and keep its
+    mode, so a failure leaves the original whole."""
+    fd, temp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".aws-config-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape",
+                       newline="") as stream:
+            stream.writelines(lines)
+        os.chmod(temp, stat.S_IMODE(os.stat(path).st_mode))
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
+def cmd_aws_uninstall(a, vault):
+    profile = _aws_profile(a.profile)
+    path = _aws_config()
+    try:
+        with open(path, encoding="utf-8", errors="surrogateescape", newline="") as stream:
+            lines = stream.readlines()
+    except FileNotFoundError:
+        _cli._say(f"no AWS config at {path}")
+        _cli._emit(a, "vault aws uninstall", {"lines": _lines()})
+        return 0
+    except OSError as e:
+        raise SystemExit(f"{path}: {e.strerror}")
+    section = None
+    kept, removed, foreign = [], [], []
+    for line in lines:
+        header = line.strip()
+        if header.startswith("[") and header.endswith("]"):
+            section = header[1:-1].strip()
+        value = _credential_process(line)
+        ours = section in (profile, f"profile {profile}")
+        if ours and value is not None and _our_credential_process(value):
+            removed.append(line)
+            continue
+        kept.append(line)
+        if ours and value is not None:
+            foreign.append(value)
+    if removed:
+        # A symlink usually means a dotfiles manager owns the link: write the file it
+        # names, so the link survives and only the line goes.
+        _replace_lines(os.path.realpath(path) if os.path.islink(path) else path, kept)
+        _cli._say(f"removed credential_process from profile {profile} in {path}")
+    if foreign:
+        raise SystemExit(f"profile {profile} names another helper - left it: {foreign[0]}")
+    if not removed:
+        _cli._say(f"no credential_process of ours in profile {profile} in {path}")
+    _cli._emit(a, "vault aws uninstall", {"lines": _lines()})
     return 0
 
 
@@ -957,9 +1143,11 @@ def _missing_vault(error):
 
 
 def _terminal():
-    """Both ends are a terminal, so a question can be asked and answered."""
-    return (sys.stdin is not None and sys.stdin.isatty()
-            and sys.stdout is not None and sys.stdout.isatty())
+    """A question can be asked and answered. With --json stdout carries the object, so
+    the prompt goes to stderr instead of needing a terminal there."""
+    if sys.stdin is None or not sys.stdin.isatty():
+        return False
+    return relay.SAY_LINES is not None or (sys.stdout is not None and sys.stdout.isatty())
 
 
 def ensure_vault(vault, call):
@@ -971,7 +1159,7 @@ def ensure_vault(vault, call):
         path = _missing_vault(e)
         if path is None or not _terminal():
             raise
-        answer = input(f"No vault at {path}. Create it now? [y/N] ")
+        answer = _ask(f"No vault at {path}. Create it now? [y/N] ")
         if answer.strip().lower() not in ("y", "yes"):
             raise
         # `init` with the defaults its flags give, its wait included, for the helpers it shares.
@@ -988,16 +1176,54 @@ def setup_in_browser(vault):
     vault._setup(REGISTER_TIMEOUT)
 
 
+def _fail(message, code):
+    """The one-line failure: the message, then the server's stable code in brackets when
+    the answer carried one, so a caller can branch on it."""
+    return f"{message} [{code}]" if code else message
+
+
+def _lines():
+    """The lines _say collected for a --json result."""
+    return list(relay.SAY_LINES or [])
+
+
+def _say_out(a, line):
+    """A result line for stdout: printed in text mode, collected for the object with --json."""
+    if _cli._json(a):
+        if relay.SAY_LINES is not None:
+            relay.SAY_LINES.extend(str(line).splitlines())
+    else:
+        print(line)
+
+
+def _ask(prompt):
+    """A yes/no question; with --json its prompt goes to stderr, so stdout stays one object."""
+    if relay.SAY_LINES is None:
+        return input(prompt)
+    if sys.stderr is not None:
+        try:
+            sys.stderr.write(prompt)
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
+    return input()
+
+
 def run(a):
     vault = Vault(timeout=a.timeout)
     try:
         if a.debug:
             _cli._say(vault.status()["holder"]["debug"])
         return ensure_vault(vault, lambda: a.vault_func(a, vault))
-    except VaultLocked:
-        raise SystemExit(LOCKED)
+    except VaultLocked as e:
+        code = e.code or "locked"
+        raise _cli.Fail(LOCKED, code, _fail(LOCKED, code))
     except VaultClientError as e:
-        raise SystemExit(str(e))
+        code = e.code or "server"
+        # The server calls a missing vault an invalid request; --json has a local name
+        # for it. Text mode keeps the server's word, as it always has.
+        json_code = "no-vault" if code == "invalid" and _missing_vault(e) else code
+        raise _cli.Fail(str(e), json_code, _fail(str(e), code))
 
 
 # --------------------------------------------------------------------------- #
@@ -1026,8 +1252,8 @@ server side - the Jupyter server reads these, not this CLI; set them where it st
     )
     # The subcommands that never wait for the browser take no --timeout; run() still
     # reads one.
-    v.set_defaults(func=run, timeout=_cli.CLICK_TIMEOUT)
-    vs = v.add_subparsers(dest="vault_op", required=True, metavar="VAULT_COMMAND")
+    v.set_defaults(func=run, timeout=_cli.CLICK_TIMEOUT, command="vault")
+    vs = v.add_subparsers(required=True)
     both = [common, debugp]
     instant = [debugp]
     slow = argparse.ArgumentParser(add_help=False)
@@ -1046,17 +1272,29 @@ server side - the Jupyter server reads these, not this CLI; set them where it st
         p = vs.add_parser(name, help=help_, description=(description or help_).strip("\n"),
                           epilog=epilog, parents=parents,
                           formatter_class=argparse.RawDescriptionHelpFormatter)
-        p.set_defaults(vault_func=fn)
+        p.set_defaults(vault_func=fn, command=f"vault {name}")
         return p
 
     def in_browser(p):
         p.add_argument("--in-browser", action="store_true",
                        help="type the secret in a JupyterLab dialog instead of this terminal")
 
-    unlocks_first = ("A locked vault is unlocked first: a notification to click, then the passkey,"
-                     " or the chooser of the passkey, the unlock password and a code, the unlock"
-                     " password and a passkey with no PRF, and the recovery passphrase when no"
-                     " passkey can open it.")
+    def read_methods(p):
+        # The method a read command unlocks a locked vault with, in the same call.
+        typed = p.add_mutually_exclusive_group()
+        typed.add_argument("--recovery", action="store_true",
+                           help="unlock a locked vault with the recovery passphrase")
+        typed.add_argument("--password", action="store_true",
+                           help="unlock a locked vault with the unlock password and a code of "
+                                "the authenticator app")
+        in_browser(p)
+
+    unlocks_first = ("A locked vault is unlocked as part of the command: a notification to click, then the passkey, or\n"
+                     "the chooser of the passkey, the unlock password and a code, the unlock password and\n"
+                     "a passkey with no PRF, and the recovery passphrase when no passkey can open it.")
+
+    read_unlocks = ("--recovery or --password unlocks a locked vault in the same call, asking the secret at\n"
+                    "the terminal or in a dialog with --in-browser; an unlocked vault asks nothing.")
 
     p = add("init", "create the vault: a recovery passphrase, then a passkey", cmd_init, registering,
             description="""
@@ -1120,11 +1358,13 @@ app and a password and passkey, and the unlock duration. Never waits.
             description=f"""
 print one line per entry, tab-separated: name, username, category, url. Never passwords.
 {unlocks_first}
+{read_unlocks}
 """,
             examples=("jupyterlab-passkey vault list",
+                      "jupyterlab-passkey vault list --recovery --in-browser",
                       "jupyterlab-passkey vault list --category infrastructure --json"))
     p.add_argument("--category", help="only this category")
-    p.add_argument("--json", action="store_true", help="print JSON")
+    read_methods(p)
 
     p = add("get", "print one value to stdout (unlocks if needed)", cmd_get,
             description=f"""
@@ -1132,16 +1372,20 @@ print one field of an entry and a newline to stdout. Whatever reads stdout recei
 value: send it to a pipe or a file, not to a screen or a log. To give a value to a
 command, use exec; to give it to the user, use copy or show.
 {unlocks_first}
+{read_unlocks}
 """,
             examples=("jupyterlab-passkey vault get github/api | gh auth login --with-token",
-                      "jupyterlab-passkey vault get github/api --field username"))
+                      "jupyterlab-passkey vault get github/api --field username",
+                      "jupyterlab-passkey vault get github/api --recovery --in-browser"))
     p.add_argument("name", help="entry name, such as github/api")
     p.add_argument("--field", default="password", choices=READABLE, help="the field (default password)")
+    read_methods(p)
 
     new_password = f"""
 The password comes from a hidden prompt typed twice, from stdin, from a JupyterLab dialog
-with --in-browser (one field; Cancel exits 1), or from --generate; never from an option. --generate makes {GENERATE_LENGTH} characters by default,
-without l I 1 | O 0, quotes, backslash, backtick and space.
+with --in-browser (one field; Cancel exits 1), or from --generate; never from an option.
+--generate makes {GENERATE_LENGTH} characters by default, without l I 1 | O 0, quotes, backslash,
+backtick and space.
 {unlocks_first}
 """
     for name, help_, fn, description, examples in (
@@ -1191,19 +1435,23 @@ process. Exit 0 means the notification was raised, not that it was clicked: noth
 reported back. An unclicked value stays staged for 900 s on the kernel keyring, or until
 reboot in /dev/shm; lock does not remove it.
 {unlocks_first}
+{read_unlocks}
 """
     for name, help_, fn, description, examples in (
             ("copy", "put a value on the browser clipboard", cmd_copy,
              "put a value on the browser clipboard: the click copies it." + staged,
              ("jupyterlab-passkey vault copy github/api",
-              "jupyterlab-passkey vault copy github/api --field username")),
+              "jupyterlab-passkey vault copy github/api --field username",
+              "jupyterlab-passkey vault copy github/api --recovery --in-browser")),
             ("show", "show a value in the browser as a distorted image", cmd_show,
              f"show a value in the browser as a distorted image, to type elsewhere; at most\n"
              f"{relay.MAX_CODE_CHARS} characters." + staged,
-             ("jupyterlab-passkey vault show wifi/guest",))):
+             ("jupyterlab-passkey vault show wifi/guest",
+              "jupyterlab-passkey vault show wifi/guest --password --in-browser"))):
         p = add(name, help_, fn, description=description, examples=examples)
         p.add_argument("name", help="entry name, such as github/api")
         p.add_argument("--field", default="password", choices=READABLE, help="the field (default password)")
+        read_methods(p)
 
     p = add("exec", "run a command with vault values in its environment", cmd_exec,
             description=f"""
@@ -1211,12 +1459,15 @@ run COMMAND with vault values in its environment only. This process becomes the 
 so the exit status, the signals and the output are the command's own: do not run a
 command that prints the values it was given. Fields: {", ".join(READABLE)}.
 {unlocks_first}
+{read_unlocks}
 """,
             examples=("jupyterlab-passkey vault exec --env GITHUB_TOKEN=github/api -- gh repo list",
+                      "jupyterlab-passkey vault exec --recovery --in-browser --env GITHUB_TOKEN=github/api -- gh repo list",
                       "jupyterlab-passkey vault exec --env DB_USER=db/prod:username --env DB_PASS=db/prod -- ./migrate.sh"))
     p.add_argument("--env", action="append", default=[], metavar="VAR=NAME[:FIELD]",
                    help="set VAR to the entry's field (password by default); repeatable")
     p.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND [ARGS...]")
+    read_methods(p)
 
     p = add("import", "add entries from a JSON list, or from a pass-cli vault", cmd_import,
             description=f"""
@@ -1262,7 +1513,7 @@ examples:
 """.strip("\n"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    gs = g.add_subparsers(dest="git_op", required=True, metavar="GIT_COMMAND")
+    gs = g.add_subparsers(required=True)
 
     waiting = argparse.ArgumentParser(add_help=False)
     waiting.add_argument(
@@ -1274,7 +1525,7 @@ examples:
         p = gs.add_parser(name, help=help_, description=description.strip("\n"),
                           epilog="examples:\n" + "\n".join(f"  {line}" for line in examples),
                           parents=parents, formatter_class=argparse.RawDescriptionHelpFormatter)
-        p.set_defaults(vault_func=fn)
+        p.set_defaults(vault_func=fn, command=f"vault git {name}")
         return p
 
     p = add_git(
@@ -1352,15 +1603,68 @@ or password that is not UTF-8 text, or a name it refuses.
                         "a yes typed at a terminal; also remove the global store helpers, "
                         "credential.<url>.helper ones included, that would rewrite it")
 
+    aw = vs.add_parser(
+        "aws", help="give the AWS CLI its static access keys from the vault",
+        description="""
+give the AWS CLI its static access keys from the vault. `install` writes a
+credential_process line for a profile through `aws configure set`, naming the
+aws-credential-jupyterlab-passkey helper; `uninstall` removes that line. The helper
+reads vault entry aws/<profile>: username is the access key id, password the secret
+access key. Static keys only: SSO and session profiles get nothing from it.
+""",
+        epilog="""
+examples:
+  jupyterlab-passkey vault aws install work
+  jupyterlab-passkey vault aws uninstall work
+""".strip("\n"),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    aws = aw.add_subparsers(required=True)
+
+    def add_aws(name, help_, fn, description, examples):
+        p = aws.add_parser(name, help=help_, description=description.strip("\n"),
+                           epilog="examples:\n" + "\n".join(f"  {line}" for line in examples),
+                           parents=instant, formatter_class=argparse.RawDescriptionHelpFormatter)
+        p.set_defaults(vault_func=fn, command=f"vault aws {name}")
+        return p
+
+    p = add_aws(
+        "install", "write credential_process for an AWS profile", cmd_aws_install,
+        """
+write credential_process = "<absolute helper path> <profile>" into the profile through
+`aws configure set`, so the AWS CLI runs the helper for that profile's credentials. The
+absolute path makes the line independent of PATH at AWS time. Add the key pair as vault
+entry aws/<profile>: username the access key id, password the secret access key. The
+helper prints the credential-process JSON; a locked vault raises the unlock notification
+and the aws command waits. Static keys only: an SSO or session profile bypasses the
+helper. Never waits here. Needs aws on PATH; without it, the line to add by hand is
+printed.
+""",
+        ("jupyterlab-passkey vault aws install work",))
+    p.add_argument("profile", metavar="PROFILE", help="the AWS profile name, without whitespace")
+
+    p = add_aws(
+        "uninstall", "remove that line from the AWS config", cmd_aws_uninstall,
+        """
+remove the credential_process lines of this profile that name
+aws-credential-jupyterlab-passkey, from its section ([<profile>] or [profile <profile>])
+in the AWS config ($AWS_CONFIG_FILE, else ~/.aws/config), and keep every other line as
+it is. An empty section stays. A line naming another helper stays and the command exits
+1 naming its value. With no such line the command succeeds and says so; with no config
+file it says there is none. Never waits, and prints no key.
+""",
+        ("jupyterlab-passkey vault aws uninstall work",))
+    p.add_argument("profile", metavar="PROFILE", help="the AWS profile name")
+
     pk = vs.add_parser("passkey", help="add, list or remove passkeys",
                        description="add, list or remove the vault's passkeys")
-    pks = pk.add_subparsers(dest="passkey_op", required=True, metavar="PASSKEY_COMMAND")
+    pks = pk.add_subparsers(required=True)
 
     def add_passkey_command(name, help_, fn, parents, description, examples):
         p = pks.add_parser(name, help=help_, description=description.strip("\n"),
                            epilog="examples:\n" + "\n".join(f"  {line}" for line in examples),
                            parents=parents, formatter_class=argparse.RawDescriptionHelpFormatter)
-        p.set_defaults(vault_func=fn)
+        p.set_defaults(vault_func=fn, command=f"vault passkey {name}")
         return p
 
     p = add_passkey_command(

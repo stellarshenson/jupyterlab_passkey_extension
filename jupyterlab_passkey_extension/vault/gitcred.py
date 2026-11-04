@@ -125,8 +125,8 @@ def _lookup(attrs):
         # answers its first line, the one written last, so the newest changed answers.
         entry = max(matched, key=lambda entry: entry.get("updated", ""))
         if not entry.get("username") and not attrs.get("username"):
-            print(f"{PROGRAM}: vault entry {entry['name']} has no username and the request "
-                  f"{_request(attrs)} names none", file=sys.stderr)
+            print(f"{PROGRAM}: {entry['name']} and {_request(attrs)} have no username",
+                  file=sys.stderr)
             return None
         return entry.get("username", ""), vault.get(entry["name"])
     host = attrs.get("host", "").lower()

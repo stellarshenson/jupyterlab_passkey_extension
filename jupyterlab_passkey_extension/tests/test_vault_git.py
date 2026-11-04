@@ -317,7 +317,7 @@ def test_no_username_on_either_side_invents_none_and_names_the_entry(ready, git_
     done = git_asks("https://github.com")
     unanswered(done, SECRET)
     assert "username=\n" not in done.stdout
-    assert "github/token" in done.stderr and "has no username" in done.stderr
+    assert "github/token" in done.stderr and "have no username" in done.stderr
 
 
 def test_store_and_erase_write_nothing(ready, git_config, monkeypatch, capsys):
@@ -448,8 +448,8 @@ def test_an_unlocked_vault_answers_with_no_notification_with_any_method(server, 
     assert raised == []
 
 
-CANCELLED = ("ceremony failed: the recovery passphrase step was cancelled - run the command "
-             "again to continue the vault set-up")
+CANCELLED = ("ceremony failed: recovery passphrase step was cancelled - rerun the command "
+             "to continue")
 
 
 def test_a_cancelled_set_up_names_the_step_and_prints_no_secret(server, git_config, monkeypatch,
@@ -462,7 +462,7 @@ def test_a_cancelled_set_up_names_the_step_and_prints_no_secret(server, git_conf
     assert (code, out) == (1, "")
     assert err.count("\n") == 1
     assert "recovery passphrase step" in err and "cancelled" in err
-    assert "run the command again" in err
+    assert "rerun the command" in err
     assert SECRET not in err
     assert server.status()["initialized"] is False
 
@@ -682,8 +682,7 @@ def test_migrate_remove_source_keeps_the_file_when_a_line_was_skipped(
                      "--no-install") == 0
     err = capsys.readouterr().err
     assert source.exists()
-    assert ("the skipped lines already have a vault entry, so their passwords "
-            "were not imported") in err
+    assert "the skipped lines already have a vault entry" in err
     assert f"rm {source}" not in err
 
 
@@ -1115,8 +1114,8 @@ def test_another_username_gets_its_own_entry_and_a_line_for_the_host(
     err = capsys.readouterr().err
     assert "added 1 entry" in err
     assert err.count("vault entries: ") == 1
-    assert ("git.example.test has 2 vault entries: git/oauth2@git.example.test, mirror/api; "
-            "a request with no username gets the newest changed") in err
+    assert ("git.example.test has 2 vault entries: git/oauth2@git.example.test, mirror/api - "
+            "newest changed answers a request with no username") in err
     only_the_helper(git_config)
     env = _git_env(tmp_path, vault_http)
     for url, username in (("https://alice@git.example.test", "alice"),
@@ -1267,7 +1266,7 @@ def test_an_entry_of_the_line_name_counts_by_its_value_whatever_its_url(
     err = capsys.readouterr().err
     assert ("1 already held" in err) == held
     assert ("skipped 1 with another value in the vault: git/alice@git.example.test" in err) != held
-    assert ("so their passwords were not imported" in err) != held
+    assert ("the skipped lines already have a vault entry" in err) != held
     assert "invalid url" not in err
     assert source.exists() != held
     assert ready.read("git/alice@git.example.test") == value
@@ -1295,7 +1294,7 @@ def test_a_migrate_that_leaves_a_line_out_prints_the_way_back_to_a_store_file(
                     f"store --file {shlex.quote(str(source))}"], check=True)
     assert run_vault(monkeypatch, "vault", "git", "migrate") == 0
     err = capsys.readouterr().err
-    assert f"git's plaintext store stays at {source}: no helper names it now" in err
+    assert f"git's plaintext store stays at {source}: no helper names it" in err
     assert "plaintext store with: rm" not in err
     assert source.exists()
     with pytest.raises(SystemExit, match="no git credential store at"):
@@ -1324,7 +1323,7 @@ def test_a_migrate_that_leaves_no_line_out_prints_the_rm_line_and_the_way_back(
     assert run_vault(monkeypatch, "vault", "git", "migrate", *flags) == 0
     err = capsys.readouterr().err
     assert "remove git's plaintext store with: rm " in err
-    assert f"git's plaintext store stays at {source}: no helper names it now" in err
+    assert f"git's plaintext store stays at {source}: no helper names it" in err
     assert source.exists()
 
     # The command the line prints brings the file back within reach of migrate.
@@ -1356,7 +1355,7 @@ def test_a_store_file_kept_for_another_file_with_no_install_still_gets_the_way_b
     assert run_vault(monkeypatch, "vault", "git", "migrate", "--remove-source", "--no-install") == 0
     err = capsys.readouterr().err
     assert "in another git config still reads it" in err
-    assert f"git's plaintext store stays at {named_no_more}: no helper names it now" in err
+    assert f"git's plaintext store stays at {named_no_more}: no helper names it" in err
     assert "stays at " + str(read_elsewhere) not in err
     assert read_elsewhere.exists() and named_no_more.exists()
 
@@ -1437,8 +1436,7 @@ def test_the_error_lines_print_the_request_with_its_slash(ready, git_config, vau
 
     add(monkeypatch, capsys, "path/one", "https://path.example.test/team", "", "pw")
     done = _git_fill(env, url.replace("me@", ""), *HTTP_PATH)
-    assert ("vault entry path/one has no username and the request "
-            "https://path.example.test/team/re po.git names none") in done.stderr
+    assert ("path/one and https://path.example.test/team/re po.git have no username") in done.stderr
 
 
 # What git sends for a client certificate's passphrase: the host is empty.
@@ -1525,7 +1523,7 @@ def test_install_removes_every_store_helper_and_says_so(ready, git_config, vault
             f"from {git_config}") in err
     # The file stays, and the next migrate is told how to import and remove it.
     assert f"git's plaintext store stays at {plaintext}: " in err
-    assert "--remove-source` imports it and removes it" in err
+    assert "`git migrate --remove-source` imports and removes it" in err
     assert plaintext.read_text() == before
     # A --file value gets its line with no file there too: a spelling only a shell reads
     # looks the same from here. A bare `store` has nothing to restore.
@@ -1558,7 +1556,7 @@ def test_install_names_a_store_file_no_helper_points_at_any_more(ready, git_conf
                     f"store --file {shlex.quote(str(source))}"], check=True)
     assert run_vault(monkeypatch, "vault", "git", "install") == 0
     err = capsys.readouterr().err
-    assert f"git's plaintext store stays at {source}: no helper names it now" in err
+    assert f"git's plaintext store stays at {source}: no helper names it" in err
     # Nothing is imported yet, so the line must not tell the user to remove the file.
     assert "rm " not in err
     assert source.exists()
@@ -1598,7 +1596,7 @@ def test_a_store_file_named_through_a_shell_variable_is_read_and_gets_the_way_ba
 
     assert run_vault(monkeypatch, "vault", "git", "install") == 0
     err = capsys.readouterr().err
-    assert f"git's plaintext store stays at {source}: no helper names it now" in err
+    assert f"git's plaintext store stays at {source}: no helper names it" in err
     subprocess.run(err.partition("to read it again, run `")[2].partition("`")[0], shell=True,
                    check=True)
     at_a_terminal(monkeypatch)
@@ -1670,7 +1668,7 @@ def test_install_prints_a_store_value_it_cannot_read_and_the_command_that_restor
     err = capsys.readouterr().err
     assert (f"credential.helper = {value}: to read it again, run "
             f"`git config --file {git_config} --add credential.helper ") in err
-    assert "which reads only a plain path, `~` and a set variable" in err
+    assert "(a plain path, `~` or a set variable only)" in err
     assert "stays at" not in err
     assert source.exists()
 
@@ -1740,7 +1738,7 @@ def test_a_store_value_whose_file_migrate_still_reads_gets_its_line(git_config, 
                     f"store --file {home_store}"], check=True)
     assert run_vault(monkeypatch, "vault", "git", "install") == 0
     err = capsys.readouterr().err
-    assert "--remove-source` imports it and removes it" in err
+    assert "`git migrate --remove-source` imports and removes it" in err
     assert f"credential.helper = store --file {home_store}: to read it again, run `" in err
 
 
@@ -1757,7 +1755,7 @@ def test_a_bare_store_no_helper_reaches_any_more_gets_the_way_back(git_config, t
                    check=True)
     assert run_vault(monkeypatch, "vault", "git", "install") == 0
     err = capsys.readouterr().err
-    assert f"git's plaintext store stays at {home_store}: no helper names it now" in err
+    assert f"git's plaintext store stays at {home_store}: no helper names it" in err
     assert (f"credential.helper = store: to read it again, run "
             f"`git config --file {git_config} --add credential.helper store`") in err
 
@@ -1931,7 +1929,7 @@ def test_a_malformed_store_line_is_one_error_naming_the_file_and_line(
     with pytest.raises(SystemExit) as raised:
         run_vault(monkeypatch, "vault", "git", "migrate", "--dry-run")
     assert str(raised.value) == (f"{source}, line {line}: expected "
-                                 "scheme://user:password@host[/path] in UTF-8")
+                                 "scheme://user:password@host[/path] (UTF-8)")
 
 
 @pytest.mark.parametrize("url", ["https://alice:ab%ffcd@git.example.test",
@@ -1948,7 +1946,7 @@ def test_a_credential_that_is_not_utf8_stops_the_migrate_and_keeps_the_source(
     with pytest.raises(SystemExit) as raised:
         run_vault(monkeypatch, "vault", "git", "migrate", "--remove-source")
     assert str(raised.value) == (f"{source}, line 2: expected "
-                                 "scheme://user:password@host[/path] in UTF-8")
+                                 "scheme://user:password@host[/path] (UTF-8)")
     assert source.read_bytes() == before
     assert ready.list_entries() == []
 
@@ -2234,7 +2232,7 @@ def test_a_client_certificate_line_is_named_and_the_other_lines_are_imported(
     assert f"{source}, line {number}: a client certificate passphrase, not imported" in err
     assert ready.read("git/alice@git.example.test") == "tok-one"
     # The passphrase is in no entry, so the file stays and no rm line is printed.
-    assert "it holds a client certificate passphrase, which was not imported" in err
+    assert "it holds a client certificate passphrase" in err
     assert SECRET in source.read_text()
     assert SECRET not in err and "plaintext store with: rm" not in err
 
@@ -2262,7 +2260,7 @@ def test_a_host_that_is_not_utf8_is_a_bad_line(git_config, tmp_path, monkeypatch
     with pytest.raises(SystemExit) as raised:
         run_vault(monkeypatch, "vault", "git", "migrate", "--dry-run")
     assert str(raised.value) == (f"{source}, line 1: expected "
-                                 "scheme://user:password@host[/path] in UTF-8")
+                                 "scheme://user:password@host[/path] (UTF-8)")
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root passes every permission check")

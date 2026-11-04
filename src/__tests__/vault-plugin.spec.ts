@@ -9,12 +9,14 @@ const mockAskSecret = jest.fn();
 const mockLaunch = jest.fn();
 const mockRequest = jest.fn();
 const mockError: jest.Mock = jest.fn(() => 'failure-1');
+const mockEmit = jest.fn();
 const mockDismiss = jest.fn();
 /** The notifications in this tab, and who listens for a change to them. */
 const mockNotices: any[] = [];
 const mockChanged: ((sender: any, change: any) => void)[] = [];
 jest.mock('@jupyterlab/apputils', () => ({
   Notification: {
+    emit: (...a: any[]) => mockEmit(...a),
     error: (...a: any[]) => mockError(...a),
     dismiss: (id: string) => {
       mockDismiss(id);
@@ -348,7 +350,7 @@ it('answers the CLI for a declined passkey with no PRF with the ways in, not a r
   expect(ok).toBe(false);
   // A retry on the same authenticator fails again, so the line names what works.
   expect(error).toMatch(
-    /^passkey not added, no PRF - use another passkey or Password and authenticator app; delete the unused passkey dated \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$/
+    /^no PRF - passkey not added; use another passkey or Password and authenticator app; delete the unused passkey dated \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$/
   );
   expect(mockApi.addPasskey).not.toHaveBeenCalled();
 });
@@ -782,8 +784,7 @@ describe('one unlock asks for the passkey once', () => {
     expect(answered()).toEqual({
       nonce: 'n20',
       ok: false,
-      error:
-        'the authenticator returned no PRF - this passkey cannot unlock the vault'
+      error: 'no PRF - this passkey cannot unlock the vault'
     });
   });
 });
@@ -796,7 +797,7 @@ describe('a vault notification nothing waits for', () => {
     const n = {
       id: `notice-${++seq}`,
       createdAt: Date.now(),
-      message: 'Asked by the tests: Unlock the vault',
+      message: '**the tests**: Unlock the vault',
       type: 'info',
       options: { data, actions: [] }
     };
@@ -1031,7 +1032,7 @@ describe('a vault notification nothing waits for', () => {
   // passkey request on a locked vault' above.
   describe('a press reads the vault state before it asks anything', () => {
     const FAILED =
-      'the vault state could not be read (cannot reach the Jupyter server) - run the command again';
+      'Vault state unreadable (cannot reach the Jupyter server) - rerun the command';
 
     /**
      * A tab whose start-up read gave `before`, then a notification of `command`, and
@@ -1073,7 +1074,7 @@ describe('a vault notification nothing waits for', () => {
       expect(get).not.toHaveBeenCalled();
       expect(mockLaunch).not.toHaveBeenCalled();
       expect(mockError).toHaveBeenCalledWith(
-        'The vault state could not be read (cannot reach the Jupyter server) - run the command again.',
+        'Vault state unreadable (cannot reach the Jupyter server) - rerun the command.',
         { autoClose: false }
       );
       expect(posted()).toEqual([{ nonce: 'p2', ok: false, error: FAILED }]);
@@ -1110,7 +1111,7 @@ describe('a vault notification nothing waits for', () => {
       await commands.get(SETUP_COMMAND).execute({ nonce: 'p5' });
       expect(mockAskSecret).not.toHaveBeenCalled();
       expect(mockError).toHaveBeenCalledWith(
-        'The vault state could not be read (cannot reach the Jupyter server) - run the command again.',
+        'Vault state unreadable (cannot reach the Jupyter server) - rerun the command.',
         { autoClose: false }
       );
       expect(posted()).toEqual([{ nonce: 'p5', ok: false, error: FAILED }]);
@@ -1249,7 +1250,7 @@ describe('the set-up a command raises', () => {
 
     await commands.get(SETUP_COMMAND).execute({ nonce: 's1' });
     expect(mockAskSecret.mock.calls[0][0]).toBe(
-      'Choose a recovery passphrase and store it offline - it opens the vault when no other unlock method can.'
+      'Choose a recovery passphrase and store it offline - it opens the vault when no other method can'
     );
     expect(mockAskSecret.mock.calls[0][1]).toBe(2);
     expect(mockApi.init).toHaveBeenCalledWith('recovery words');
@@ -1340,7 +1341,7 @@ describe('the set-up a command raises', () => {
       nonce: 's4',
       ok: false,
       error:
-        'the recovery passphrase step was cancelled - run the command again to continue the vault set-up'
+        'recovery passphrase step was cancelled - rerun the command to continue'
     });
   });
 
@@ -1354,7 +1355,7 @@ describe('the set-up a command raises', () => {
       nonce: 's10',
       ok: false,
       error:
-        'the recovery passphrase step failed (disk full) - run the command again to continue the vault set-up'
+        'recovery passphrase step failed (disk full) - rerun the command to continue'
     });
   });
 });
@@ -1368,6 +1369,40 @@ it('opens the Settings Editor at the vault settings, searched by the schema titl
   expect(schema.title).toBe('Passkey Vault');
   // The sidebar is the page's only setting: the vault's policy lives on the server.
   expect(Object.keys(schema.properties)).toEqual(['sidebar']);
+});
+
+describe('one success notification per unlock', () => {
+  it('emits once on the locked -> unlocked edge, and not on a repeated read', async () => {
+    await activate();
+    await mockPanel.refresh();
+    expect(mockEmit).not.toHaveBeenCalled();
+    mockApi.status.mockResolvedValue(open());
+    await mockPanel.refresh();
+    expect(mockEmit).toHaveBeenCalledTimes(1);
+    expect(mockEmit).toHaveBeenCalledWith('Vault unlocked', 'success', {
+      autoClose: 4000
+    });
+    // The timer's read shares the last value: no second toast.
+    await mockPanel.poll();
+    expect(mockEmit).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits none when the first read is already unlocked', async () => {
+    const starting = activate();
+    mockApi.status.mockResolvedValue(open());
+    await starting;
+    await mockPanel.refresh();
+    expect(mockEmit).not.toHaveBeenCalled();
+  });
+
+  it('emits none on repeated unlocked reads', async () => {
+    const starting = activate();
+    mockApi.status.mockResolvedValue(open());
+    await starting;
+    await mockPanel.refresh();
+    await mockPanel.refresh();
+    expect(mockEmit).not.toHaveBeenCalled();
+  });
 });
 
 it('docks the panel on the side the setting names, and moves it when the setting changes', async () => {

@@ -200,12 +200,10 @@ export const ARM_DELAY_MS = 500;
  * An action whose request got no answer, or got a refusal while its final read
  * failed: it may have landed. The vault's state shows whether it did.
  */
-const NOT_CONFIRMED =
-  'Not confirmed by the vault - the server stopped answering; once it answers, the panel shows whether it was done';
+const NOT_CONFIRMED = 'Not confirmed - no server answer; wait for the panel';
 
 /** The same for a named action whose outcome the vault's state does not show. */
-const AGAIN =
-  'not confirmed by the vault - do it again once the server answers';
+const AGAIN = 'not confirmed - retry when the server answers';
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -653,7 +651,7 @@ export class VaultPanel extends Widget {
       },
       'Vault created',
       // Its state shows whether it landed: no advice to create again.
-      'Vault creation not confirmed by the vault - the server stopped answering; once it answers, the panel shows whether the vault exists'
+      'Vault creation not confirmed - the server stopped answering'
     );
   }
 
@@ -741,7 +739,7 @@ export class VaultPanel extends Widget {
           : 'Passkey added',
       // Only a failed read before the browser's `create` reaches this text, so no
       // passkey was made and a retry cannot add a second one.
-      `Adding the passkey ${AGAIN}`
+      `Passkey add ${AGAIN}`
     );
   }
 
@@ -766,7 +764,7 @@ export class VaultPanel extends Widget {
         );
       },
       'Password and authenticator app added',
-      `Adding the password and authenticator app ${AGAIN}`
+      `Password and app add ${AGAIN}`
     );
   }
 
@@ -796,7 +794,7 @@ export class VaultPanel extends Widget {
         await this._api.replaceRecovery(value, proof);
       },
       'Recovery passphrase changed',
-      `Recovery passphrase change ${AGAIN}`
+      `Recovery change ${AGAIN}`
     );
   }
 
@@ -823,7 +821,7 @@ export class VaultPanel extends Widget {
         await this._api.rotate(proof);
       },
       'Data key rotated',
-      `Data key rotation ${AGAIN}`
+      `Key rotation ${AGAIN}`
     );
   }
 
@@ -937,7 +935,7 @@ export class VaultPanel extends Widget {
     // The entry as last read: it may have changed while the popup was open.
     const current = this._entries.find(e => e.name === entry.name);
     if (!current && this._entriesRead) {
-      this.fail(`${entry.name} was deleted elsewhere.`, true);
+      this.fail(`${entry.name} was deleted.`, true);
       this._render();
       return;
     }
@@ -957,7 +955,7 @@ export class VaultPanel extends Widget {
     if ((this._remaining() ?? 0) > 0) {
       return false;
     }
-    this.fail('The vault locked - unlock it, then try again.', true);
+    this.fail('Vault locked - unlock and retry.', true);
     this._render();
     return true;
   }
@@ -1180,8 +1178,8 @@ export class VaultPanel extends Widget {
           isIpAddress(this._host)
             ? sentence(ipAddressAdvice(s.slots))
             : elsewhere
-              ? `Password and passkey was added at ${elsewhere.origin}. Open JupyterLab at that address to unlock with it.`
-              : `No passkey was added for ${this._host}. Add one under Vault settings and security (the cog) with the recovery passphrase.`
+              ? `Password and passkey added at ${elsewhere.origin} - open JupyterLab there`
+              : 'No passkey configured'
         )
       );
     }

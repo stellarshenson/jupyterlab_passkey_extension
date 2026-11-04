@@ -92,7 +92,7 @@ class MaybeAdded extends VaultError {
   constructor() {
     super(
       0,
-      'the server did not confirm the new unlock method - it may have been added; check under Vault settings and security (the cog)'
+      'the server did not confirm the method - it may have been added; check the cog'
     );
   }
 }
@@ -196,8 +196,8 @@ export function ipAddressAdvice(slots: ISlot[] = []): string {
     n === 'localhost' ? 'localhost (when it runs on this computer)' : n
   );
   return names.length > 0
-    ? `an IP address cannot hold a passkey - open JupyterLab at ${places.join(' or ')}, where your ${names.length > 1 ? 'passkeys were' : 'passkey was'} added, or by its hostname over HTTPS`
-    : 'an IP address cannot hold a passkey - open JupyterLab by its hostname over HTTPS, or at localhost when it runs on this computer';
+    ? `an IP address cannot hold a passkey - open JupyterLab at ${places.join(' or ')}`
+    : 'an IP address cannot hold a passkey - open by hostname over HTTPS, or at localhost';
 }
 
 /** A passkey belongs to a domain name: IPv4, or IPv6 as `location.hostname` gives it. */
@@ -231,7 +231,7 @@ export async function passkeyPrf(
       0,
       isIpAddress(host)
         ? ipAddressAdvice(status.slots)
-        : `no passkey was added for ${host} - add one under Vault settings and security (the cog)`
+        : `no passkey for ${host} - add one with the cog`
     );
   }
   // Each slot has its own PRF salt, so the salt is chosen per credential.
@@ -256,10 +256,7 @@ export async function passkeyPrf(
   })) as PublicKeyCredential;
   const first = cred.getClientExtensionResults().prf?.results?.first;
   if (!first) {
-    throw new VaultError(
-      0,
-      'the authenticator returned no PRF - this passkey cannot unlock the vault'
-    );
+    throw new VaultError(0, 'no PRF - this passkey cannot unlock the vault');
   }
   return {
     credId: b64urlEncode(cred.rawId),

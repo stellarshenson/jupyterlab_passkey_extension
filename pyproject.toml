@@ -44,6 +44,7 @@ dynamic = ["version", "description", "authors", "urls", "keywords"]
 [project.scripts]
 jupyterlab-passkey = "jupyterlab_passkey_extension.cli:main"
 git-credential-jupyterlab-passkey = "jupyterlab_passkey_extension.vault.gitcred:main"
+aws-credential-jupyterlab-passkey = "jupyterlab_passkey_extension.vault.awscred:main"
 
 [project.optional-dependencies]
 dev = [

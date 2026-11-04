@@ -85,7 +85,7 @@ Collects the secret staged under the nonce - by a local client, or by the server
 - **Staging** - the local client writes the relay itself (a kernel key, or an atomic `0600` file), or the server does for `vault copy`
 - **Collection** - the command POSTs the nonce to `secret`, which reads the relay and unlinks it in the same breath
 - **One shot** - a second click finds nothing and gets `404`; the clipboard is left untouched
-- **Refused write** - the browser only honours a clipboard write for a focused window within ~5s of a user gesture, so a click followed by an absence can be refused. The relay is already spent, but the value is not lost: the page retries quietly for 15s, then raises a "clipboard needs another click" notification (naming the secret by `label`) whose button finishes the copy under a fresh gesture. The value waits in page memory - never back on disk - and dies with the tab
+- **Refused write** - the browser only honours a clipboard write for a focused window within ~5s of a user gesture, so a click followed by an absence can be refused. The relay is already spent, but the value is not lost: the page retries quietly for 15s, then raises a `Clipboard refused - copy <label> again` notification (the label names the secret) whose button finishes the copy under a fresh gesture. The value waits in page memory - never back on disk - and dies with the tab
 - **After the copy** - the value is an OS-wide clipboard entry, readable by any app until overwritten
 
 ## `passkey:show`
@@ -145,6 +145,17 @@ All endpoints sit under `<base_url>/jupyterlab-passkey-extension/` and require J
 Every relay `POST` endpoint answers `400` on a bad nonce, and touches no file when it does - including `secret` and `render`, the two that turn a nonce into a path they read and then unlink.
 
 `secret` and `render` are `POST`s despite only reading: the read is destructive, and a `GET` would carry the nonce in the query string straight into the server's access log. The nonce is not the secret, but it is the ticket to collect one.
+
+## AWS credentials
+
+`jupyterlab-passkey vault aws install PROFILE` writes the profile's `credential_process` through `aws configure set`; the AWS CLI then runs `aws-credential-jupyterlab-passkey PROFILE`, which prints `{"Version": 1, "AccessKeyId": ..., "SecretAccessKey": ...}` from vault entry `aws/PROFILE`. Static access keys only - SSO and session profiles bypass it, and a locked vault raises the unlock notification while the `aws` command waits. `vault aws uninstall PROFILE` removes that one line from the profile in `$AWS_CONFIG_FILE` or `~/.aws/config` and keeps every other line.
+
+```bash
+jupyterlab-passkey vault add aws/work -u <access-key-id>
+jupyterlab-passkey vault aws install work
+aws sts get-caller-identity --profile work
+jupyterlab-passkey vault aws uninstall work
+```
 
 ## Notify flags used here
 

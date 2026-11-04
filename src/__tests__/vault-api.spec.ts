@@ -50,7 +50,7 @@ it('says the vault did not answer when something in front of it answers with a p
     .lock()
     .catch(e => e);
   expect(err.message).toBe(
-    'the vault did not answer (HTTP 403) - reload the page or start the server'
+    'the vault did not answer (HTTP 403) - reload or restart'
   );
 });
 
@@ -65,7 +65,7 @@ it('fails on a page in place of JSON, such as the hub sign-in page answered with
     .catch(e => e);
   expect(err).toBeInstanceOf(VaultError);
   expect(err.message).toBe(
-    'the vault did not answer (HTTP 200) - reload the page or start the server'
+    'the vault did not answer (HTTP 200) - reload or restart'
   );
 });
 
@@ -93,7 +93,7 @@ it("does not show the Jupyter server's Forbidden as the vault's answer", async (
     .lock()
     .catch(e => e);
   expect(err.message).toBe(
-    'the vault did not answer (HTTP 403) - reload the page or start the server'
+    'the vault did not answer (HTTP 403) - reload or restart'
   );
 });
 
@@ -108,7 +108,7 @@ it('says to restart the server when it runs without the vault', async () => {
     .status()
     .catch(e => e);
   expect(err.message).toBe(
-    'the vault is not loaded on this Jupyter server - restart the server'
+    'the vault is not loaded - restart the Jupyter server'
   );
 });
 

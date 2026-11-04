@@ -43,6 +43,13 @@ async def fails(jp_fetch, action, body=None, method="POST", **params):
     return exc.value.code, (json.loads(body).get("error") if body else None)
 
 
+async def fails_body(jp_fetch, action, body=None, method="POST", **params):
+    """The status and the whole error body, for the failure's stable code."""
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await call(jp_fetch, action, body, method, **params)
+    return exc.value.code, json.loads(exc.value.response.body)
+
+
 async def init(jp_fetch):
     await call(jp_fetch, "init", {"recovery": PASS})
 
@@ -187,29 +194,56 @@ async def test_lock_then_every_call_that_needs_the_held_key_answers_423(jp_fetch
         assert error == "the vault is locked"
 
 
+async def test_a_locked_vault_answers_423_with_the_locked_code(jp_fetch, vault_env):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    await call(jp_fetch, "lock")
+    with pytest.raises(tornado.httpclient.HTTPClientError) as exc:
+        await call(jp_fetch, "entries", method="GET")
+    assert exc.value.code == 423
+    assert json.loads(exc.value.response.body) == {"error": "the vault is locked",
+                                                   "code": "locked"}
+
+
 async def test_recovery_unlock(jp_fetch, vault_env):
     await init(jp_fetch)
     await call(jp_fetch, "lock")
-    code, error = await fails(jp_fetch, "unlock", {"recovery": PASS + "x"})
-    assert code == 400 and error == "wrong recovery passphrase"
+    code, body = await fails_body(jp_fetch, "unlock", {"recovery": PASS + "x"})
+    assert code == 403 and body == {"error": "wrong recovery passphrase", "code": "denied"}
     assert (await call(jp_fetch, "status", method="GET"))["unlocked"] is False
     s = await call(jp_fetch, "unlock", {"recovery": PASS})
     assert s["unlocked"] is True
 
 
-@pytest.mark.parametrize("change,error", [
-    (lambda s: s.update(m=1), "wrong recovery passphrase"),
-    (lambda s: s.update(m=-1), "the recovery slot has an unusable Argon2id cost"),
-    (lambda s: s.update(m=2**32), "the recovery slot has an unusable Argon2id cost"),
-    (lambda s: s.update(t=-1), "the recovery slot has an unusable Argon2id cost"),
-    (lambda s: s.update(p=-1), "the recovery slot has an unusable Argon2id cost"),
+async def test_each_failure_carries_its_stable_code(jp_fetch, vault_env):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    await call(jp_fetch, "lock")
+    code, body = await fails_body(jp_fetch, "entries", method="GET")
+    assert (code, body["code"]) == (423, "locked")
+    await call(jp_fetch, "unlock", {"recovery": PASS})
+    code, body = await fails_body(jp_fetch, "reveal", {"name": "absent/entry"})
+    assert code == 404 and body["code"] == "entry-not-found"
+    assert "absent/entry" in body["error"] and "vault list --json" in body["error"]
+    code, body = await fails_body(jp_fetch, "reveal", {"name": "github/api", "field": "nope"})
+    assert code == 400 and body["code"] == "invalid"
+    assert "field must be one of" in body["error"]
+
+
+@pytest.mark.parametrize("change,status,error", [
+    (lambda s: s.update(m=1), 403, "wrong recovery passphrase"),
+    (lambda s: s.update(m=-1), 400, "the recovery slot has an unusable Argon2id cost"),
+    (lambda s: s.update(m=2**32), 400, "the recovery slot has an unusable Argon2id cost"),
+    (lambda s: s.update(t=-1), 400, "the recovery slot has an unusable Argon2id cost"),
+    (lambda s: s.update(p=-1), 400, "the recovery slot has an unusable Argon2id cost"),
 ])
-async def test_an_argon2_parameter_argon2_rejects_answers_400(jp_fetch, vault_env, change, error):
+async def test_an_unusable_argon2_parameter_is_refused_with_its_status(jp_fetch, vault_env, change,
+                                                                       status, error):
     await init(jp_fetch)
     edit_vault_file(vault_env, lambda d: change(d["slots"][0]))
     await call(jp_fetch, "lock")
     code, message = await fails(jp_fetch, "unlock", {"recovery": PASS})
-    assert code == 400 and message == error
+    assert code == status and message == error
 
 
 async def test_a_fresh_init_writes_an_argon2id_recovery_slot(jp_fetch, vault_env):
@@ -860,7 +894,7 @@ async def test_recovery_replacement_needs_a_proof_in_the_same_request(jp_fetch, 
     await call(jp_fetch, "recovery", {"recovery": "brand new passphrase", "proof": {"current": PASS}})
     await call(jp_fetch, "lock")
     code, _ = await fails(jp_fetch, "unlock", {"recovery": PASS})
-    assert code == 400
+    assert code == 403
     # A passkey proves it too, on a locked vault as well.
     await call(jp_fetch, "recovery", {"recovery": "third passphrase",
                                       "proof": {"cred_id": "c1", "prf": PRF}})

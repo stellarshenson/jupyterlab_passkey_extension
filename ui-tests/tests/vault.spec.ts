@@ -91,7 +91,7 @@ async function nameAndConfirmPasskey(page: any, name = '') {
   // The confirm step names the passkey and has nothing to type.
   await expect(dialog.locator('input')).toHaveCount(0);
   await expect(dialog).toContainText(
-    `The passkey "${name || 'localhost'}" was created`
+    `Passkey "${name || 'localhost'}" created - confirm it to derive the vault key`
   );
   await confirm.click();
 }
@@ -1625,7 +1625,7 @@ test('an unlock notification leaves the tab once the vault is opened another way
   // that the CLI waits on a locked vault before the vault is opened.
   const unlock = vaultCli('unlock', '--caller', 'the opened-elsewhere test');
   const toast = page.locator('.Toastify__toast', {
-    hasText: 'Asked by the opened-elsewhere test: Unlock the vault'
+    hasText: '**the opened-elsewhere test**: Unlock the vault'
   });
   await expect(toast).toHaveCount(1, { timeout: 45000 });
   // Opened through the REST API, as a terminal or another tab would.
@@ -1667,7 +1667,7 @@ test('a press on an unlock notification before the tab reads the vault opened an
 
   const unlock = vaultCli('unlock', '--caller', 'the read-on-press test');
   const toast = page.locator('.Toastify__toast', {
-    hasText: 'Asked by the read-on-press test: Unlock the vault'
+    hasText: '**the read-on-press test**: Unlock the vault'
   });
   await expect(toast).toHaveCount(1, { timeout: 45000 });
   // The poll reads the vault locked; the tab's next read is 15 s after it.
@@ -1694,7 +1694,7 @@ test('a press on an unlock notification before the tab reads the vault opened an
   await expect(page.locator('.jp-Notification-Header')).toBeVisible();
   await expect(
     page.locator('.jp-Notification-List-Item', {
-      hasText: 'Asked by the read-on-press test'
+      hasText: '**the read-on-press test**'
     })
   ).toHaveCount(0, { timeout: 5000 });
   expect(await calls()).toEqual({ create: 0, get: 0 });
@@ -1736,7 +1736,7 @@ async function createWithNoPrf(page: any): Promise<void> {
     { timeout: 20000 }
   );
   await expect(dialog).toContainText(
-    'This passkey cannot hold the vault key, because it has no PRF.'
+    'No PRF: the passkey cannot hold the vault key.'
   );
 }
 
@@ -1888,7 +1888,7 @@ test('a declined Password and passkey stores nothing, names the ways in, and nam
   await createWithNoPrf(page);
   await dialog.getByRole('button', { name: 'Decline' }).click();
   await expect(dialog.locator('#jp-PasskeyVaultForm-note')).toHaveText(
-    /^Passkey not added, no PRF - use another passkey or Password and authenticator app; delete the unused passkey dated \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\.$/,
+    /^No PRF - passkey not added; use another passkey or Password and authenticator app; delete the unused passkey dated \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\.$/,
     { timeout: 20000 }
   );
   await chooseAtSetUp(page, 'later');
@@ -1949,7 +1949,7 @@ test('a passkey with no PRF declined in the cog view is an amber notification th
   await expect(toast).toHaveCount(1, { timeout: 20000 });
   await expect(toast).toHaveClass(/jp-Notification-Toast-warning/);
   await expect(toast.locator('.jp-toast-message')).toHaveText(
-    'Passkey not added, no PRF - use another passkey or Password and authenticator app.'
+    'No PRF - passkey not added; use another passkey or Password and authenticator app.'
   );
   const { created, asked } = await removal();
   expect(created).toHaveLength(1);

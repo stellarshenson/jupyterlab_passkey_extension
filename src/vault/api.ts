@@ -409,8 +409,8 @@ export class VaultApi {
         data?.error ??
           (response.status === 424 ? data?.message : undefined) ??
           (response.status === 404
-            ? 'the vault is not loaded on this Jupyter server - restart the server'
-            : `the vault did not answer (HTTP ${response.status}) - reload the page or start the server`)
+            ? 'the vault is not loaded - restart the Jupyter server'
+            : `the vault did not answer (HTTP ${response.status}) - reload or restart`)
       );
     }
     return data as T;

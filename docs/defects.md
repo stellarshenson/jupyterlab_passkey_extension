@@ -527,6 +527,27 @@ The vault server side, CLI and Python API
   - log: 2026-11-03T21:57:46Z @kj filed at the close stage of concern readpress, after its fix, because the fix stage may not write the tracker
   - log: 2026-11-03T21:57:47Z @kj closed: fixed: a press on an unlock or set-up notification reads vault status first; an open or existing vault gets no prompt and the notification leaves; a failed read gets a failure notification and no prompt; reason: names the exact test titles and the dated runs
   - log: 2026-11-03T21:58:00Z @kj the 22:20 of the reported: line is local time, +0100, so 2026-11-03T21:20Z
+- [x] `DEF-VAULT-90-NO-VAULT` **No vault reports another vault's locked line** - MAJOR; a context with no vault answered 'the vault is locked - nobody answered within 2s - run `jupyterlab-passkey vault unlock`' while `vault status` for the same context said 'no vault at <path> - run `jupyterlab-passkey vault init`'; cause: the per-uid unlock record supplies the refusal with no check of which vault or operation it came from; fix: `_setup` refuses with the no-vault line; `jupyterlab_passkey_extension/vault/client.py`
+  - evidence: test_vault_unlock.py 76 passed; fix2 verify reproduced the copied-why bug on the before snapshot and the two new tests fail without the fix; pytest 967 passed
+  - repro: unlock vault one and leave the notification unanswered, then run `git-credential-jupyterlab-passkey get` with a context that has no vault: it prints the locked line, not the `vault init` line
+  - test-tags: UNIT
+  - root-cause: 2026-11-04T11:46:00Z @kj relay.py gives every vault and server of a uid the one unlock-wait.json; `_refuse_after_no_answer` re-raises its stored locked line without checking which vault or operation it came from, and `_setup` calls it before offering set-up
+  - log: 2026-11-04T11:46:00Z @kj added; reason: the body quotes both exact lines a user sees and names the mechanism and the fix site; either clause removed loses the symptom or the repair
+  - log: 2026-11-04T13:39:24Z @kj closed: fixed: a no-vault context raises the set-up line, never the locked line; the pending-record command gate and both sharing directions are pinned
+- [x] `DEF-VAULT-91-SECRET-NAME` **Secret delivery notification states no secret name** - MEDIUM; `jupyterlab-passkey copy FILE` and `show FILE` without --label post 'A secret is waiting - click to copy it to the clipboard.' and 'A code is waiting - click to show it.', which name no secret; cause: --label is optional and the text falls back to a generic sentence; fix: make --label required and pass it to the clipboard-recovery notification; `jupyterlab_passkey_extension/cli.py`
+  - evidence: test_cli.py 130 passed; show.spec.ts 6 passed; jest 406 of 406 and pytest 967 passed on the fix2 tree
+  - repro: run `jupyterlab-passkey copy FILE` with no --label against a disposable lab: the notification reads 'A secret is waiting - click to copy it to the clipboard.' with no name
+  - test-tags: UNIT
+  - root-cause: 2026-11-04T11:46:02Z @kj `--label` is optional (`cli.py:1068-1071`, `:1115-1118`); `cmd_copy` and `cmd_show` choose the nameless sentence when it is unset or empty, and the clipboard-recovery toast repeats no name
+  - log: 2026-11-04T11:46:02Z @kj added; reason: the body quotes both nameless texts and names the parser and frontend sites the fix must reach
+  - log: 2026-11-04T13:39:24Z @kj closed: fixed: --label is required and non-blank; copy and show post 'Copy <label>' and 'Show <label>'; the frontend refuses a nameless delivery
+- [x] `DEF-VAULT-93-LOCKED-CODE` **locked vault 423 body carries no error code** - MEDIUM; a locked vault answers 423 with body only {"error": "..."}, so a caller must match the HTTP status; cause: `_error` writes no code; fix: add a stable "code": "locked", branch the client on it, state it in `docs/usage.md` and the shipped skill; `jupyterlab_passkey_extension/vault/handlers.py`
+  - evidence: test_vault_cli.py 109 passed; 423, 400-with-code and status-only cases tested; test_vault_routes.py pins the 423 body; pytest 967 passed
+  - repro: lock the vault, call a vault action, read the 423 body - it holds no `code`
+  - test-tags: UNIT
+  - root-cause: 2026-11-04T11:53:28Z @kj `_error` writes only `error`; the client branches on the HTTP 423 status
+  - log: 2026-11-04T11:53:28Z @kj added
+  - log: 2026-11-04T13:39:24Z @kj closed: fixed: a locked vault answers 423 with body code 'locked'; the client raises VaultLocked from the code or the status
 
 ## Vault panel `PANEL`
 
@@ -911,6 +932,20 @@ The vault sidebar panel, its dialogs and styles
   - log: 2026-11-04T08:52:59Z @kj added
   - log: 2026-11-04T08:53:05Z @kj filed at the close stage, because the fix stage may not write the tracker; the fix is in the working tree
   - log: 2026-11-04T08:53:05Z @kj closed: fixed: the line tells the person to do it again once the server answers, and the comment states why a retry cannot add a second passkey
+- [x] `DEF-PANEL-92-VERBOSE` **Action notifications are verbose** - MEDIUM; action notifications append a full sentence to the action, such as 'Register a passkey - click to approve.' (38 characters) and 'Add a passkey to the vault - click; a proof is asked first: a passkey you already have, a code of the authenticator app, or the recovery passphrase.' (148); cause: each text explains the click or the dialog the button already provides; fix: name the object and the action in at most 60 characters, keep a failure's reason and way forward; `jupyterlab_passkey_extension/cli.py`, `vault/cli.py`, `vault/client.py`, `src/vault/panel.ts`
+  - evidence: jest 406 of 406; Galata 55 of 55 with no retry; pytest 967 passed; logs/fix2-jest.log, logs/galata-final-ux2.log
+  - repro: run `jupyterlab-passkey create --rp-id <host>`: the notification reads 'Register a passkey - click to approve.', an instruction the button already carries
+  - test-tags: UNIT, E2E
+  - root-cause: 2026-11-04T11:46:05Z @kj each text explains what the click does or what the dialog asks; the passkey-add text lists three proof methods that the proof dialog itself names
+  - log: 2026-11-04T11:46:05Z @kj added; reason: quotes the shortest and longest texts and names the four files the wording rule reaches; the character counts are the evidence
+  - log: 2026-11-04T13:39:24Z @kj closed: fixed: every action notification body is one short line naming its object and action; the exact texts are pinned by the CLI and UI assertions
+- [x] `DEF-PANEL-94-LONG-TEXTS` **Long visible texts are overspoken** - MEDIUM; Visible texts in the vault panel and the CLI are multi-sentence paragraphs; the locked-view no-passkey paragraph is the example. Fix: one short line per text, the action stays in the button, the no-passkey line is exactly "No passkey configured".
+  - evidence: 64-text inventory applied; no-passkey line is exactly "No passkey configured" at src/vault/panel.ts:1182, pinned by src/__tests__/vault.spec.ts:1488; text verifier 04-verify-text.json, its four findings fixed and re-verified in 09-verify-repair.json (14 passed twice); gates jest 411/411, pytest 1070/1070, Galata 55/55
+  - repro: open the vault panel locked at a host with no passkey; read the locked-view paragraph
+  - test-tags: MANUAL
+  - log: 2026-11-04T13:41:39Z @kj added
+  - log: 2026-11-04T15:54:52Z @kj collector found a dynamic case: the notification message can exceed 60 characters when the entry name or --label is long; the code does not truncate, and service.MAX_NAME allows 200, so Copy **<name>** grows with the name
+  - log: 2026-11-04T18:20:12Z @kj closed
 
 ## Lint `LINT`
 

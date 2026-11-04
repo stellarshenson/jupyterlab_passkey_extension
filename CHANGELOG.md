@@ -2,6 +2,27 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.3] - 2026-11-04
+
+### Added
+
+- `aws-credential-jupyterlab-passkey`, a Python console script for AWS `credential_process`: it reads the vault entry `aws/<profile>`, where the username is the access key id and the password the secret key, and raises the unlock notification when the vault is locked
+- `vault aws install <profile>` writes `credential_process` with `aws configure set` and the absolute helper path; `vault aws uninstall <profile>` removes only that line, keeps every other byte and a foreign helper, and writes through a symlinked config
+- `--json` on every subcommand: stdout carries one object, `{"ok": true, "command", "result"}`, or `{"ok": false, "command", "error", "code"}` with exit 1; the shipped skill always passes it
+- Stable failure codes on an unsuccessful unlock or retrieval: `denied`, `entry-not-found` naming the entry and pointing at `vault list --json`, `invalid` and `locked`
+- A read command - `list`, `get`, `copy`, `show` and `exec` - unlocks a locked vault in the same call with `--recovery` or `--password --in-browser`
+- One success notification when the vault unlocks, by any route
+- The agent skill states the AWS set-up and triggers on AWS CLI, credentials, keys, tokens and secrets
+
+### Changed
+
+- A notification starts with the caller in markdown bold and a colon, `**<caller>**: <message>`, and bolds the entry name in place, such as `Copy **github**`; the words "Asked by" are gone
+- 64 visible texts are shorter, one line each; the locked view says exactly "No passkey configured"
+
+### Fixed
+
+- The claim record that processes share during an unlock is written atomically, so a concurrent reader cannot see a half-written file and raise a second notification
+
 ## [1.2.2] - 2026-11-04
 
 ### Added
