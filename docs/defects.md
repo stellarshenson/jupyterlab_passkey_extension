@@ -984,6 +984,30 @@ The vault sidebar panel, its dialogs and styles
   - root-cause: 2026-11-05T16:16:00Z @kj _twoStep sets _armed and schedules no lapse; only a render path clears it. Add ARM_LAPSE_MS 5000 and a timer that disarms, and label the arm Confirm
   - log: 2026-11-05T16:16:00Z @kj added
   - log: 2026-11-05T16:36:34Z @kj closed
+- [x] `DEF-PANEL-102-SECTION-LINE` **section divider uses the surface colour** - MINOR; the line under a category band and under the filter row uses --jp-border-color3, the panel surface in stock dark (#212121) and the band in stock light (#eee), so the divider vanishes or reads as a dark gap; the design system puts the band separator on --jp-layout-color3; `style/base.css`
+  - evidence: Galata 30 of 30 on the installed build: the divider test reads every section and the filter box as --jp-layout-color3 against a probe, in Light and Dark, list and cog views; Jest 425 of 425
+  - related: ACC-PANEL-313-SECTION-LINE - the criterion this violates
+  - repro: open the vault list with two categories; the lines under the bands have no contrast against the body
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-11-05T18:14:49Z @kj the section rules use --jp-border-color3, which equals the root surface in every installed theme; the design system bars that token from the section band line and names --jp-layout-color3
+  - log: 2026-11-05T18:14:49Z @kj added
+  - log: 2026-11-05T19:04:26Z @kj closed: fixed: both rules draw the design system's band separator
+- [x] `DEF-PANEL-103-AGE-EDGE` **age column out of line when the open category does not scroll** - MINOR; an entry row's age column ends 4 px from the panel edge, the status row's holder 4 px plus the measured scrollbar width, so the right-aligned columns do not line up; the open category's viewport reserves no scrollbar, so a category whose rows fit loses the strip; `style/base.css`
+  - evidence: Galata 30 of 30: the geometry test reads the age and the status holder at the same distance, and the harmonica test holds them within 1 px; the probe and viewport both measure 15 px under the runner; Jest 425 of 425
+  - related: ACC-PANEL-310-GUTTER - the level rule this violates
+  - repro: open a category whose rows fit the panel and compare the age column's right edge with the holder in the status row above; the age sits nearer the edge by the scrollbar width
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-11-05T18:18:31Z @kj the open category's viewport has no scrollbar-gutter: stable, so a section with no scrollbar loses the strip that the status row's measured padding still reserves
+  - log: 2026-11-05T18:18:31Z @kj added
+  - log: 2026-11-05T19:04:29Z @kj closed: fixed: the viewport and the probe reserve the same strip
+- [x] `DEF-PANEL-104-BAND-CORNERS` **section band and row selection have rounded corners** - MINOR; the section band and a row's hover fill are buttons, so JupyterLab's .jp-ThemedContainer button rule rounds their corners to 2px; the band and the selection in the design are full-bleed square bands; fix: border-radius 0 on the band button and the row line; `style/base.css`
+  - evidence: Galata 30 of 30 on the installed build: the geometry test reads border-top-left-radius 0px on the band and on a row, against 2px from the core .jp-ThemedContainer button rule; Jest 425 of 425
+  - related: ACC-PANEL-212 - the panel geometry this violates
+  - repro: open the vault list and rest the pointer on an entry; the band and the row's fill show rounded corners
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-11-05T19:18:37Z @kj both elements are buttons, so the core .jp-ThemedContainer button border-radius rule applies and neither panel rule resets it
+  - log: 2026-11-05T19:18:37Z @kj added
+  - log: 2026-11-05T19:29:41Z @kj closed: fixed: the band and the row fill are square
 
 ## Lint `LINT`
 

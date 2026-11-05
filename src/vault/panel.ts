@@ -238,7 +238,7 @@ const vaultIcon = new LabIcon({
 
 /** The harmonica's values, from the design system's Harmonica navigation chapter. */
 const EXPAND_STEP = 160; // px of free space one wheel event may take
-const HOLD_MS = 350; // the held pull before a switch
+const HOLD_MS = 438; // the held pull before a switch
 const GESTURE_GAP_MS = 220; // a pause that starts a new gesture
 const PULL_STEP = 3; // px the neighbour eases in per event
 const PULL_MAX = 22; // the cap of the pull preview

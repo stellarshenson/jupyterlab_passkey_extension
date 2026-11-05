@@ -354,10 +354,21 @@ test('the panel has the geometry of the AI assistants panels', async ({
   expect(await style(`${C}-sectionHeader`, 'background-color')).toBe(
     await style(`${C}-header`, 'background-color')
   );
+  // The band and a row's fill are full-bleed, so their corners are square: the
+  // core .jp-ThemedContainer button rule would round them to 2px.
+  expect(await style(`${C}-sectionHeader`, 'border-top-left-radius')).toBe(
+    '0px'
+  );
+  expect(await style(`${C}-rowLine`, 'border-top-left-radius')).toBe('0px');
   expect(await style(`${C}-rowName`, 'font-weight')).toBe('400');
-  // The age is small and dim at the right end of the row; the username before it.
-  const [user, used] = await measure([`${C}-rowUser`, `${C}-rowAge`]);
-  expect(used[1]).toBe(4);
+  // The age is small, dim and level with the status row's holder at the right end
+  // of the row; the username before it.
+  const [user, used, holder] = await measure([
+    `${C}-rowUser`,
+    `${C}-rowAge`,
+    `${C}-holder`
+  ]);
+  expect(used[1]).toBe(holder[1]);
   expect(user[1]).toBeGreaterThan(used[1]);
   expect(await style(`${C}-rowUser`, 'font-size')).toBe(
     await style(`${C}-headerTitle`, 'font-size')
@@ -378,7 +389,7 @@ test('the panel has the geometry of the AI assistants panels', async ({
   expect(add.slice(0, 2)).toEqual([4, 4]);
 });
 
-test('every section ends with the divider line of the workspace manager, in both views and both themes', async ({
+test("every section ends with the design system's band separator, in both views and both themes", async ({
   page
 }) => {
   await openVault(page);
@@ -402,7 +413,9 @@ test('every section ends with the divider line of the workspace manager, in both
   });
 
   // Each bottom line as "width style colour", beside the lines the theme's tokens
-  // draw on a temporary element; `above` is the row that stands over the first section.
+  // draw on a temporary element: color2 the title band's rule, color3 the status
+  // row's general border, layout3 the section band separator; `above` is the row
+  // that stands over the first section.
   const read = (above: string) =>
     panel(page).evaluate(
       (root: HTMLElement, [prefix, aboveSelector]: string[]) => {
@@ -426,6 +439,7 @@ test('every section ends with the divider line of the workspace manager, in both
         return {
           color2: token('--jp-border-color2'),
           color3: token('--jp-border-color3'),
+          layout3: token('--jp-layout-color3'),
           title: line(at(`${prefix}-header`)),
           titleShadow: getComputedStyle(at(`${prefix}-header`)).boxShadow,
           status: line(at(`${prefix}-status`)),
@@ -462,11 +476,12 @@ test('every section ends with the divider line of the workspace manager, in both
     expect(r.sections.length, view).toBeGreaterThan(1);
     expect(r.title, view).toBe(r.color2);
     expect(r.titleShadow, view).toBe('none');
-    // The status row's line stays, also above a shown filter box.
+    // The status row keeps its general border; the sections and a shown filter box
+    // end with the band separator.
     expect(r.status, view).toBe(r.color3);
-    expect(r.row, view).toBe(r.color3);
+    expect(r.row, view).toBe(above === `${C}-filterBox` ? r.layout3 : r.color3);
     expect(r.rowEdges, view).toEqual([0, 0, 0]);
-    expect(r.sections, view).toEqual(every(r.color3));
+    expect(r.sections, view).toEqual(every(r.layout3));
     // No top line on a section, so two lines never touch.
     expect(r.sectionTops, view).toEqual(every('none'));
     expect(r.sectionShadows, view).toEqual(every('none'));
@@ -678,6 +693,53 @@ test('one category opens at a time, and the wheel folds to the next at its last 
   await expect(work).toHaveAttribute('aria-expanded', 'false');
   expect(await height(home)).toBeGreaterThan(100);
   expect(await height(work)).toBe(0);
+  // The open category's rows fit, so the reserved gutter must keep its first age
+  // level with the status row's holder at the panel's right edge.
+  const [ageEdge, holderEdge] = await panel(page).evaluate(
+    (root: HTMLElement) => {
+      const right = (selector: string) =>
+        (root.querySelector(selector) as HTMLElement).getBoundingClientRect()
+          .right;
+      return [
+        right('.jp-PasskeyVaultPanel-rowAge'),
+        right('.jp-PasskeyVaultPanel-holder')
+      ];
+    }
+  );
+  expect(Math.abs(ageEdge - holderEdge)).toBeLessThanOrEqual(1);
+  // A hovered row is three quarters of the band's fill over the row's own fill, as
+  // in the AI assistants panel, never the band's colour.
+  const firstRow = home.locator('..').locator(`${C}-rowLine`).first();
+  await firstRow.hover();
+  const hoverColour = await page.evaluate(() => {
+    const probe = document.createElement('span');
+    probe.style.color =
+      'color-mix(in srgb, var(--jp-layout-color2) 75%, var(--jp-layout-color1))';
+    document.body.appendChild(probe);
+    const colour = getComputedStyle(probe).color;
+    probe.remove();
+    return colour;
+  });
+  expect(
+    await firstRow.evaluate(
+      (node: HTMLElement) => getComputedStyle(node).backgroundColor
+    )
+  ).toBe(hoverColour);
+  // The entry was just added, so its age reads in the active colour.
+  await expect(firstRow).toHaveClass(/jp-mod-recentlyActive/);
+  const brandColour = await page.evaluate(() => {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--jp-brand-color1)';
+    document.body.appendChild(probe);
+    const colour = getComputedStyle(probe).color;
+    probe.remove();
+    return colour;
+  });
+  expect(
+    await firstRow
+      .locator(`${C}-rowAge`)
+      .evaluate((node: HTMLElement) => getComputedStyle(node).color)
+  ).toBe(brandColour);
 });
 
 test('lock, then unlock with the passkey', async ({ page }) => {

@@ -172,7 +172,10 @@
   fill: var(--jp-inverse-layout-color3);
 }
 
-/* A probe that always shows a classic scrollbar: its width is the status row's padding. */
+/* A probe that reserves a classic scrollbar exactly as the open category's viewport
+   does: its width is the status row's padding. A browser that hides scrollbars but
+   still reserves the gutter would otherwise measure 0 and put the status row's holder
+   and the rows' age at different distances. */
 .jp-PasskeyVaultPanel-gutterProbe {
   position: absolute;
   top: 0;
@@ -180,6 +183,7 @@
   width: 50px;
   height: 50px;
   overflow-y: scroll;
+  scrollbar-gutter: stable;
   visibility: hidden;
   pointer-events: none;
 }
@@ -289,6 +293,9 @@
   flex: 0 0 auto;
   min-height: 0;
   overflow: hidden auto;
+
+  /* The strip is reserved in every open category, so a row's right-aligned age stays level with the status row's holder, scrolling or not. */
+  scrollbar-gutter: stable;
 }
 
 .jp-PasskeyVaultPanel-empty {
@@ -323,7 +330,7 @@
 .jp-PasskeyVaultPanel-filterBox {
   flex: 0 0 auto;
   padding: 4px var(--jp-passkey-vault-inset);
-  border-bottom: var(--jp-border-width) solid var(--jp-border-color3);
+  border-bottom: var(--jp-border-width) solid var(--jp-layout-color3);
 }
 
 .jp-PasskeyVaultPanel-filterInput {
@@ -346,12 +353,12 @@
 }
 
 /* A category of the list view or a section of the cog view. Every section, the last
-   included, ends with the line of the workspace manager; none has a top line, so two
-   lines never touch. */
+   included, ends with the design system's section band separator; none has a top line,
+   so two lines never touch. */
 .jp-PasskeyVaultPanel-section {
   display: flex;
   flex-direction: column;
-  border-bottom: var(--jp-border-width) solid var(--jp-border-color3);
+  border-bottom: var(--jp-border-width) solid var(--jp-layout-color3);
 }
 
 /* One category: its band, then the viewport that scrolls its rows. */
@@ -382,6 +389,7 @@ button.jp-PasskeyVaultPanel-sectionHeader {
   width: 100%;
   padding-left: var(--jp-passkey-vault-inset);
   border: none;
+  border-radius: 0;
   cursor: pointer;
   text-align: left;
   font-family: inherit;
@@ -429,8 +437,18 @@ button.jp-PasskeyVaultPanel-sectionHeader:focus-visible {
   cursor: pointer;
 }
 
+/* The core .jp-ThemedContainer button rule rounds a button; a row's fill is
+   full-bleed, so its corners stay square. */
+button.jp-PasskeyVaultPanel-rowLine {
+  border-radius: 0;
+}
+
 .jp-PasskeyVaultPanel-rowLine:hover {
-  background: var(--jp-layout-color2);
+  background: color-mix(
+    in srgb,
+    var(--jp-layout-color2) 75%,
+    var(--jp-layout-color1)
+  );
 }
 
 .jp-PasskeyVaultPanel-rowLine:focus-visible {
@@ -489,7 +507,7 @@ button.jp-PasskeyVaultPanel-sectionHeader:focus-visible {
   .jp-PasskeyVaultPanel-rowName,
 .jp-PasskeyVaultPanel-rowLine.jp-mod-recentlyActive
   .jp-PasskeyVaultPanel-rowAge {
-  color: var(--jp-content-link-color);
+  color: var(--jp-brand-color1);
 }
 
 .jp-PasskeyVaultPanel-rowLine.jp-mod-stale .jp-PasskeyVaultPanel-rowName {

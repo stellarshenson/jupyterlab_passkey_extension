@@ -2,6 +2,17 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.7] - 2026-11-05
+
+### Changed
+
+- The category and filter-row dividers draw the design system's band separator, `--jp-layout-color3`, one fill step from the band, instead of the surface token `--jp-border-color3`; the section band and a row's selection fill are square, the row hover is the design system's 75 percent mix of the band over the row, and a recently active age reads `--jp-brand-color1`
+- The harmonica hold is 438 ms, 25 percent longer than 350 ms, so the category switch needs a longer held pull; the mock, the usage guide, the design document and the design system chapter carry the new value
+
+### Fixed
+
+- The age column ends level with the status row's holder in every category: the open category reserves its scrollbar strip and the gutter probe reserves the same strip, so a category whose rows fit no longer puts its age nearer the panel edge
+
 ## [1.2.6] - 2026-11-05
 
 ### Changed

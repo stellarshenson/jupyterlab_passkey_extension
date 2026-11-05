@@ -2789,8 +2789,8 @@ describe('VaultPanel', () => {
       wheel(panel, 100);
       expect(home.style.height).toBe('153px');
       expect(infra.style.height).toBe('3px');
-      // 350 ms of held pull folds: 400 ms later the next category owns the list.
-      for (const wait of [100, 100, 100, 50]) {
+      // 438 ms of held pull folds: 400 ms later the next category owns the list.
+      for (const wait of [100, 100, 100, 100, 40]) {
         await jest.advanceTimersByTimeAsync(wait);
         wheel(panel, 100);
       }
@@ -2867,7 +2867,7 @@ describe('VaultPanel', () => {
     }
   });
 
-  it('pins the hold at 350 ms: 300 ms is no fold, past 350 ms folds', async () => {
+  it('pins the hold at 438 ms: 400 ms is no fold, past 438 ms folds', async () => {
     jest.useFakeTimers();
     try {
       const panel = await panelWith(fakeApi());
@@ -2879,8 +2879,8 @@ describe('VaultPanel', () => {
       });
       home.scrollTop = 500 - 156;
       wheel(panel, 100);
-      // 300 ms of held pull, an event every 100 ms so the gesture stays one burst.
-      for (const wait of [100, 100, 100]) {
+      // 400 ms of held pull, an event every 100 ms so the gesture stays one burst.
+      for (const wait of [100, 100, 100, 100]) {
         await jest.advanceTimersByTimeAsync(wait);
         wheel(panel, 100);
       }
@@ -2888,8 +2888,8 @@ describe('VaultPanel', () => {
         'true',
         'false'
       ]);
-      // The next event past 350 ms folds; both categories are open during the fold.
-      await jest.advanceTimersByTimeAsync(51);
+      // The next event past 438 ms folds; both categories are open during the fold.
+      await jest.advanceTimersByTimeAsync(39);
       wheel(panel, 100);
       await jest.advanceTimersByTimeAsync(50);
       expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
@@ -2922,7 +2922,7 @@ describe('VaultPanel', () => {
       expect(home.style.height).toBe('153px');
       expect(infra.style.height).toBe('3px');
       // After 160 ms idle the damped spring runs and settles under 300 ms.
-      await jest.advanceTimersByTimeAsync(160 + 350);
+      await jest.advanceTimersByTimeAsync(160 + 400);
       expect(viewports(panel).map(v => v.style.height)).toEqual([
         '156px',
         '0px'

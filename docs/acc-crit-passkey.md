@@ -2053,6 +2053,7 @@ The vault sidebar panel in JupyterLab
 - [x] `ACC-PANEL-283-DIVIDERS` **Section dividers as in the workspace manager** - MEDIUM; every section, the last included, ends with a `--jp-border-width` line in `--jp-border-color3`; the row above the first section ends with the same line, never two lines; the title band ends with that width in `--jp-border-color2`; a section band has no border; no band has a shadow; list and cog views
   - evidence: jest 368 of 368 and pytest 874 passed, 2026-11-03; vault.spec 'puts each category, the last and a collapsed one included, in its own section'; divider lines written `var(--jp-border-width)` at style/base.css:122, 181, 274, 302; Galata full suite 54 of 54 at the ship gate, 2026-11-03
   - related: ACC-PANEL-212
+  - overridden-by: ACC-PANEL-313-SECTION-LINE
   - test: Galata: computed width and colour on the title band, the row above the first section, first and last section, no border or shadow on a section band, list and cog views, JupyterLab Light and Dark
   - test-tags: E2E
   - mechanism: 2026-11-02T20:45:12Z @kj Dark paints `--jp-border-color2` as the band (#424242), Light paints `--jp-border-color3` as the band (#eee). In the workspace manager the two lines touch, so one shows in each theme. Here the status row stands between them.
@@ -2095,14 +2096,18 @@ The vault sidebar panel in JupyterLab
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-11-05T13:47:28Z @kj added
   - log: 2026-11-05T15:46:40Z @kj closed
-- [x] `ACC-PANEL-307-HOLD` **hold or fresh gesture switches** - HIGH; at the last entry, 350 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end
-  - evidence: Jest 424 and Galata ux11 30 of 30, 2026-11-05: 'pins the hold at 350 ms: 300 ms is no fold, past 350 ms folds'; the fresh burst and wide swipe are in the wheel test
-  - test: fake timers: 300 ms of pull does not fold, past 350 ms it does, a fresh burst folds at once
+- [x] `ACC-PANEL-307-HOLD` **hold or fresh gesture switches** - HIGH; at the last entry, 438 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end
+  - evidence: Jest 425 of 425: 'pins the hold at 438 ms: 400 ms is no fold, past 438 ms folds'; the wheel test folds at 440 ms and the spring wait is 160 + 400; Galata 30 of 30
+  - test: fake timers: 400 ms of pull does not fold, past 438 ms it does, a fresh burst folds at once
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-11-05T13:47:28Z @kj added
   - log: 2026-11-05T14:56:56Z @kj amended text "at the last entry, 700 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end" -> "HIGH; at the last entry, 350 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end"
   - log: 2026-11-05T14:56:56Z @kj edited test "fake timers: 600 ms of pull does not fold, past 700 ms it does, a fresh burst folds at once" -> "fake timers: 300 ms of pull does not fold, past 350 ms it does, a fresh burst folds at once"
   - log: 2026-11-05T15:46:44Z @kj closed
+  - log: 2026-11-05T18:14:54Z @kj reopened: owner ordered the pull 25 percent stronger: the hold rises from 350 ms to 438 ms; evidence retired: Jest 424 and Galata ux11 30 of 30, 2026-11-05: 'pins the hold at 350 ms: 300 ms is no fold, past 350 ms folds'; the fresh burst and wide swipe are in the wheel test
+  - log: 2026-11-05T18:14:55Z @kj amended text "at the last entry, 350 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end" -> "HIGH; at the last entry, 438 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end"
+  - log: 2026-11-05T18:14:55Z @kj edited test "fake timers: 300 ms of pull does not fold, past 350 ms it does, a fresh burst folds at once" -> "fake timers: 400 ms of pull does not fold, past 438 ms it does, a fresh burst folds at once"
+  - log: 2026-11-05T19:04:29Z @kj closed: verified on the installed build
 - [x] `ACC-PANEL-308-PULL` **pull preview and spring** - MEDIUM; the pull preview eases the neighbour in 3 px per wheel event, capped at 22 px, and springs back after 160 ms idle
   - evidence: Jest 424, 2026-11-05: the 22 px cap, the 160 ms release and the spring back without moving the rows are three tests with those names
   - test: send ten pull events, assert 22 px; idle 150 ms and assert it stands, past 160 ms it returns
@@ -2133,6 +2138,15 @@ The vault sidebar panel in JupyterLab
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-11-05T14:56:58Z @kj added
   - log: 2026-11-05T15:46:44Z @kj closed
+- [x] `ACC-PANEL-313-SECTION-LINE` **the section line is one fill step from the band** - MEDIUM; the line under a category band, and the line under the filter row, is 1px solid --jp-layout-color3, one fill step from the band's --jp-layout-color2; --jp-border-color3 is never used for either
+  - evidence: Galata 30 of 30: the renamed divider test compares the sections and a shown filter box with a --jp-layout-color3 probe in both themes and views, and the status row stays on --jp-border-color3; Jest 425 of 425
+  - related: DEF-PANEL-102-SECTION-LINE - the reported wrong colour
+  - overrides: ACC-PANEL-283-DIVIDERS - the divider token the colour guide replaces
+  - test: render the list in a browser and read the computed border colour of a section and of the filter row; each equals a probe set to --jp-layout-color3
+  - test-tags: FUNCTIONAL
+  - mechanism: 2026-11-05T18:14:51Z @kj both rules share the design system's section band separator token
+  - log: 2026-11-05T18:14:51Z @kj added
+  - log: 2026-11-05T19:04:26Z @kj closed: verified on the installed build
 
 ## Vault settings `CONFIG`
 
