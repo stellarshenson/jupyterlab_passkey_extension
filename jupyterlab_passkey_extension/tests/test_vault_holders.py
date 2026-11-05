@@ -263,7 +263,7 @@ def _in_private_session(case, *args):
         ["keyctl", "session", "-", sys.executable, "-c",
          f"import sys; from {__name__} import {case}; {case}(*sys.argv[1:])", *args],
         capture_output=True, text=True, timeout=60,
-        env=dict(os.environ, JLAB_PASSKEY_RELAY_BACKEND="keyctl",
+        env=dict(os.environ, JUPYTERLAB_PASSKEY_RELAY_BACKEND="keyctl",
                  PYTHONPATH=os.pathsep.join(sys.path)),
     )
     assert r.returncode == 0, r.stderr
@@ -366,7 +366,7 @@ def _open_vault():
     """The real service on real keys, with a vault in a directory of its own."""
     with tempfile.TemporaryDirectory() as home:
         os.environ.update({holders.ENV: "keyctl", "XDG_STATE_HOME": home,
-                           "JLAB_PASSKEY_VAULT": f"{home}/vault.json"})
+                           "JUPYTERLAB_PASSKEY_VAULT": f"{home}/vault.json"})
         vault = service.VaultService()
         vault.init(PASSPHRASE)
         vault.add("probe/one", {"password": "s3cret"})

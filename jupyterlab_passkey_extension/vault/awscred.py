@@ -12,7 +12,7 @@ import json
 import os
 import sys
 
-from .. import cli as _cli
+from .. import cli as _cli, env
 from . import cli as _vcli
 from .client import Vault, VaultClientError
 
@@ -54,7 +54,8 @@ def main(argv=None):
     if len(argv) != 1:
         print(f"usage: {PROGRAM} PROFILE", file=sys.stderr)
         return 1
-    os.environ.setdefault("JLAB_PASSKEY_CALLER", "aws")
+    if env.get("CALLER") is None:
+        os.environ["JUPYTERLAB_PASSKEY_CALLER"] = "aws"
     try:
         found = _credential(argv[0])
     except (VaultClientError, SystemExit) as e:

@@ -29,9 +29,11 @@ SHOW_TS = "src/show.ts"
 PLUGIN_TS = "src/vault/plugin.ts"
 
 # The exact number of notification call sites in the product tree: 8 Python calls
-# (cli.py 4, vault/cli.py 2, vault/client.py 2) and 4 page calls. Each site appears
-# once in SITES. New notification: add its site and its row(s) here and raise this
-# number; the inventory test names the `file:line` that has no row.
+# (cli.py 4, vault/cli.py 2, vault/client.py 2) and 4 page calls. The unlock toast is
+# raised through the notifications ingest; its local Notification.emit is the fallback
+# and the one page site the scan sees for it. Each site appears once in SITES. New
+# notification: add its site and its row(s) here and raise this number; the inventory
+# test names the `file:line` that has no row.
 EXPECTED_CALL_SITES = 12
 
 # The number of rendered texts. A ternary branch or a helper caller contributes a
@@ -158,23 +160,23 @@ SITES: tuple[Site, ...] = (
     # that browser_step calls for every vault notification. Its texts are the
     # messages its callers pass; a new caller must add its message here.
     Site(
-        key=f"{CLI}:486",
+        key=f"{CLI}:488",
         kind="cli",
         helper="_run",
         rows=(
             _cli_row(
                 "Register a passkey", "Register passkey",
-                message=Source(CLI, 531, '"Register a passkey"'),
-                label_from=Source(CLI, 531, '"Register passkey"'),
-                caller=Source(CLI, 529, "_run("),
+                message=Source(CLI, 533, '"Register a passkey"'),
+                label_from=Source(CLI, 533, '"Register passkey"'),
+                caller=Source(CLI, 531, "_run("),
                 origin="literal in cmd_create, passed to _run",
                 verb="Register", obj="passkey",
             ),
             _cli_row(
                 "Approve the passkey request", "Approve passkey",
-                message=Source(CLI, 553, '"Approve the passkey request"'),
-                label_from=Source(CLI, 553, '"Approve passkey"'),
-                caller=Source(CLI, 553, "_run("),
+                message=Source(CLI, 555, '"Approve the passkey request"'),
+                label_from=Source(CLI, 555, '"Approve passkey"'),
+                caller=Source(CLI, 555, "_run("),
                 origin="literal in cmd_get, passed to _run",
                 verb="Approve", obj="passkey",
             ),
@@ -213,35 +215,35 @@ SITES: tuple[Site, ...] = (
         ),
     ),
     Site(
-        key=f"{CLI}:594",
+        key=f"{CLI}:596",
         kind="cli",
         helper="",
         rows=(
             _cli_row(
                 "Enter the secret", "Enter secret",
-                message=Source(CLI, 597, '"Enter the secret"'),
-                label_from=Source(CLI, 596, '"Enter secret"'),
+                message=Source(CLI, 599, '"Enter the secret"'),
+                label_from=Source(CLI, 598, '"Enter secret"'),
                 origin="false branch of the a.twice ternary in cmd_passphrase",
                 verb="Enter", obj="secret",
             ),
             _cli_row(
                 "Enter the passphrase", "Enter passphrase",
-                message=Source(CLI, 597, '"Enter the passphrase"'),
-                label_from=Source(CLI, 596, '"Enter passphrase"'),
+                message=Source(CLI, 599, '"Enter the passphrase"'),
+                label_from=Source(CLI, 598, '"Enter passphrase"'),
                 origin="true branch of the a.twice ternary in cmd_passphrase",
                 verb="Enter", obj="passphrase",
             ),
         ),
     ),
     Site(
-        key=f"{CLI}:739",
+        key=f"{CLI}:741",
         kind="cli",
         helper="",
         rows=(
             _cli_row(
                 "Copy **example-secret**", "Copy to clipboard",
-                message=Source(CLI, 718, 'f"Copy **{a.label}**"'),
-                label_from=Source(CLI, 739, '"Copy to clipboard"'),
+                message=Source(CLI, 720, 'f"Copy **{a.label}**"'),
+                label_from=Source(CLI, 741, '"Copy to clipboard"'),
                 origin="f-string in cmd_copy; a.label is --label; sample example-secret",
                 verb="Copy", obj="example-secret", entry_name=True,
                 samples=(("a.label", "example-secret"),),
@@ -249,14 +251,14 @@ SITES: tuple[Site, ...] = (
         ),
     ),
     Site(
-        key=f"{CLI}:813",
+        key=f"{CLI}:815",
         kind="cli",
         helper="",
         rows=(
             _cli_row(
                 "Show **example-secret**", "Show the code",
-                message=Source(CLI, 803, 'f"Show **{a.label}**"'),
-                label_from=Source(CLI, 813, '"Show the code"'),
+                message=Source(CLI, 805, 'f"Show **{a.label}**"'),
+                label_from=Source(CLI, 815, '"Show the code"'),
                 origin="f-string in cmd_show; a.label is --label; sample example-secret",
                 verb="Show", obj="example-secret", entry_name=True,
                 samples=(("a.label", "example-secret"),),
@@ -404,17 +406,19 @@ SITES: tuple[Site, ...] = (
         ),
     ),
     Site(
-        key=f"{PLUGIN_TS}:162",
+        key=f"{PLUGIN_TS}:128",
         kind="page",
         helper="",
         rows=(
             Row(
                 text="Vault unlocked",
-                label="", type="success", auto_close=4000, action=False,
+                label="", type="success", auto_close=3000, action=False,
                 entry_name=False, verb="unlocked", obj="Vault",
-                origin="translated literal first argument of Notification.emit",
-                message=Source(PLUGIN_TS, 162, "trans.__('Vault unlocked')"),
+                origin="translated literal passed to the notifications ingest; the "
+                       "local Notification.emit is the fallback",
+                message=Source(PLUGIN_TS, 207, "trans.__('Vault unlocked')"),
                 label_from=None,
+                caller=Source(PLUGIN_TS, 205, "raiseUnlockedToast("),
             ),
         ),
     ),
@@ -770,6 +774,9 @@ def test_cli_texts_carry_the_bold_caller_prefix():
         "the CLI prefix must render '**<caller>**: ' before the message")
     assert ast.literal_eval(payload["type"]) == "info"
     assert ast.literal_eval(payload["autoClose"]) is False
+    # A transient row leaves the centre when the centre opens, and the row must
+    # keep its button for the press that answers it: no transient key.
+    assert "transient" not in payload
     actions = payload["actions"]
     assert isinstance(actions, ast.List) and len(actions.elts) == 1
     action = actions.elts[0]
@@ -885,10 +892,10 @@ def test_page_notifications_match_their_type_auto_close_and_action():
                     f"{site.key}: a notification with no action carries a label")
 
 
-def test_the_success_toast_carries_no_label_and_closes_in_four_seconds():
-    site = next(site for site in SITES if site.key == f"{PLUGIN_TS}:162")
+def test_the_success_toast_carries_no_label_and_closes_in_three_seconds():
+    site = next(site for site in SITES if site.key == f"{PLUGIN_TS}:128")
     row = site.rows[0]
     assert (row.type, row.auto_close, row.label, row.action) == (
-        "success", 4000, "", False)
+        "success", 3000, "", False)
     block = _emit_block(site)
     assert "actions:" not in block and "label:" not in block

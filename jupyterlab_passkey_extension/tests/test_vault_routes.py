@@ -142,7 +142,7 @@ def write_config(vault_env, values):
 async def test_status_before_init(jp_fetch, vault_env):
     s = await call(jp_fetch, "status", method="GET")
     assert s["initialized"] is False and s["unlocked"] is False
-    assert s["settings"] == {"unlock_minutes": 30, "password_min_length": 12,
+    assert s["settings"] == {"unlock_minutes": 1, "password_min_length": 12,
                              "reveal_seconds": 60, "rotate_days": 365}
     assert s["holder"]["name"].startswith("memory/")
     assert set(s["holder"]["capabilities"]) == {
@@ -151,9 +151,9 @@ async def test_status_before_init(jp_fetch, vault_env):
 
 def test_status_shows_a_path_under_home_with_a_tilde(vault_env, monkeypatch):
     monkeypatch.setenv("HOME", str(vault_env))
-    monkeypatch.setenv("JLAB_PASSKEY_VAULT", str(vault_env / "v" / "vault.json"))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_VAULT", str(vault_env / "v" / "vault.json"))
     assert vault_service.VaultService().status()["path"] == "~/v/vault.json"
-    monkeypatch.setenv("JLAB_PASSKEY_VAULT", "/srv/vault.json")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_VAULT", "/srv/vault.json")
     assert vault_service.VaultService().status()["path"] == "/srv/vault.json"
 
 
@@ -161,7 +161,7 @@ async def test_init_unlocks_for_the_configured_duration(jp_fetch, vault_env):
     await init(jp_fetch)
     s = await call(jp_fetch, "status", method="GET")
     assert s["initialized"] and s["unlocked"]
-    assert 30 * 60 - 5 <= s["remaining"] <= 30 * 60
+    assert 60 - 5 <= s["remaining"] <= 60
     assert [slot["type"] for slot in s["slots"]] == ["recovery"]
 
 
@@ -919,12 +919,12 @@ async def test_the_vault_locks_itself_at_expiry(jp_fetch, vault_env, monkeypatch
 
 
 async def test_the_unlock_duration_setting_reaches_the_holder(jp_fetch, vault_env):
-    write_config(vault_env, {"unlock_minutes": 1})
+    write_config(vault_env, {"unlock_minutes": 2})
     await init(jp_fetch)
     s = await call(jp_fetch, "status", method="GET")
-    assert s["settings"] == {"unlock_minutes": 1, "password_min_length": 12,
+    assert s["settings"] == {"unlock_minutes": 2, "password_min_length": 12,
                              "reveal_seconds": 60, "rotate_days": 365}
-    assert 55 <= s["remaining"] <= 60
+    assert 115 <= s["remaining"] <= 120
 
 
 async def test_the_config_file_values_reach_status(jp_fetch, vault_env):
@@ -936,7 +936,7 @@ async def test_the_config_file_values_reach_status(jp_fetch, vault_env):
 
 
 async def test_an_absent_or_invalid_config_key_uses_its_default(jp_fetch, vault_env):
-    defaults = {"unlock_minutes": 30, "password_min_length": 12,
+    defaults = {"unlock_minutes": 1, "password_min_length": 12,
                 "reveal_seconds": 60, "rotate_days": 365}
     assert (await call(jp_fetch, "status", method="GET"))["settings"] == defaults
     write_config(vault_env, {"unlock_minutes": 0, "password_min_length": "20",
@@ -1219,16 +1219,16 @@ async def test_a_holder_failure_is_a_clean_500(jp_fetch, vault_env, monkeypatch)
 
 
 def test_two_vaults_under_one_user_never_share_the_unlocked_key(vault_env, monkeypatch):
-    # One uid, two vault files (two labs, or JLAB_PASSKEY_VAULT): unlocking B once made
+    # One uid, two vault files (two labs, or JUPYTERLAB_PASSKEY_VAULT): unlocking B once made
     # A decrypt with B's key and report "wrong key or a damaged file".
     svc = handlers._service
     a, b = vault_env / "a" / "vault.json", vault_env / "b" / "vault.json"
-    monkeypatch.setenv("JLAB_PASSKEY_VAULT", str(a))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_VAULT", str(a))
     svc.init(PASS)
     svc.add("github/api", {"password": "from-a"})
-    monkeypatch.setenv("JLAB_PASSKEY_VAULT", str(b))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_VAULT", str(b))
     svc.init(PASS)
-    monkeypatch.setenv("JLAB_PASSKEY_VAULT", str(a))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_VAULT", str(a))
     # vault_env pins the memory holder, which keeps one key at a time: A is locked,
     # never opened with B's key. keyctl keeping both is test_keyctl_keeps_one_key_per_vault.
     with pytest.raises(vault_service.Locked):

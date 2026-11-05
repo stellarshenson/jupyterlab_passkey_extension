@@ -356,6 +356,34 @@ def test_a_locked_vault_that_times_out_names_the_wait(ready, git_config, monkeyp
 
 
 # --------------------------------------------------------------------------- #
+# the ignore variable
+# --------------------------------------------------------------------------- #
+
+
+def test_the_ignore_variable_answers_no_credential_and_touches_nothing(
+        ready, git_config, monkeypatch, capsys):
+    add(monkeypatch, capsys, "github/api", "https://github.com", password="pw-one")
+    requests, steps = [], []
+    monkeypatch.setattr(client, "request", lambda *args, **kwargs: requests.append(args))
+    monkeypatch.setattr(client, "browser_step", lambda *args, **kwargs: steps.append(args))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_GIT_IGNORE_VAULT", "1")
+    assert fill(monkeypatch, capsys, {"protocol": "https", "host": "github.com"}) == (0, "", "")
+    assert (requests, steps) == ([], [])
+
+
+@pytest.mark.parametrize("value", [None, "0", "", "true"])
+def test_any_other_ignore_value_leaves_the_helper_unchanged(
+        value, ready, git_config, monkeypatch, capsys):
+    add(monkeypatch, capsys, "github/api", "https://github.com", password="pw-one")
+    if value is None:
+        monkeypatch.delenv("JUPYTERLAB_PASSKEY_GIT_IGNORE_VAULT", raising=False)
+    else:
+        monkeypatch.setenv("JUPYTERLAB_PASSKEY_GIT_IGNORE_VAULT", value)
+    assert fill(monkeypatch, capsys, {"protocol": "https", "host": "github.com"}) == (
+        0, "username=me\npassword=pw-one\n", "")
+
+
+# --------------------------------------------------------------------------- #
 # first set-up from git
 # --------------------------------------------------------------------------- #
 
@@ -495,7 +523,7 @@ def test_a_set_up_nobody_answers_names_init_and_refuses_later_runs_at_once(
     for _ in range(2):
         code, out, err = fill(monkeypatch, capsys, GITHUB)
         assert (code, out) == (1, "")
-        assert "no vault yet - nobody answered within 600s" in err
+        assert f"no vault yet - nobody answered within {vcli.REGISTER_TIMEOUT:.0f}s" in err
         assert "`jupyterlab-passkey vault init`" in err
     assert raised == [(client.SETUP_COMMAND, vcli.REGISTER_TIMEOUT)]
 

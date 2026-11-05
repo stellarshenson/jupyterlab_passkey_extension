@@ -317,7 +317,7 @@ def test_status_names_a_password_or_an_app_an_earlier_build_left_alone():
 def test_status_prints_state_holder_and_capabilities(ready, monkeypatch, capsys):
     run(monkeypatch, "vault", "status")
     out = capsys.readouterr().out
-    assert "state: unlocked, 29m 59s left" in out or "state: unlocked, 30m 0s left" in out
+    assert "state: unlocked, 0m 59s left" in out or "state: unlocked, 1m 0s left" in out
     assert "holder: memory/" in out and "this extension's own code" in out
     assert "protection: " in out
     # The detail the panel keeps in tooltips: one line per capability, explained.
@@ -326,7 +326,7 @@ def test_status_prints_state_holder_and_capabilities(ready, monkeypatch, capsys)
     assert len(rows) == len(holders.CAPABILITY_TEXT)
     assert "passkeys: 1" in out and "@ lab.example" in out
     assert "password and authenticator app: none" in out
-    assert "unlock duration: 30m" in out
+    assert "unlock duration: 1m" in out
 
 
 def test_the_unlock_duration_reads_in_hours_and_minutes():
@@ -336,7 +336,7 @@ def test_the_unlock_duration_reads_in_hours_and_minutes():
 def test_debug_prints_the_holder_decision(ready, monkeypatch, capsys):
     run(monkeypatch, "vault", "status", "--debug")
     err = capsys.readouterr().err
-    assert "vault: JLAB_PASSKEY_VAULT_HOLDER=memory" in err
+    assert "vault: JUPYTERLAB_PASSKEY_VAULT_HOLDER=memory" in err
     assert "vault: holder=memory/" in err
 
 
@@ -1281,7 +1281,7 @@ def test_the_missing_vault_offer_waits_for_the_passkey_as_init_does(server, monk
     monkeypatch.setattr(sys, "stdout", FakeTty())
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
     # `--timeout` is the wait for `list`'s click; the passkey step of the set-up takes a proof
-    # and a name, so it waits 600 s whatever `--timeout` is.
+    # and a name, so it waits REGISTER_TIMEOUT whatever `--timeout` is.
     assert run(monkeypatch, "vault", "list", "--timeout", "30") == 0
     assert waits == [(client.REGISTER_COMMAND, vcli.REGISTER_TIMEOUT)]
 

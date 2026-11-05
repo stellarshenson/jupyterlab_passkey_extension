@@ -35,7 +35,7 @@ c.ServerApp.port = int(os.environ.get("JUPYTER_TEST_PORT") or "8888")
 # server's writes while the CLI kept polling the old path - every test then failing at
 # its timeout with a message blaming the click. One end of a relay cannot be
 # overridable while the other is pinned; the override it used to advertise never worked.
-os.environ["JLAB_PASSKEY_RELAY_DIR"] = os.path.join(
+os.environ["JUPYTERLAB_PASSKEY_RELAY_DIR"] = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), ".tmp-passkey-relay"
 )
 
@@ -45,7 +45,7 @@ os.environ["JLAB_PASSKEY_RELAY_DIR"] = os.path.join(
 # cli.spec.ts forces the same value into the CLI's environment; both ends must agree
 # on the backend just as they must agree on the relay dir. The keyctl backend is
 # covered by the pytest suite (test_relay.py), not here.
-os.environ["JLAB_PASSKEY_RELAY_BACKEND"] = "shm"
+os.environ["JUPYTERLAB_PASSKEY_RELAY_BACKEND"] = "shm"
 
 # Uncomment to set server log level to debug level
 # c.ServerApp.log_level = "DEBUG"
@@ -55,6 +55,6 @@ os.environ["JLAB_PASSKEY_RELAY_BACKEND"] = "shm"
 # keyring or a gpg-agent. The keyctl and gpg-agent holders are covered by pytest
 # (test_vault_holders.py).
 _HERE = os.path.dirname(os.path.abspath(__file__))
-os.environ["JLAB_PASSKEY_VAULT"] = os.path.join(_HERE, ".tmp-passkey-vault", "vault.json")
+os.environ["JUPYTERLAB_PASSKEY_VAULT"] = os.path.join(_HERE, ".tmp-passkey-vault", "vault.json")
 os.environ["XDG_STATE_HOME"] = os.path.join(_HERE, ".tmp-passkey-state")
-os.environ["JLAB_PASSKEY_VAULT_HOLDER"] = "memory"
+os.environ["JUPYTERLAB_PASSKEY_VAULT_HOLDER"] = "memory"

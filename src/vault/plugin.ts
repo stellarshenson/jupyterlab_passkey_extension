@@ -5,6 +5,10 @@ import {
 
 import { Notification } from '@jupyterlab/apputils';
 
+import { URLExt } from '@jupyterlab/coreutils';
+
+import { ServerConnection } from '@jupyterlab/services';
+
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
 
 import { ITranslator } from '@jupyterlab/translation';
@@ -86,12 +90,51 @@ async function answerCli(
 }
 
 /**
- * Dismiss the unlock and set-up notifications in this tab that nothing waits for, and
- * say whether one is left. A notification goes when `status` shows the vault unlocked,
- * or for a set-up shows a vault, and its read began at `since`, after the notification
- * came: a read begun earlier can predate the lock that raised it. It also goes when the
- * wait of the CLI that raised it has run out. The CLI names its command and that wait
- * in the notification's data (`_trigger` in cli.py).
+ * Raise the "Vault unlocked" toast through the notifications extension's ingest, so
+ * it is transient: closing it, by its 3 s autoClose or by the user, leaves no row in
+ * the notification centre. A lab without that extension, or a failed post, falls back
+ * to a local toast, so the user still learns the vault opened. Never throws.
+ */
+export async function raiseUnlockedToast(
+  settings: ServerConnection.ISettings,
+  message: string
+): Promise<void> {
+  try {
+    const response = await ServerConnection.makeRequest(
+      URLExt.join(
+        settings.baseUrl,
+        'jupyterlab-notifications-extension',
+        'ingest'
+      ),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          type: 'success',
+          autoClose: 3000,
+          immediate: true,
+          transient: true
+        })
+      },
+      settings
+    );
+    if (response.ok) {
+      return;
+    }
+  } catch {
+    // A network failure takes the same path as an answer that is not 2xx.
+  }
+  Notification.emit(message, 'success', { autoClose: 3000 });
+}
+
+/**
+ * Dismiss the vault notifications in this tab that nothing waits for, and say whether
+ * one is left. An unlock notification goes when `status` shows the vault unlocked, and
+ * a set-up one when it shows a vault, with its read begun at `since`, after the
+ * notification came: a read begun earlier can predate the lock that raised it. One
+ * that names a wait in its data goes when that wait has run out, whatever command it
+ * names; the CLI writes both into the notification's data (`_trigger` in cli.py).
  */
 export function dismissStale(status: IStatus | null, since = 0): boolean {
   let left = false;
@@ -105,7 +148,7 @@ export function dismissStale(status: IStatus | null, since = 0): boolean {
       reached = status?.unlocked;
     } else if (data.command === SETUP_COMMAND) {
       reached = status?.initialized;
-    } else {
+    } else if (typeof data.seconds !== 'number') {
       continue;
     }
     const over =
@@ -148,10 +191,10 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
     } = await import('./webauthn');
     setTranslator(translator);
     const api = new VaultApi(app.serviceManager.serverSettings);
-    // While an unlock or set-up notification is in this tab, the state is read every
-    // REFRESH_MS, with the panel hidden too, so the notification goes once nothing
-    // waits for it. A hidden tab reads when it is shown again, as the panel's own poll
-    // does.
+    // While a vault notification that names a wait is in this tab, the state is read
+    // every REFRESH_MS, with the panel hidden too, so the row goes once that wait has
+    // run out, whatever command it names. A hidden tab reads when it is shown again, as
+    // the panel's own poll does.
     let timer: number | null = null;
     // The unlocked value of the last read, from the panel's poll or the timer's: the
     // two share it, so one locked -> unlocked change gives one toast.
@@ -159,9 +202,10 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
     const watch = (status: IStatus | null = null, since = 0): void => {
       if (status) {
         if (wasUnlocked === false && status.unlocked) {
-          Notification.emit(trans.__('Vault unlocked'), 'success', {
-            autoClose: 4000
-          });
+          void raiseUnlockedToast(
+            app.serviceManager.serverSettings,
+            trans.__('Vault unlocked')
+          );
         }
         wasUnlocked = status.unlocked;
       }

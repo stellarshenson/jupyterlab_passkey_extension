@@ -2,6 +2,22 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.4] - 2026-11-05
+
+### Added
+
+- `JUPYTERLAB_PASSKEY_GIT_IGNORE_VAULT=1` makes `git-credential-jupyterlab-passkey` answer no credential, so git uses its next helper or prompts; a testing aid, not a security control
+- Vault key lifecycle events - created, unlocked by each method, locked, expired, data key created and rotated - log as INFO lines prefixed `vault key: ` in the standard JupyterLab server log
+
+### Changed
+
+- The vault set-up click wait is 3 minutes, not 10, and the default unlock duration is 1 minute, not 30
+- Every environment variable takes the `JUPYTERLAB_PASSKEY_` prefix; the old `JLAB_PASSKEY_` names are still read
+
+### Fixed
+
+- Vault notifications no longer stay in the notification centre after the wait they name ends, and the "Vault unlocked" toast is transient, 3 s, and leaves no row behind
+
 ## [1.2.3] - 2026-11-04
 
 ### Added

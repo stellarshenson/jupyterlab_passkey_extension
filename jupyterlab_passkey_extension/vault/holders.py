@@ -25,6 +25,7 @@ new class with the same members, added to `_ORDER`.
 """
 
 import ctypes
+import logging
 import math
 import mmap
 import os
@@ -35,9 +36,14 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 
-from .. import relay
+from .. import env, relay
 
-ENV = "JLAB_PASSKEY_VAULT_HOLDER"
+log = logging.getLogger(__name__)
+
+ENV = "JUPYTERLAB_PASSKEY_VAULT_HOLDER"
+# The stable prefix of every vault key lifecycle line, written here and in service.py;
+# the tests grep it.
+KEY_LOG = "vault key"
 KEY_BYTES = 32
 # The holder keeps the root key and the data key as one value, root first. A 32-byte
 # value is a version-1 file's one key, which served both jobs.
@@ -593,12 +599,15 @@ def select() -> Holder:
     global _selected, _notice
     if _selected is not None:
         return _selected
-    choice = os.environ.get(ENV, "auto")
+    choice = env.get("VAULT_HOLDER")
+    if choice is None:
+        choice = "auto"
     if choice == "auto":
         for cls in _ORDER:
             reason = cls.unusable_reason()
             if reason is None:
                 _selected = cls()
+                log.info("%s: holder chosen name=%s", KEY_LOG, cls.name)
                 break
             _skipped[cls.name] = reason
         if isinstance(_selected, MemoryHolder):
@@ -616,6 +625,7 @@ def select() -> Holder:
     if reason is not None:
         raise OSError(f"{ENV}={choice} but {reason}")
     _selected = cls()
+    log.info("%s: holder chosen name=%s", KEY_LOG, cls.name)
     return _selected
 
 
@@ -677,7 +687,8 @@ def describe(holder: Holder) -> dict:
 
 def debug_report() -> str:
     """The holder decision as text for --debug. Never contains the key."""
-    lines = [f"vault: {ENV}={os.environ.get(ENV, 'auto')}"]
+    choice = env.get("VAULT_HOLDER")
+    lines = [f"vault: {ENV}={choice if choice is not None else 'auto'}"]
     for name, reason in _skipped.items():
         lines.append(f"vault: skipped {name} - {reason}")
     caps = asdict(_selected.capabilities)

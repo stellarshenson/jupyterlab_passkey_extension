@@ -35,7 +35,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 def relay_dir(tmp_path, monkeypatch):
     d = tmp_path / "relay"
     d.mkdir()
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(d))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(d))
     return d
 
 
@@ -55,7 +55,7 @@ def no_wait(monkeypatch):
 def posted(monkeypatch):
     """Capture the notification payload instead of sending it. The caller is named, so
     a message does not depend on the directory the tests run in."""
-    monkeypatch.setenv("JLAB_PASSKEY_CALLER", "the tests")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_CALLER", "the tests")
     sent = []
 
     def fake_urlopen(req, timeout=None):
@@ -86,7 +86,7 @@ def test_cli_and_server_resolve_the_same_relay(monkeypatch):
     # The one coupling that makes the bridge work. Every other test overrides the env
     # var, so a divergent default would sail through the whole suite and strand every
     # real relay - the CLI staging under one key or path while the server reads another.
-    monkeypatch.delenv("JLAB_PASSKEY_RELAY_DIR", raising=False)
+    monkeypatch.delenv("JUPYTERLAB_PASSKEY_RELAY_DIR", raising=False)
 
     # Identity is the assertion: both sides drive the ONE relay module, so they cannot
     # disagree about the backend choice, the key description, or the shm path and its
@@ -127,7 +127,7 @@ def test_the_message_starts_with_the_bold_caller(posted):
 
 
 def test_the_caller_is_the_project_the_command_runs_in(tmp_path, monkeypatch):
-    monkeypatch.delenv("JLAB_PASSKEY_CALLER", raising=False)
+    monkeypatch.delenv("JUPYTERLAB_PASSKEY_CALLER", raising=False)
     project = tmp_path / "invoice-processing"
     (project / ".git").mkdir(parents=True)
     (project / "notebooks" / "2026").mkdir(parents=True)
@@ -142,7 +142,7 @@ def test_the_caller_is_the_project_the_command_runs_in(tmp_path, monkeypatch):
 
 
 def test_the_caller_outside_a_repository_is_the_working_directory(tmp_path, monkeypatch):
-    monkeypatch.delenv("JLAB_PASSKEY_CALLER", raising=False)
+    monkeypatch.delenv("JUPYTERLAB_PASSKEY_CALLER", raising=False)
     monkeypatch.setattr(cli.os.path, "exists", lambda path: False)
     (tmp_path / "scratch").mkdir()
     monkeypatch.chdir(tmp_path / "scratch")
@@ -154,7 +154,7 @@ def test_the_caller_outside_a_repository_is_the_working_directory(tmp_path, monk
 
 def test_a_stated_caller_is_one_bounded_line(tmp_path, monkeypatch):
     # The name is shown before the request: it cannot add lines or push it away.
-    monkeypatch.setenv("JLAB_PASSKEY_CALLER", "  invoice\n processing\t\x1b[0m " + "x" * 80)
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_CALLER", "  invoice\n processing\t\x1b[0m " + "x" * 80)
     name = cli._caller()
     assert name.startswith("invoice processing [0m xxx")
     assert len(name) == cli.CALLER_MAX
@@ -164,12 +164,12 @@ def test_a_stated_caller_is_one_bounded_line(tmp_path, monkeypatch):
     (tmp_path / "ksef" / ".git").mkdir(parents=True)
     monkeypatch.chdir(tmp_path / "ksef")
     for nothing in (" \n\t ", "\x1b\u200b", "\x7f"):
-        monkeypatch.setenv("JLAB_PASSKEY_CALLER", nothing)
+        monkeypatch.setenv("JUPYTERLAB_PASSKEY_CALLER", nothing)
         assert cli._caller() == "ksef", repr(nothing)
 
 
 def test_caller_option_names_who_asks_and_outranks_the_variable(relay_dir, tmp_path, posted, monkeypatch):
-    # `posted` sets JLAB_PASSKEY_CALLER to "the tests"; the option is stated per call.
+    # `posted` sets JUPYTERLAB_PASSKEY_CALLER to "the tests"; the option is stated per call.
     src = tmp_path / "token.txt"
     src.write_text(COPY_SECRET)
     monkeypatch.setattr(sys, "argv", [
@@ -182,7 +182,7 @@ def test_caller_option_names_who_asks_and_outranks_the_variable(relay_dir, tmp_p
     message = posted[0]["payload"]["message"]
     assert message.startswith("**invoice-processing**: ")
     # The command that `vault exec` runs inherits the name.
-    assert os.environ["JLAB_PASSKEY_CALLER"] == "invoice-processing"
+    assert os.environ["JUPYTERLAB_PASSKEY_CALLER"] == "invoice-processing"
 
 
 def test_an_empty_caller_option_falls_back(relay_dir, tmp_path, posted, monkeypatch):
@@ -212,7 +212,7 @@ def test_every_subcommand_takes_the_caller_option(monkeypatch, capsys):
 
 
 def test_a_removed_working_directory_still_names_a_caller(monkeypatch):
-    monkeypatch.delenv("JLAB_PASSKEY_CALLER", raising=False)
+    monkeypatch.delenv("JUPYTERLAB_PASSKEY_CALLER", raising=False)
 
     def gone():
         raise FileNotFoundError("the working directory was removed")
@@ -385,7 +385,7 @@ def test_ceremony_under_forced_broken_keyctl_exits_one_line_not_a_traceback(monk
     # is `_run`'s `finally: unstage`, which re-enters `backend()` - a raise there would
     # REPLACE the SystemExit with a raw OSError traceback, breaking the "never a
     # traceback" contract. unstage is best-effort, so the SystemExit must survive.
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "keyctl")
     monkeypatch.setattr(cli.relay, "_backend_cache", None)
     monkeypatch.setattr(cli.relay, "_keyctl_probe", lambda: False)
     monkeypatch.setattr(cli, "_trigger", lambda c, a, l, m, seconds=None: None)
@@ -1001,7 +1001,7 @@ def test_a_squatted_relay_dir_answers_with_a_line_not_a_traceback(tmp_path, monk
     attacker.mkdir()
     squatted = tmp_path / "relay"
     squatted.symlink_to(attacker)
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(squatted))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(squatted))
     monkeypatch.setattr(cli.sys, "stdin", _FakeStdin("s3cret\n"))
     monkeypatch.setattr(cli, "_trigger", _never_triggered)
 

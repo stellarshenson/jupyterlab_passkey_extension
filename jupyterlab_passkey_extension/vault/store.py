@@ -51,7 +51,7 @@ The unlock password slot and the app are added and removed together (`set_mfa`,
 `remove_mfa`): the service opens the vault with the password only for a right code.
 
 `id` is random per vault. It names the unlocked key in its holder, so two vaults under
-one user (two labs, or a second `JLAB_PASSKEY_VAULT`) never read each other's key.
+one user (two labs, or a second `JUPYTERLAB_PASSKEY_VAULT`) never read each other's key.
 
 Every change is a read-modify-write under an exclusive lock on `<vault>.lock`, written to
 a temp file in the same directory, fsynced and renamed over the vault.
@@ -73,6 +73,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+
+from .. import env
 
 FORMAT = "jupyterlab-passkey-vault"
 VERSION = 2
@@ -104,7 +106,7 @@ class VaultError(Exception):
 
 
 def vault_path():
-    explicit = os.environ.get("JLAB_PASSKEY_VAULT")
+    explicit = env.get("VAULT")
     if explicit:
         # JupyterHub, compose and systemd pass the value with no shell to expand a ~;
         # absolute, it is the file status reports.

@@ -33,7 +33,7 @@ This section states what the vault is and which parts take part in it. The vault
 - **One owner of the file** - only the Jupyter server process reads and writes the vault file; every client calls its REST API
 - **Three clients** - the `jupyterlab-passkey vault` CLI, the Python `Vault` class and the sidebar panel
 - **Four ways in** - a passkey added for the hostname of the browser tab, the unlock password together with a code of the authenticator app, an unlock password together with a passkey that has no PRF, or the recovery passphrase
-- **One unlock for all clients** - an unlock keeps the data key for the unlock duration (default 30 minutes), and the CLI, the Python class and the panel all use that one unlock
+- **One unlock for all clients** - an unlock keeps the data key for the unlock duration (default 1 minute), and the CLI, the Python class and the panel all use that one unlock
 - **Passkey steps run in the tab** - WebAuthn runs only in a browser tab after a click, so the CLI and the Python class raise a notification, and its button starts the passkey step in the tab. The notification starts with the asking project, `**<caller>**:`, entry name bold (see the [CLI reference](cli-reference.md)); the name is the caller's statement, not a proof
 
 ```mermaid
@@ -98,7 +98,7 @@ This section lists the modules of the vault and the job of each. Paths are relat
 
 ## 3. Vault file
 
-This section describes the file on disk, how its contents are encrypted, and how a change is written. The file is `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` (`~/.local/share/jupyterlab-passkey/vault.json` by default), or the path in `JLAB_PASSKEY_VAULT`.
+This section describes the file on disk, how its contents are encrypted, and how a change is written. The file is `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` (`~/.local/share/jupyterlab-passkey/vault.json` by default), or the path in `JUPYTERLAB_PASSKEY_VAULT`.
 
 ### 3.1 File format
 
@@ -274,7 +274,7 @@ The server keeps the data key in the first key holder that works on the host, tr
 | Locks on server restart  | no                  | no                                                                        | yes                                        |
 | Isolated from containers | no                  | yes when the agent socket is outside `$XDG_STATE_HOME/jupyterlab-passkey` | yes                                        |
 
-- **Choice** - `JLAB_PASSKEY_VAULT_HOLDER` pins `keyctl`, `gpg-agent` or `memory`; a pinned holder that does not work is an error
+- **Choice** - `JUPYTERLAB_PASSKEY_VAULT_HOLDER` pins `keyctl`, `gpg-agent` or `memory`; a pinned holder that does not work is an error
 - **keyctl test** - keyctl is chosen only after a real add, search and read of a test key succeeds
 - **keyctl possession** - `timeout` and `pipe` name a key by number, and the kernel allows that only to a process whose session keyring leads to the key. The path is a keyring named `jlab-passkey:possess.<id of @u>` inside the session keyring, with `@u` linked into it. A direct link of `@u` in the session keyring is not used: a sandboxed process that shares the session keyring has its own `@u` of the same name, a keyring holds one key per name, so its link would replace the server's and refuse every later unlock
 - **Refused call** - a `timeout` or `pipe` refused with `Permission denied` restores the path once and runs again, so a missing path needs no restart. A second refusal fails the call
@@ -289,7 +289,7 @@ The server keeps the data key in the first key holder that works on the host, tr
 
 This subsection covers how long a key stays and what removes it earlier.
 
-- **Duration** - the `unlock_minutes` key, 1 to 1,440 minutes, default 30
+- **Duration** - the `unlock_minutes` key, 1 to 1,440 minutes, default 1
 - **Storage** - the server reads `unlock_minutes`, `password_min_length`, `reveal_seconds` and `rotate_days` from `$XDG_STATE_HOME/jupyterlab-passkey/vault-config.json` on each read; an absent or invalid key uses its default (section 11)
 - **When it applies** - at the next unlock from any client; a key already held keeps its expiry
 - **Lock** - `vault lock`, `Vault.lock()` or the panel's Lock button removes the key from the holder
@@ -439,11 +439,11 @@ The CLI is `jupyterlab-passkey vault <command>`. Its full reference is [cli-refe
 - **Locked vault** - a read raises the unlock notification, then runs once more. An unlocked vault raises none
 - **One shared unlock** - processes of one user share an unlock. The first process claims it under a file lock in the relay directory, in a record that holds no secret and names that process, and raises the one notification. The others raise none and wait on vault status, so one press lets all go on. The first process watches vault status too, because the unlock can come from the panel, another tab or a terminal. A status read that fails ends no wait: only an unlock, a cancel, a failure of the unlock itself or the deadline does
 - **The record** - a record that does not parse counts as no record. On the keyctl relay backend, whose relays need no directory, a relay directory that cannot be used leaves the record out: each process raises its own notification. On shm it is the one line `cannot use the relay directory`, because the relays need that directory
-- **First set-up from git** - with no vault the helper raises `Set up vault`, by the record of the shared unlock: the first process raises the one notification, and the others wait on vault status until `vault/init` opens the vault. That process waits up to 600 s for vault status to show a vault, made by its page or in the panel, so the lookup runs while the tab offers the methods. A cancelled or failed recovery step ends every wait with its line. After a notification nobody answered, a later request fails at once for 10 minutes and names `jupyterlab-passkey vault init`. A vault that exists, with any methods, never raises this: it unlocks the normal way
+- **First set-up from git** - with no vault the helper raises `Set up vault`, by the record of the shared unlock: the first process raises the one notification, and the others wait on vault status until `vault/init` opens the vault. That process waits up to 180 s for vault status to show a vault, made by its page or in the panel, so the lookup runs while the tab offers the methods. A cancelled or failed recovery step ends every wait with its line. After a notification nobody answered, a later request fails at once for 10 minutes and names `jupyterlab-passkey vault init`. A vault that exists, with any methods, never raises this: it unlocks the normal way
 - **The end of a shared unlock** - the server removes the record on every unlock. A cancelled or failed unlock is recorded for 5 s and ends every wait with its line; a claim that a new process writes over it keeps that line, so a wait that reads the claim ends with it. After a notification nobody answered, a later read fails at once for 10 minutes and names `jupyterlab-passkey vault unlock`; that command, and an unlock by any other way, ends the refusal. A claim whose process is gone counts as none, so the next process raises the notification at once. A claim that goes with its process ends no wait: one waiting process claims and raises the notification in its place, within the time left of its own wait, and the other waiting processes share that claim. The set-up a git request raises does the same, and its waits end once vault status shows a vault. The process that raised the notification removes its own claim when its wait ends, however it ends, Ctrl-C included, so a claim written just after an unlock does not outlive it
 - **One prompt** - the page's unlock command reads the vault state first and asks nothing on an unlocked vault, and a click during a running unlock shares it, the panel's button included. That read stands between the click and the WebAuthn call, and a browser can end the click's user activation at a network read: Safari may refuse the passkey request that follows it. A refusal after the passkey answered, or an answer with no PRF, reaches the CLI as its one line and opens no chooser
 - **A notification nothing waits for** - the CLI names its command and its wait in the notification's data. While an unlock or set-up notification is in a tab, that tab reads vault status every 15 s, with the panel hidden too; a hidden browser tab reads when it is shown again. The notification leaves once a read begun after it came shows the vault unlocked, or for a set-up a vault, and once the wait of the CLI that raised it has run out. A read begun before it came can predate the lock that raised it, so it removes nothing. A press reads the state before it asks anything, also before the tab's next read: on an open vault, or for a set-up on a vault that exists, it asks nothing and the notification leaves, and a read that fails asks nothing and raises a failure notification. Limit: a notification whose CLI was stopped or got a failure stays until that CLI's wait would have ended
-- **Waiting** - a browser step waits 120 s for the click by default, 600 s for `vault init`, `vault passkey add` and the set-up a git request raises
+- **Waiting** - a browser step waits 120 s for the click by default, 180 s for `vault init`, `vault passkey add` and the set-up a git request raises
 - **`vault init` keeps its passkey step** - the CLI has no command that adds the pair, so a failed or cancelled passkey step exits with a line naming `vault passkey add` and Password and authenticator app under the cog
 - **Agent skill** - `.agents/skills/jupyterlab-passkey-extension/SKILL.md`, also installed with the wheel, points an agent at `--help` and states which commands keep a value out of its output
 
@@ -494,13 +494,15 @@ This section states what the vault does not protect against.
 
 This section lists the settings and environment variables of the vault. The server reads the environment variables, so they are set where the server starts. The four policy keys, `unlock_minutes`, `password_min_length`, `reveal_seconds` and `rotate_days`, are read from `$XDG_STATE_HOME/jupyterlab-passkey/vault-config.json` on each call, and an absent or invalid key uses its default; only `sidebar` remains a JupyterLab setting in the Settings Editor.
 
-| Setting                     | Default                                        | Effect                                                                                         |
-| --------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `JLAB_PASSKEY_VAULT`        | `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` | path of the vault file                                                                         |
-| `JLAB_PASSKEY_VAULT_HOLDER` | `auto`                                         | pins the key holder                                                                            |
-| `XDG_STATE_HOME`            | `~/.local/state`                               | parent of the gpg-agent home and of `vault-config.json`                                        |
-| `unlock_minutes`            | 30                                             | unlock duration in minutes, 1 to 1,440                                                         |
-| `password_min_length`       | 12                                             | fewest characters of an unlock password, 8 to 128                                              |
-| `reveal_seconds`            | 60                                             | reveal window in seconds after an unlock or a proof in the tab, 0 to 3,600; 0 asks every time  |
-| `rotate_days`               | 365                                            | days a data key serves before an unlock rotates it, 0 to 3,650; 0 turns automatic rotation off |
-| `sidebar`                   | `right`                                        | sidebar that holds the panel                                                                   |
+| Setting                           | Default                                        | Effect                                                                                         |
+| --------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `JUPYTERLAB_PASSKEY_VAULT`        | `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` | path of the vault file                                                                         |
+| `JUPYTERLAB_PASSKEY_VAULT_HOLDER` | `auto`                                         | pins the key holder                                                                            |
+| `XDG_STATE_HOME`                  | `~/.local/state`                               | parent of the gpg-agent home and of `vault-config.json`                                        |
+| `unlock_minutes`                  | 1                                              | unlock duration in minutes, 1 to 1,440                                                         |
+| `password_min_length`             | 12                                             | fewest characters of an unlock password, 8 to 128                                              |
+| `reveal_seconds`                  | 60                                             | reveal window in seconds after an unlock or a proof in the tab, 0 to 3,600; 0 asks every time  |
+| `rotate_days`                     | 365                                            | days a data key serves before an unlock rotates it, 0 to 3,650; 0 turns automatic rotation off |
+| `sidebar`                         | `right`                                        | sidebar that holds the panel                                                                   |
+
+The old `JLAB_PASSKEY_VAULT` and `JLAB_PASSKEY_VAULT_HOLDER` names are still read, after the new names.

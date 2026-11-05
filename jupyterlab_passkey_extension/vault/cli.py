@@ -39,7 +39,7 @@ from .client import (
 )
 from .service import GENERATE_LENGTH, READABLE, _check_name
 
-REGISTER_TIMEOUT = 600.0
+REGISTER_TIMEOUT = 180.0
 
 
 def _duration(seconds):
@@ -1245,8 +1245,8 @@ examples:
   jupyterlab-passkey vault status
 
 server side - the Jupyter server reads these, not this CLI; set them where it starts:
-  JLAB_PASSKEY_VAULT         the vault file (default $XDG_DATA_HOME/jupyterlab-passkey/vault.json)
-  JLAB_PASSKEY_VAULT_HOLDER  auto (default), keyctl, gpg-agent or memory: where the unlocked key is kept
+  JUPYTERLAB_PASSKEY_VAULT         the vault file (default $XDG_DATA_HOME/jupyterlab-passkey/vault.json)
+  JUPYTERLAB_PASSKEY_VAULT_HOLDER  auto (default), keyctl, gpg-agent or memory: where the unlocked key is kept
 """.strip("\n"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1301,7 +1301,7 @@ server side - the Jupyter server reads these, not this CLI; set them where it st
 create the vault: a recovery passphrase, typed twice, then a passkey added in the
 JupyterLab tab, which asks for the passphrase once more as its proof. Store the recovery
 passphrase offline: it opens the vault when no other unlock method can. Each browser step
-raises a notification and waits for the click (--timeout, default 600 s). With no passkey,
+raises a notification and waits for the click (--timeout, default 180 s). With no passkey,
 add Password and authenticator app under Vault settings and security (the cog).
 """,
             examples=('jupyterlab-passkey vault init --in-browser --label "Work laptop"',
@@ -1314,7 +1314,7 @@ add Password and authenticator app under Vault settings and security (the cog).
             cmd_unlock,
             description="""
 unlock the vault for the unlock_minutes setting of the server's configuration file
-(default 30 minutes), for every client:
+(default 1 minute), for every client:
 this CLI, the Python Vault class and the panel. With a passkey: a notification to click,
 then the passkey prompt in the tab. A passkey works only in a tab opened at the hostname it
 was added at, or a subdomain of it. In a tab with no such passkey, or at an IP address, the
@@ -1510,6 +1510,10 @@ examples:
   jupyterlab-passkey vault git migrate --dry-run
   jupyterlab-passkey vault git migrate --no-install
   jupyterlab-passkey vault git uninstall
+
+environment:
+  JUPYTERLAB_PASSKEY_GIT_IGNORE_VAULT=1  the helper answers no credential, so git uses its
+                                         next helper or prompts (a testing aid)
 """.strip("\n"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1677,7 +1681,7 @@ for a proof - a passkey already added for this hostname, else a code of the
 authenticator app when the vault has one and is unlocked, else the recovery
 passphrase - and creates the new passkey. It opens the vault only from the tab's hostname or a
 subdomain of it; a tab at an IP address cannot add one. Waits for each step
-(--timeout, default 600 s).
+(--timeout, default 180 s).
 """,
         ('jupyterlab-passkey vault passkey add --label "Work laptop"',))
     p.add_argument("--label", help="name for the passkey (default: the hostname)")

@@ -6,9 +6,9 @@ The JupyterLab commands the extension registers, and the server contract behind 
 - **Described** - each command carries `describedBy` with a JSON schema of the arguments in its table below, so a caller can read them from the command registry
 - **Trigger** - a `jupyterlab-notify` action button bound to the command id
 - **Return path** - the frontend POSTs to the server, which stages the value in a relay
-- **Relay backend** - a uid-scoped kernel `keyctl` key (preferred, no swap, self-destructs at a TTL) or a `/dev/shm` `0600` file (fallback); chosen once per process, forced with `JLAB_PASSKEY_RELAY_BACKEND=keyctl|shm|auto`
+- **Relay backend** - a uid-scoped kernel `keyctl` key (preferred, no swap, self-destructs at a TTL) or a `/dev/shm` `0600` file (fallback); chosen once per process, forced with `JUPYTERLAB_PASSKEY_RELAY_BACKEND=keyctl|shm|auto`. The old `JLAB_PASSKEY_` names are still read, after the new names
 - **keyctl key** - type `user`, description `jlab-passkey:<nonce>.<kind>`, keyring `@u`, TTL by kind (ceremony/passphrase 300s, copy and show 900s, a cancel marker 60s)
-- **shm dir** - `/dev/shm/jlab-passkey-$(id -u)`, mode `0700`; override with `JLAB_PASSKEY_RELAY_DIR`. Verified before every read and write the extension or CLI makes: a real directory owned by the current uid - a symlink or a co-tenant's directory squatting the path raises rather than being used; a loose mode on a directory that is ours is tightened to `0700`
+- **shm dir** - `/dev/shm/jlab-passkey-$(id -u)`, mode `0700`; override with `JUPYTERLAB_PASSKEY_RELAY_DIR`. Verified before every read and write the extension or CLI makes: a real directory owned by the current uid - a symlink or a co-tenant's directory squatting the path raises rather than being used; a loose mode on a directory that is ours is tightened to `0700`
 - **shm file** - `<nonce>.json` for a ceremony, raw `<nonce>.pass` for a captured secret, raw `<nonce>.secret` for one going out to the clipboard, raw `<nonce>.code` for one going out as an image, `<nonce>.cancel` (no secret) for a dismissed passphrase dialog; mode `0600`, written mkstemp-then-rename, never logged
 - **Nonce** - `[A-Za-z0-9_-]{16,128}`, and it becomes the key description or the filename - anything else is `400`
 - **Lifecycle** - the server stages for `run` and `passphrase` and the consumer reads; `copy` and `show` invert it - a local client, or the server itself for `vault copy` and `vault show`, stages, and the server reads once, destroying as it goes
@@ -53,7 +53,7 @@ keyctl unlink "$(keyctl search @u user "$DESC")" @u
 ```
 
 > [!NOTE]
-> Which of the two reads applies depends on the live backend (`JLAB_PASSKEY_RELAY_BACKEND`); the CLI hides that difference, this hand-rolled flow does not. The squat verification covers the extension's and CLI's own operations - neither hand-rolled read is guarded. The nonce is a collection ticket, not a secret, but on a multi-user host prefer `jupyterlab-passkey get`, which picks the backend for you and keeps the nonce out of your shell history and off the notify command line (under keyctl it does spawn `keyctl` with the key description, briefly visible in `/proc` to your own uid - which can read the key regardless).
+> Which of the two reads applies depends on the live backend (`JUPYTERLAB_PASSKEY_RELAY_BACKEND`); the CLI hides that difference, this hand-rolled flow does not. The squat verification covers the extension's and CLI's own operations - neither hand-rolled read is guarded. The nonce is a collection ticket, not a secret, but on a multi-user host prefer `jupyterlab-passkey get`, which picks the backend for you and keeps the nonce out of your shell history and off the notify command line (under keyctl it does spawn `keyctl` with the key description, briefly visible in `/proc` to your own uid - which can read the key regardless).
 
 ## `passkey:passphrase`
 

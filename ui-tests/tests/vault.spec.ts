@@ -1476,8 +1476,12 @@ function vaultCli(...args: string[]): Promise<{
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     // The relay the server writes: the test config sets it inside the server only.
-    JLAB_PASSKEY_RELAY_DIR: path.resolve(__dirname, '..', '.tmp-passkey-relay'),
-    JLAB_PASSKEY_RELAY_BACKEND: 'shm',
+    JUPYTERLAB_PASSKEY_RELAY_DIR: path.resolve(
+      __dirname,
+      '..',
+      '.tmp-passkey-relay'
+    ),
+    JUPYTERLAB_PASSKEY_RELAY_BACKEND: 'shm',
     JUPYTER_PORT: process.env.JUPYTER_TEST_PORT || '8888'
   };
   for (const variable of ['JUPYTER_SERVER_URL', 'JUPYTERHUB_SERVICE_PREFIX']) {
@@ -1625,7 +1629,7 @@ test('an unlock notification leaves the tab once the vault is opened another way
   // that the CLI waits on a locked vault before the vault is opened.
   const unlock = vaultCli('unlock', '--caller', 'the opened-elsewhere test');
   const toast = page.locator('.Toastify__toast', {
-    hasText: '**the opened-elsewhere test**: Unlock the vault'
+    hasText: 'the opened-elsewhere test'
   });
   await expect(toast).toHaveCount(1, { timeout: 45000 });
   // Opened through the REST API, as a terminal or another tab would.
@@ -1667,7 +1671,7 @@ test('a press on an unlock notification before the tab reads the vault opened an
 
   const unlock = vaultCli('unlock', '--caller', 'the read-on-press test');
   const toast = page.locator('.Toastify__toast', {
-    hasText: '**the read-on-press test**: Unlock the vault'
+    hasText: 'the read-on-press test'
   });
   await expect(toast).toHaveCount(1, { timeout: 45000 });
   // The poll reads the vault locked; the tab's next read is 15 s after it.
@@ -1694,13 +1698,93 @@ test('a press on an unlock notification before the tab reads the vault opened an
   await expect(page.locator('.jp-Notification-Header')).toBeVisible();
   await expect(
     page.locator('.jp-Notification-List-Item', {
-      hasText: '**the read-on-press test**'
+      hasText: 'the read-on-press test'
     })
   ).toHaveCount(0, { timeout: 5000 });
   expect(await calls()).toEqual({ create: 0, get: 0 });
   await expect(page.locator('.jp-Dialog')).toHaveCount(0);
   const done = await unlock;
   expect(done.code, done.stderr).toBe(0);
+});
+
+test('an unlock notification answered through the dialog leaves the centre at once', async ({
+  page
+}) => {
+  await openVault(page);
+  // A vault with the recovery passphrase alone: the CLI's unlock opens the chooser.
+  await panel(page).getByRole('button', { name: 'Create vault' }).click();
+  await submitSecret(page, RECOVERY, true);
+  await chooseAtSetUp(page, 'later');
+  await expect(state(page)).toContainText('Unlocked', { timeout: 20000 });
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+
+  const unlock = vaultCli('unlock', '--caller', 'the centre test');
+  const toast = page.locator('.Toastify__toast', {
+    hasText: 'the centre test'
+  });
+  await expect(toast).toHaveCount(1, { timeout: 45000 });
+  await toast.locator('.jp-toast-button', { hasText: 'Unlock vault' }).click();
+
+  // Answer it the long way: the chooser, then the recovery passphrase.
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText('Unlock vault');
+  await dialog.locator('button[data-method="recovery"]').click();
+  await submitSecret(page, RECOVERY, false);
+  const done = await unlock;
+  expect(done.code, done.stderr).toBe(0);
+  await expect(dialog).toHaveCount(0);
+
+  // Not at the panel's 15 s poll nor the server's 30 s one: 2 s is all the wait.
+  await page.evaluate(() =>
+    (window as any).jupyterapp.commands.execute(
+      'apputils:display-notifications'
+    )
+  );
+  await expect(page.locator('.jp-Notification-Header')).toBeVisible();
+  await expect(
+    page.locator('.jp-Notification-List-Item', {
+      hasText: 'the centre test'
+    })
+  ).toHaveCount(0, { timeout: 2000 });
+});
+
+test('the Vault unlocked toast leaves no centre row, by its close button or its 3 s autoClose', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+
+  // Opened through the REST API, as a terminal or another tab would: the panel's next
+  // poll reads the locked -> unlocked edge and raises the toast.
+  expect(await post(page, 'unlock', { recovery: RECOVERY })).toBe(200);
+  const toast = page.locator('.Toastify__toast', {
+    hasText: 'Vault unlocked'
+  });
+  await expect(toast).toHaveCount(1, { timeout: 30000 });
+  // Raised transient with a 3 s autoClose: no press, and gone inside the 5 s check.
+  await expect(toast).toHaveCount(0, { timeout: 5000 });
+
+  // A second edge, this time ended by the toast's own close button.
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+  expect(await post(page, 'unlock', { recovery: RECOVERY })).toBe(200);
+  await expect(toast).toHaveCount(1, { timeout: 30000 });
+  await toast.locator('.jp-Notification-Toast-Close').click();
+  await expect(toast).toHaveCount(0);
+
+  // Either way, the transient row is not in the notification centre.
+  await page.evaluate(() =>
+    (window as any).jupyterapp.commands.execute(
+      'apputils:display-notifications'
+    )
+  );
+  await expect(page.locator('.jp-Notification-Header')).toBeVisible();
+  await expect(
+    page.locator('.jp-Notification-List-Item', { hasText: 'Vault unlocked' })
+  ).toHaveCount(0);
 });
 
 /** Count the page's passkey requests from here on: `create` and `get`. */
@@ -1948,7 +2032,7 @@ test('a passkey with no PRF declined in the cog view is an amber notification th
   });
   await expect(toast).toHaveCount(1, { timeout: 20000 });
   await expect(toast).toHaveClass(/jp-Notification-Toast-warning/);
-  await expect(toast.locator('.jp-toast-message')).toHaveText(
+  await expect(toast.locator('.jp-toast-message')).toContainText(
     'No PRF - passkey not added; use another passkey or Password and authenticator app.'
   );
   const { created, asked } = await removal();

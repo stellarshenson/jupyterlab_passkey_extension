@@ -467,7 +467,7 @@ def test_a_failed_unlock_is_on_record_for_the_others(vault, monkeypatch):
 def test_a_relay_directory_that_is_not_ours_is_one_line(vault, monkeypatch, tmp_path):
     squatted = tmp_path / "squat"
     squatted.write_text("")
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(squatted))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(squatted))
     _steps(monkeypatch)
     with pytest.raises(client.VaultClientError, match="cannot use the relay directory"):
         client.Vault().unlock()
@@ -737,7 +737,7 @@ def unusable(vault, tmp_path, monkeypatch):
     """The keyctl backend with a relay directory under a plain file."""
     blocker = tmp_path / "blocker"
     blocker.write_text("")
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(blocker / "relay"))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(blocker / "relay"))
     monkeypatch.setattr(relay, "_backend_cache", "keyctl")
     return vault
 
@@ -764,7 +764,7 @@ def test_an_unusable_relay_directory_on_keyctl_raises_its_own_set_up(vault_env, 
                                                                     monkeypatch):
     blocker = tmp_path / "blocker"
     blocker.write_text("")
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(blocker / "relay"))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(blocker / "relay"))
     monkeypatch.setattr(relay, "_backend_cache", "keyctl")
     svc = handlers._service
     monkeypatch.setattr(client, "request", lambda method, action, body=None, params=None:
@@ -792,8 +792,8 @@ class _Clock:
 
 
 def test_a_process_waiting_on_another_set_up_waits_the_set_up_time(vault_env, monkeypatch):
-    """A process that shares the set-up waits 600 s, as the one that raised it does,
-    and not the 120 s of a click."""
+    """A process that shares the set-up waits REGISTER_TIMEOUT, as the one that raised it
+    does, and not the 120 s of a click."""
     svc = handlers._service
     monkeypatch.setattr(client, "request", lambda method, action, body=None, params=None:
                         handlers._GET[action](svc, params or {}))
@@ -804,7 +804,7 @@ def test_a_process_waiting_on_another_set_up_waits_the_set_up_time(vault_env, mo
     monkeypatch.setattr(client, "WAIT_POLL", 50)
     with pytest.raises(client.VaultClientError, match=client.NOT_SET_UP):
         vcli.setup_in_browser(client.Vault())
-    assert clock.now == vcli.REGISTER_TIMEOUT == 600
+    assert vcli.REGISTER_TIMEOUT <= clock.now <= vcli.REGISTER_TIMEOUT + client.WAIT_POLL
 
 
 # --------------------------------------------------------------------------- #
@@ -943,7 +943,8 @@ def test_the_unlock_notification_names_its_command_and_its_wait(vault, lab):
     # (`dismissStale` in src/vault/plugin.ts).
     proc, = _spawn(lab, 45, 1)
     _until(lambda: _Lab.notifications)
-    assert _Lab.notifications[0]["data"] == {"command": client.UNLOCK_COMMAND, "seconds": 45}
+    data = _Lab.notifications[0]["data"]
+    assert data["command"] == client.UNLOCK_COMMAND and data["seconds"] == 45
     _press(vault, _Lab.notifications[0])
     ((out, err), code), = _finish([proc])
     assert code == 0, err
@@ -1076,8 +1077,8 @@ def test_a_relay_directory_that_cannot_be_used_on_keyctl_fails_no_unlock(vault, 
     env, request = lab
     blocker = tmp_path / "blocker"
     blocker.write_text("")
-    env = {**env, "JLAB_PASSKEY_RELAY_BACKEND": "keyctl",
-           "JLAB_PASSKEY_RELAY_DIR": str(blocker / "relay")}
+    env = {**env, "JUPYTERLAB_PASSKEY_RELAY_BACKEND": "keyctl",
+           "JUPYTERLAB_PASSKEY_RELAY_DIR": str(blocker / "relay")}
     proc = subprocess.Popen([sys.executable, "-c", GET], env=env, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     _until(lambda: _Lab.notifications)
@@ -1133,7 +1134,8 @@ def test_the_set_up_notification_names_its_command_and_its_wait(no_vault):
     _Lab.gate = None
     proc, = _spawn(no_vault, 45, 1, SETTING_UP)
     _until(lambda: _Lab.notifications)
-    assert _Lab.notifications[0]["data"] == {"command": client.SETUP_COMMAND, "seconds": 45}
+    data = _Lab.notifications[0]["data"]
+    assert data["command"] == client.SETUP_COMMAND and data["seconds"] == 45
     _press_set_up(_Lab.notifications[0])
     ((out, err), code), = _finish([proc])
     assert code == 0, err

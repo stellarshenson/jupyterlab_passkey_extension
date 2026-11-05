@@ -548,6 +548,11 @@ The vault server side, CLI and Python API
   - root-cause: 2026-11-04T11:53:28Z @kj `_error` writes only `error`; the client branches on the HTTP 423 status
   - log: 2026-11-04T11:53:28Z @kj added
   - log: 2026-11-04T13:39:24Z @kj closed: fixed: a locked vault answers 423 with body code 'locked'; the client raises VaultLocked from the code or the status
+- [x] `DEF-VAULT-98-LOCK-FALSE` **Locking an already locked vault logs a lock event** - MINOR; lock() writes the key lifecycle line unconditionally, so vault lock on an already locked vault, or after a restart with no key held, logs vault key: locked although no key was cleared
+  - evidence: lock() computes cleared before each holder.clear and writes 'vault key: locked' only if cleared (service.py:494,500,508); replacing the guard with an unconditional _key_log in a /tmp copy fails test_lock_twice_reports_one_line and the restart case, 2 failed, exit 1
+  - repro: run vault lock twice; the server log carries vault key: locked twice
+  - log: 2026-11-04T20:44:32Z @kj added
+  - log: 2026-11-04T21:26:38Z @kj closed
 
 ## Vault panel `PANEL`
 
@@ -946,6 +951,18 @@ The vault sidebar panel, its dialogs and styles
   - log: 2026-11-04T13:41:39Z @kj added
   - log: 2026-11-04T15:54:52Z @kj collector found a dynamic case: the notification message can exceed 60 characters when the entry name or --label is long; the code does not truncate, and service.MAX_NAME allows 200, so Copy **<name>** grows with the name
   - log: 2026-11-04T18:20:12Z @kj closed
+- [-] `DEF-PANEL-95-DISMISS-NONCE` **Unlock and set-up notifications are never dismissed by the page** - MAJOR; _trigger writes data.nonce null for unlock and set-up; the page compares it with undefined and strict equality is false, so the added dismissal never runs for the two commands it names; the Jest test passes because its mocks never put null against undefined; fix: normalize both sides
+  - related: ACC-NOTIFY-299-CENTRE
+  - repro: unit: build the unlock notification data as _trigger does (nonce null) and call dismissAnswered("passkey:vault-unlock", undefined); the row stays; with a nonce set it goes
+  - log: 2026-11-04T20:44:25Z @kj added
+  - log: 2026-11-04T21:26:38Z @kj closed
+  - log: 2026-11-04T23:27:55Z @kj rejected: not reproduced; evidence retired: dismissAnswered compares (data.nonce ?? null) === (nonce ?? null) at src/vault/plugin.ts:110; reverting to data.nonce === nonce in a /tmp copy fails both no-nonce Jest cases, 2 failed, 36 skipped, exit 1; project -t nonce 2 passed, 56 skipped; reason: JupyterLab core closes and dismisses a row when its action button is pressed; browser_step merges a fresh nonce into every notification's args, unlock and set-up included, so data.nonce is never null; dismissStale now bounds every row that names a seconds wait
+- [-] `DEF-PANEL-97-DISMISS-ITERATE` **Dismissal iterates the notification list while removing from it** - MINOR; dismissAnswered walks Notification.manager.notifications and calls Notification.dismiss inside the loop, which mutates the manager and reruns dismissStale; one match today, two would skip a row
+  - repro: unit: two notifications with the same command and no nonce, call dismissAnswered once; the second row can survive
+  - log: 2026-11-04T20:44:32Z @kj added
+  - log: 2026-11-04T21:11:07Z @kj rejected: ?
+  - log: 2026-11-04T21:12:38Z @kj reopened: rejecting again with the getter evidence in the reason
+  - log: 2026-11-04T21:12:42Z @kj rejected: not reproduced; reason: @jupyterlab/apputils 4.7.5 lib/notification.js returns `this._queue.slice()` from `get notifications()`, the core bundle jlab_core.de9b5a093e5b1d3e.js holds `get notifications(){return this._queue.slice()}`, and the Jest mock returns `mockNotices.slice()`; each iteration walks a copy, so a dismiss during it cannot skip a row
 
 ## Lint `LINT`
 
@@ -961,4 +978,18 @@ The lint gate
   - log: 2026-11-02T18:46:20Z @kj added
   - log: 2026-11-02T18:46:20Z @kj closed: fixed: `tmp` added to the ignores in `eslint.config.mjs`, uncommitted
   - log: 2026-11-03T21:10:28Z @kj edited evidence "`jlpm run lint:check` exit 0 with `tmp/workflows/vault-setup-defects/probe-no-prf/no-prf-browser-probe.mjs` present; uncached eslint 16 files, 0 errors, 0 warnings, 0 files under tmp, 14 under src; log `logs/gate-lint-tmp-ignored.log`" -> "`jlpm run lint:check` exit 0 with a `.mjs` scratch file under `tmp/` present and `tmp` in the ignores of `eslint.config.mjs`; uncached eslint 16 files, 0 errors, 0 warnings, 0 files under tmp, 14 under src; log `logs/gate-lint-tmp-ignored.log`"
+
+## Notifications `NOTIFY`
+
+Notifications this extension raises in the JupyterLab tab: their text, their centre row, their button and what a press does
+
+- log: 2026-11-04T20:44:29Z @kj category created
+
+- [x] `DEF-NOTIFY-96-TRANSIENT-BUTTON` **A transient notification loses its button when the centre opens** - MAJOR; every notification is marked transient; the installed extension removes the row when its toast closes, and opening the notification centre closes every toast, so a waiting unlock or set-up has no button left and the CLI runs to its timeout - 120 s unlock, 600 s set-up
+  - evidence: the transient field is gone from the payload; the collector asserts its absence; a press dismisses through JupyterLab core and dismissStale bounds every row that names a wait at its seconds end
+  - related: ACC-NOTIFY-299-CENTRE
+  - repro: start a command on a locked vault, open the notification centre instead of pressing, close it; the toast and the row are gone and the command times out
+  - log: 2026-11-04T20:44:29Z @kj added
+  - log: 2026-11-04T21:26:38Z @kj closed
+  - log: 2026-11-04T23:29:26Z @kj edited evidence "transient removed from the cli.py _trigger payload; test_notification_texts.py:775 asserts "transient" not in payload, and fails with transient: True restored (exit 1); an answered row now leaves via dismissAnswered after the step, the core press dismissal and dismissStale" -> "the transient field is gone from the payload; the collector asserts its absence; a press dismisses through JupyterLab core and dismissStale bounds every row that names a wait at its seconds end"
 

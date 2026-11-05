@@ -23,7 +23,7 @@ A passkey bridge for JupyterLab that exposes the passkey (WebAuthn) capability o
 | RFC 5869 HKDF-SHA256                | ✅ Met | the passkey slots, keyed from the WebAuthn PRF                          |
 | RFC 6238 TOTP                       | ✅ Met | 6-digit codes of the authenticator app, a used code refused             |
 | W3C WebAuthn Level 3, PRF extension | ✅ Met | each passkey slot is bound to one hostname                              |
-| NIST SP 800-63B, AAL2 idle limit    | ✅ Met | 30-minute default unlock duration                                       |
+| NIST SP 800-63B, AAL2 idle limit    | ✅ Met | 1-minute default unlock duration, stricter than the AAL2 idle limit     |
 | NIST SP 800-57 key management       | ✅ Met | the data key rotates, with a one-year default cryptoperiod              |
 
 ## Features
@@ -38,7 +38,7 @@ A passkey bridge for JupyterLab that exposes the passkey (WebAuthn) capability o
 - **Vault on demand** - `list`, `get`, `add`, `edit`, `rm`, `copy`, `show`, `exec`, `import` of a file, `passkey rm` and `git migrate` offer to create a missing vault at a terminal; `unlock`, `lock`, `import --pass-cli`, `passkey add`, `recovery` and `rotate` offer nothing. `vault get` unlocks a locked vault in the same call, and `list`, `get`, `copy`, `show` and `exec` do it with `--recovery` or `--password --in-browser`
 - **Set-up** - the panel, and a git request with no vault, ask the recovery passphrase, then offer Passkey, Password and authenticator app, and Later; `vault init` adds a passkey
 - **Unlock methods** - a passkey with the PRF extension, the recovery passphrase, or an unlock password with the authenticator app; a passkey with no PRF becomes Password and passkey, where a new unlock password decrypts and the passkey is the server-checked second step
-- **Git credentials** - `git-credential-jupyterlab-passkey` answers git's credential request from the vault; `vault git install` and `vault git uninstall` set or remove it, and `vault git migrate` imports git's plaintext store
+- **Git credentials** - `git-credential-jupyterlab-passkey` answers git's credential request from the vault; `vault git install` and `vault git uninstall` set or remove it, and `vault git migrate` imports git's plaintext store; `JUPYTERLAB_PASSKEY_GIT_IGNORE_VAULT=1` makes the helper answer no credential, so git uses its next helper or prompts (a testing aid, not a security control)
 - **AWS credentials** - `aws-credential-jupyterlab-passkey` answers an AWS `credential_process` from the vault entry `aws/<profile>`, whose username is the access key id and whose password is the secret key; `vault aws install` and `vault aws uninstall` set or remove it, and a locked vault asks for its unlock
 - **`--json`** - every subcommand prints one object, `{"ok": true, "command", "result"}`, or on failure `{"ok": false, "command", "error", "code"}` with the code `denied`, `entry-not-found`, `invalid` or `locked`
 
@@ -138,8 +138,9 @@ pip install jupyterlab_passkey_extension
 
 `jupyterlab-passkey` is installed with the package and posts the notification with the request, waits for your click, and prints the result.
 
-- **Caller** - every notification starts `**<caller>**:`, entry name bold; `--caller NAME` on any subcommand or `JLAB_PASSKEY_CALLER` from Python
+- **Caller** - every notification starts `**<caller>**:`, entry name bold; `--caller NAME` on any subcommand or `JUPYTERLAB_PASSKEY_CALLER` from Python
 - **Caller default** - without a name the caller is the project directory, which tells the person who clicks which project asks and proves nothing
+- **Old names** - the old `JLAB_PASSKEY_` environment variable names are still read, after the new names
 - **Server** - the CLI posts only to the Jupyter server its environment names, and stops when it cannot identify which running server is the lab (flags: [cli-reference.md](docs/cli-reference.md))
 - **Exit status** - `0` succeeded, `1` refused, timed out or could not reach the server, `2` an argument the parser rejects
 - **Stdout** - only the result goes to stdout, so `$(...)` captures only the result

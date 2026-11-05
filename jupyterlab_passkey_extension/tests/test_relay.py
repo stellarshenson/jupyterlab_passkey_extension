@@ -43,14 +43,14 @@ def _own_nonce(monkeypatch):
 
 
 def test_backend_forced_shm(monkeypatch):
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "shm")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "shm")
     monkeypatch.setattr(relay, "_backend_cache", None)
     assert relay.backend() == "shm"
 
 
 def test_auto_falls_back_to_shm_with_one_warning(monkeypatch, capsys):
     # keyctl present but non-functional (the linking caveat) must degrade, not crash.
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "auto")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "auto")
     monkeypatch.setattr(relay, "_backend_cache", None)
     monkeypatch.setattr(relay, "_warned", False)
     monkeypatch.setattr(relay, "_keyctl_probe", lambda: False)
@@ -69,7 +69,7 @@ def test_auto_falls_back_to_shm_with_one_warning(monkeypatch, capsys):
 
 
 def test_fallback_warning_fires_once(monkeypatch, capsys):
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "auto")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "auto")
     monkeypatch.setattr(relay, "_backend_cache", None)
     monkeypatch.setattr(relay, "_warned", False)
     monkeypatch.setattr(relay, "_keyctl_probe", lambda: False)
@@ -84,7 +84,7 @@ def test_forced_keyctl_fails_loud_when_broken(monkeypatch):
     # silent file relay that lacks the properties they asked for. It is an OSError so the
     # handlers' `except OSError` guards answer with a clean 500 / one line, not a
     # traceback.
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "keyctl")
     monkeypatch.setattr(relay, "_backend_cache", None)
     monkeypatch.setattr(relay, "_keyctl_probe", lambda: False)
 
@@ -93,21 +93,21 @@ def test_forced_keyctl_fails_loud_when_broken(monkeypatch):
 
 
 def test_auto_prefers_keyctl_when_it_works(monkeypatch):
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "auto")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "auto")
     monkeypatch.setattr(relay, "_backend_cache", None)
     monkeypatch.setattr(relay, "_keyctl_probe", lambda: True)
     assert relay.backend() == "keyctl"
 
 
 def test_reference_scheme_per_backend(monkeypatch):
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "shm")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "shm")
     monkeypatch.setattr(relay, "_backend_cache", None)
     assert relay.reference(NONCE, "pass").startswith("file:")
     assert relay.reference(NONCE, "pass").endswith(f"{NONCE}.pass")
 
     monkeypatch.setattr(relay, "_backend_cache", None)
     monkeypatch.setattr(relay, "_keyctl_probe", lambda: True)
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "keyctl")
     assert relay.reference(NONCE, "pass") == f"keyctl:jlab-passkey:{NONCE}.pass"
 
 
@@ -150,7 +150,7 @@ def test_unstage_is_best_effort_when_the_backend_is_unavailable(monkeypatch):
     # unstage runs only on an unwind path (a finally / exception handler). If it raised -
     # e.g. a forced-but-broken keyctl making backend() raise - it would MASK the error
     # actually propagating. It must swallow and return, never raise.
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "keyctl")
     monkeypatch.setattr(relay, "_backend_cache", None)
     monkeypatch.setattr(relay, "_keyctl_probe", lambda: False)
 
@@ -230,7 +230,7 @@ def test_keyctl_stage_never_puts_the_secret_on_argv(monkeypatch):
 
     monkeypatch.setattr(relay.subprocess, "run", spy)
     monkeypatch.setattr(relay, "_backend_cache", None)
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "keyctl")
     if not relay._keyctl_probe():
         pytest.skip("keyctl not functional on this host")
     monkeypatch.setattr(relay, "_backend_cache", None)
@@ -278,7 +278,7 @@ def test_keyctl_reader_falls_back_to_the_shm_relay(monkeypatch, tmp_path):
     # pre-keyctl code stages the ceremony result as a /dev/shm file while a newer,
     # keyctl-preferred CLI reads. No real keyring needed - the keyctl store is mocked
     # empty and the value is placed in shm; the reader must cross-read it.
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(tmp_path))
     monkeypatch.setattr(relay, "_backend_cache", "keyctl")
     monkeypatch.setattr(relay, "_keyctl_collect", lambda n, k: None)
     monkeypatch.setattr(relay, "_keyctl_exists", lambda n, k: False)
@@ -296,7 +296,7 @@ def test_keyctl_reader_falls_back_to_the_shm_relay(monkeypatch, tmp_path):
 def test_keyctl_unstage_also_clears_the_shm_relay(monkeypatch, tmp_path):
     # unstage runs on an unwind path; a stage that landed on the OTHER backend must not
     # be left behind. A keyctl-primary unstage clears the file relay too.
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(tmp_path))
     monkeypatch.setattr(relay, "_backend_cache", "keyctl")
     monkeypatch.setattr(relay, "_keyctl_unstage", lambda n, k: None)  # keyring side no-op
 
@@ -310,7 +310,7 @@ def test_keyctl_cross_read_is_best_effort_on_a_squatted_shm(monkeypatch, tmp_pat
     # A co-tenant squatting the predictable shm path must not become a crash on a keyctl
     # reader that would otherwise never touch shm. The cross-read swallows the squat
     # guard's error and reports nothing staged.
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(tmp_path))
     monkeypatch.setattr(relay, "_backend_cache", "keyctl")
     monkeypatch.setattr(relay, "_keyctl_collect", lambda n, k: None)
     relay.write_relay(NONCE, f"{NONCE}.json", "irrelevant")  # a file is plainly present
@@ -326,12 +326,12 @@ def test_keyctl_cross_read_is_best_effort_on_a_squatted_shm(monkeypatch, tmp_pat
 def test_keyctl_reader_collects_a_real_shm_staged_relay(monkeypatch, tmp_path):
     # End to end on a real keyring: a shm-staged relay is collected by a genuine
     # keyctl-primary process (its own kernel key empty), exercising the real cross-read.
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "shm")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "shm")
     monkeypatch.setattr(relay, "_backend_cache", None)
     relay.stage(NONCE, "json", "real-cross-read")
 
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "keyctl")
     monkeypatch.setattr(relay, "_backend_cache", None)
     assert relay.backend() == "keyctl"
     assert relay.collect(NONCE, "json") == "real-cross-read"
@@ -344,7 +344,7 @@ def test_reference_names_the_shm_file_when_a_shm_writer_staged_the_pass(
     # (old shm server stages the pass file, new keyctl CLI prints the handle), a keyctl:
     # handle resolves to an empty keyring and hands the consumer nothing while the secret
     # orphans in the file. reference() must point at the file where the value actually is.
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(tmp_path))
     monkeypatch.setattr(relay, "_backend_cache", "keyctl")
     monkeypatch.setattr(relay, "_keyctl_exists", lambda n, k: False)  # keyring empty
     relay.write_relay(NONCE, f"{NONCE}.pass", "the-passphrase")  # value in shm
@@ -362,7 +362,7 @@ def test_keyctl_cross_read_warns_once_on_a_squatted_shm(monkeypatch, tmp_path, c
     # The swallowed squat is a real security signal; a keyctl reader that only touches
     # shm as a fallback must not crash, but it must not bury the squat in a bare timeout
     # either - it surfaces one stderr line and reports nothing staged.
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(tmp_path))
     monkeypatch.setattr(relay, "_backend_cache", "keyctl")
     monkeypatch.setattr(relay, "_keyctl_collect", lambda n, k: None)
     relay.write_relay(NONCE, f"{NONCE}.json", "irrelevant")  # a file is plainly present
@@ -388,13 +388,13 @@ def test_a_relay_warning_never_fails_the_command_or_reaches_stdout(
     closed.close()
     monkeypatch.setattr(sys, "stderr", None if stderr == "none" else closed)
     if warning == "fallback":
-        monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "auto")
+        monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "auto")
         monkeypatch.setattr(relay, "_backend_cache", None)
         monkeypatch.setattr(relay, "_warned", False)
         monkeypatch.setattr(relay, "_keyctl_probe", lambda: False)
         assert relay.backend() == "shm"
     else:
-        monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path))
+        monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(tmp_path))
         monkeypatch.setattr(relay, "_backend_cache", "keyctl")
         monkeypatch.setattr(relay, "_keyctl_collect", lambda n, k: None)
         relay.write_relay(NONCE, f"{NONCE}.json", "irrelevant")
@@ -568,11 +568,11 @@ def test_only_a_permission_refusal_restores_possession(monkeypatch):
 
 
 def test_debug_report_names_the_backend_and_never_a_secret(monkeypatch):
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "shm")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "shm")
     monkeypatch.setattr(relay, "_backend_cache", None)
     report = relay.debug_report()
     assert "relay: backend=shm" in report
-    assert "JLAB_PASSKEY_RELAY_BACKEND=shm" in report
+    assert "JUPYTERLAB_PASSKEY_RELAY_BACKEND=shm" in report
 
 
 def test_probe_detail_names_possession_on_read_denied():

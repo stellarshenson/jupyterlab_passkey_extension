@@ -8,6 +8,7 @@ const mockApi: any = {};
 const mockAskSecret = jest.fn();
 const mockLaunch = jest.fn();
 const mockRequest = jest.fn();
+const mockMakeRequest = jest.fn();
 const mockError: jest.Mock = jest.fn(() => 'failure-1');
 const mockEmit = jest.fn();
 const mockDismiss = jest.fn();
@@ -67,6 +68,9 @@ jest.mock('../passphrase', () => ({
 jest.mock('../request', () => ({
   requestAPI: (...a: any[]) => mockRequest(...a)
 }));
+jest.mock('@jupyterlab/services', () => ({
+  ServerConnection: { makeRequest: (...a: any[]) => mockMakeRequest(...a) }
+}));
 jest.mock('../vault/api', () => ({
   ...jest.requireActual('../vault/api'),
   VaultApi: jest.fn().mockImplementation(() => mockApi)
@@ -78,6 +82,7 @@ import { setupVault } from '../vault/dialogs';
 import { REFRESH_MS } from '../vault/panel';
 import {
   dismissStale,
+  raiseUnlockedToast,
   REGISTER_COMMAND,
   SETUP_COMMAND,
   vaultPlugin
@@ -146,7 +151,7 @@ async function activate(
       addCommand: (id: string, options: any) => commands.set(id, options),
       execute: jest.fn()
     },
-    serviceManager: { serverSettings: {} },
+    serviceManager: { serverSettings: { baseUrl: 'http://host/' } },
     shell: {
       add: jest.fn((widget: any) => {
         mockPanel = widget;
@@ -244,6 +249,11 @@ function posted(): any[] {
     .filter(c => c[0] === 'result')
     .map(c => JSON.parse(c[2].body));
 }
+
+beforeEach(() => {
+  mockMakeRequest.mockReset();
+  mockMakeRequest.mockResolvedValue({ ok: true, status: 200 });
+});
 
 afterEach(() => {
   jest.clearAllMocks();
@@ -839,18 +849,32 @@ describe('a vault notification nothing waits for', () => {
       notice(undefined),
       notice(null),
       notice(UNLOCK),
-      notice({ command: 'passkey:copy', seconds: 0 }),
-      notice({ command: REGISTER_COMMAND, seconds: 0 })
+      // cli.py writes no data for copy: it names no wait.
+      notice(undefined)
     ];
     expect(dismissStale(open(), Date.now() + 1)).toBe(false);
     expect(mockNotices).toEqual(others);
     expect(mockDismiss).not.toHaveBeenCalled();
   });
 
+  it('leaves any notification that names a wait at its wait end, and one with none stays', async () => {
+    await activate();
+    await settled();
+    const register = notice({ command: REGISTER_COMMAND, seconds: 180 });
+    const run = notice({ command: 'passkey:run', seconds: 120 });
+    const noWait = notice(undefined);
+    expect(mockNotices).toEqual([register, run, noWait]);
+    await jest.advanceTimersByTimeAsync(120_000);
+    expect(mockNotices).toEqual([register, noWait]);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(mockNotices).toEqual([noWait]);
+  });
+
   it('reads nothing while no vault notification is in the tab', async () => {
     await activate();
     await settled();
-    notice({ command: 'passkey:copy', seconds: 120 });
+    // A copy row names no wait: cli.py writes no data for it.
+    notice(undefined);
     await jest.advanceTimersByTimeAsync(3 * REFRESH_MS);
     // The one read at start-up.
     expect(mockApi.status).toHaveBeenCalledTimes(1);
@@ -1372,35 +1396,75 @@ it('opens the Settings Editor at the vault settings, searched by the schema titl
 });
 
 describe('one success notification per unlock', () => {
-  it('emits once on the locked -> unlocked edge, and not on a repeated read', async () => {
+  it('posts once on the locked -> unlocked edge, and not on a repeated read', async () => {
     await activate();
     await mockPanel.refresh();
-    expect(mockEmit).not.toHaveBeenCalled();
+    expect(mockMakeRequest).not.toHaveBeenCalled();
     mockApi.status.mockResolvedValue(open());
     await mockPanel.refresh();
-    expect(mockEmit).toHaveBeenCalledTimes(1);
-    expect(mockEmit).toHaveBeenCalledWith('Vault unlocked', 'success', {
-      autoClose: 4000
-    });
+    expect(mockMakeRequest).toHaveBeenCalledTimes(1);
+    expect(mockEmit).not.toHaveBeenCalled();
     // The timer's read shares the last value: no second toast.
     await mockPanel.poll();
-    expect(mockEmit).toHaveBeenCalledTimes(1);
+    expect(mockMakeRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('emits none when the first read is already unlocked', async () => {
-    const starting = activate();
-    mockApi.status.mockResolvedValue(open());
-    await starting;
-    await mockPanel.refresh();
+  it('posts the toast to the notifications ingest, transient, for 3 seconds', async () => {
+    await raiseUnlockedToast(
+      { baseUrl: 'http://host/' } as any,
+      'Vault unlocked'
+    );
+    expect(mockMakeRequest).toHaveBeenCalledTimes(1);
+    const [url, init] = mockMakeRequest.mock.calls[0];
+    expect(url).toBe('http://host/jupyterlab-notifications-extension/ingest');
+    expect(init.method).toBe('POST');
+    // Exactly the five fields the ingest reads, so the row leaves with its toast.
+    expect(JSON.parse(init.body)).toEqual({
+      message: 'Vault unlocked',
+      type: 'success',
+      autoClose: 3000,
+      immediate: true,
+      transient: true
+    });
     expect(mockEmit).not.toHaveBeenCalled();
   });
 
-  it('emits none on repeated unlocked reads', async () => {
+  it('falls back to a local 3 s success toast when the ingest route is missing', async () => {
+    mockMakeRequest.mockResolvedValue({ ok: false, status: 404 });
+    await expect(
+      raiseUnlockedToast({ baseUrl: 'http://host/' } as any, 'Vault unlocked')
+    ).resolves.toBeUndefined();
+    expect(mockEmit).toHaveBeenCalledWith('Vault unlocked', 'success', {
+      autoClose: 3000
+    });
+  });
+
+  it('falls back to the same local toast when the post cannot reach the server', async () => {
+    mockMakeRequest.mockRejectedValue(new Error('network down'));
+    await expect(
+      raiseUnlockedToast({ baseUrl: 'http://host/' } as any, 'Vault unlocked')
+    ).resolves.toBeUndefined();
+    expect(mockEmit).toHaveBeenCalledWith('Vault unlocked', 'success', {
+      autoClose: 3000
+    });
+  });
+
+  it('posts none when the first read is already unlocked', async () => {
+    const starting = activate();
+    mockApi.status.mockResolvedValue(open());
+    await starting;
+    await mockPanel.refresh();
+    expect(mockMakeRequest).not.toHaveBeenCalled();
+    expect(mockEmit).not.toHaveBeenCalled();
+  });
+
+  it('posts none on repeated unlocked reads', async () => {
     const starting = activate();
     mockApi.status.mockResolvedValue(open());
     await starting;
     await mockPanel.refresh();
     await mockPanel.refresh();
+    expect(mockMakeRequest).not.toHaveBeenCalled();
     expect(mockEmit).not.toHaveBeenCalled();
   });
 });

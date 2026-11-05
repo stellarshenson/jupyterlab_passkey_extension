@@ -33,6 +33,8 @@ import subprocess
 import sys
 import tempfile
 
+from . import env
+
 # One kernel-key description per relay: `jlab-passkey:<nonce>.<kind>`. The nonce is
 # already validated by the caller (it is a filename in the shm backend), so the
 # description is safe to build from it.
@@ -136,9 +138,8 @@ def relay_dir():
     path or every relay silently strands, so a second copy of the default is a bug
     waiting to happen rather than a convenience.
     """
-    return os.environ.get(
-        "JLAB_PASSKEY_RELAY_DIR", f"/dev/shm/jlab-passkey-{os.getuid()}"
-    )
+    explicit = env.get("RELAY_DIR")
+    return f"/dev/shm/jlab-passkey-{os.getuid()}" if explicit is None else explicit
 
 
 def ensure_relay_dir():
@@ -527,9 +528,9 @@ def _warn_shm_fallback():
 
 def debug_report():
     """The relay backend decision, as text for --debug. Names no secret and no nonce."""
-    forced = os.environ.get("JLAB_PASSKEY_RELAY_BACKEND", "auto")
+    forced = env.get("RELAY_BACKEND") or "auto"
     lines = [
-        f"relay: JLAB_PASSKEY_RELAY_BACKEND={forced}",
+        f"relay: JUPYTERLAB_PASSKEY_RELAY_BACKEND={forced}",
         f"relay: keyctl binary={shutil.which('keyctl') or 'not found'}",
         f"relay: backend={backend()}",
     ]
@@ -543,14 +544,14 @@ def debug_report():
 def backend():
     """'keyctl' or 'shm', decided once per process and cached.
 
-    JLAB_PASSKEY_RELAY_BACKEND pins it: `keyctl` fails loud if the probe fails,
+    JUPYTERLAB_PASSKEY_RELAY_BACKEND pins it: `keyctl` fails loud if the probe fails,
     `shm` forces the file relay, `auto` (the default) prefers keyctl and falls back
     to shm with a one-time warning.
     """
     global _backend_cache
     if _backend_cache is not None:
         return _backend_cache
-    choice = os.environ.get("JLAB_PASSKEY_RELAY_BACKEND", "auto")
+    choice = env.get("RELAY_BACKEND") or "auto"
     if choice == "shm":
         _backend_cache = "shm"
     elif choice == "keyctl":
@@ -560,7 +561,7 @@ def backend():
             # `except OSError` lines) catch that family - so a forced-but-broken keyctl
             # answers with a clean 500 / one line, never a traceback.
             raise OSError(
-                "JLAB_PASSKEY_RELAY_BACKEND=keyctl but keyctl is not functional here"
+                "JUPYTERLAB_PASSKEY_RELAY_BACKEND=keyctl but keyctl is not functional here"
             )
         _backend_cache = "keyctl"
     else:

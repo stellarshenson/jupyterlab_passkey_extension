@@ -23,7 +23,15 @@ from .store import VaultError
 
 log = logging.getLogger(__name__)
 
-DEFAULT_UNLOCK_MINUTES = 30
+
+def _key_log(event, **fields):
+    """One vault key lifecycle line under the stable prefix: the event, then the named
+    fields. No field ever carries a secret, an entry name or a caller."""
+    log.info("%s: %s%s", holders.KEY_LOG, event,
+             "".join(f" {name}={value}" for name, value in fields.items()))
+
+
+DEFAULT_UNLOCK_MINUTES = 1
 # The shortest unlock password the vault accepts: the setting, and what it may be set
 # to. A copied vault file can be attacked through this slot, so short is not offered.
 DEFAULT_PASSWORD_MIN_LENGTH = 12
@@ -170,9 +178,13 @@ def generate(length=GENERATE_LENGTH, symbols=True):
 
 class VaultService:
     def __init__(self):
-        # The id of the vault whose key this server last put in the holder, so `lock`
-        # can clear it even when the file has since moved or been damaged.
+        # The id of the vault whose key this server put in the holder, or saw the holder
+        # keep across a restart, so `lock` can clear it even when the file has since
+        # moved or been damaged, and a later expiry is reported.
         self._held = None
+        # Whether that key has already been reported as expired, so a status read and
+        # every read after it log the loss once.
+        self._expired = False
         # Of the authenticator app: wrong codes in a row, and the time step of the last
         # code accepted, since a code is accepted once.
         self._wrong_codes = 0
@@ -215,10 +227,23 @@ class VaultService:
         return store.load(store.vault_path())["id"]
 
     def _held_key(self):
-        key = self.holder().get(self._vault_id())
+        vault_id = self._vault_id()
+        key = self.holder().get(vault_id)
         if key is None:
+            self._note_expiry(vault_id)
             raise Locked("the vault is locked")
+        # The holder has it, whether this server put it there or a restart left it:
+        # either way its later loss is an expiry to report.
+        self._held = vault_id
+        self._expired = False
         return key
+
+    def _note_expiry(self, vault_id):
+        """One line when the holder reports no key for the vault this server held: the
+        unlock duration ended. Once per held key, not on every read."""
+        if self._held == vault_id and not self._expired:
+            self._expired = True
+            _key_log("key expired")
 
     def _dek(self):
         """The data half of the held pair. A 32-byte hold is a version-1 file's one key,
@@ -236,6 +261,7 @@ class VaultService:
         vault_id = self._vault_id()
         self.holder().put(vault_id, root + dek, self.unlock_minutes() * 60)
         self._held = vault_id
+        self._expired = False
         self._wrong_codes = 0
         relay.end_unlock_wait()
 
@@ -260,11 +286,13 @@ class VaultService:
         warning, not a failed unlock; the key this unlock came with serves it."""
         if doc["version"] == 1:
             try:
-                dek, _ = store.adopt_data_key(path, root)
+                dek, created = store.adopt_data_key(path, root)
             except Exception as e:
                 log.warning("could not give the vault a data key: %s", e)
                 dek = root
             else:
+                if created:
+                    _key_log("data key created")
                 doc = store.load(path)
                 self._drop_old_key(doc)
         else:
@@ -279,6 +307,7 @@ class VaultService:
             except Exception as e:
                 log.warning("could not rotate the vault's data key: %s", e)
             else:
+                _key_log("data key rotated")
                 self._drop_old_key(doc)
         return root, dek
 
@@ -318,6 +347,13 @@ class VaultService:
             # read the entries again. A hash of the ciphertext tells nothing about them.
             result["revision"] = hashlib.sha256(doc["entries"].encode()).hexdigest()[:16]
             remaining = holder.remaining(doc["id"])
+            if remaining is None:
+                self._note_expiry(doc["id"])
+            else:
+                # Held now, though a restart since the unlock means this server never
+                # put it there; the expiry that follows is still this key's loss.
+                self._held = doc["id"]
+                self._expired = False
             result["unlocked"] = remaining is not None
             result["remaining"] = remaining
         return result
@@ -325,6 +361,7 @@ class VaultService:
     def init(self, recovery):
         path = store.vault_path()
         dek = store.create(path, recovery)
+        _key_log("vault created")
         # The holder keeps the root and the data key together, so the slots can still
         # be written while the vault is open.
         self._hold(store.unwrap_recovery(store.load(path), recovery), dek)
@@ -340,6 +377,7 @@ class VaultService:
         doc = store.load(path)
         root = store.unwrap_passkey(doc, cred_id, prf_bytes)
         self._hold(*self._finish_unlock(path, doc, root, None, None))
+        _key_log("unlocked", method="passkey")
 
     def unlock_recovery(self, passphrase):
         if not isinstance(passphrase, str) or not passphrase:
@@ -355,6 +393,7 @@ class VaultService:
             # request stays 400.
             raise Denied(str(e)) from None
         self._hold(*self._finish_unlock(path, doc, root, "recovery", passphrase))
+        _key_log("unlocked", method="recovery")
 
     def unlock_password(self, password, code=None):
         """Unlock with the unlock password and a code of the authenticator app: the two
@@ -372,6 +411,7 @@ class VaultService:
                 raise Denied("a password unlock needs a code of the authenticator app")
             self._check_code(doc, store.open_data_key(doc, root), code)
         self._hold(*self._finish_unlock(path, doc, root, "password", password))
+        _key_log("unlocked", method="password")
 
     def unlock_pair(self, password, assertion):
         """Unlock with Password and passkey: the password decrypts the root key, and
@@ -386,6 +426,7 @@ class VaultService:
         root = store.unwrap_pair(doc, password)
         self._check_assertion(doc, store.open_data_key(doc, root), assertion, challenge)
         self._hold(*self._finish_unlock(path, doc, root, None, None))
+        _key_log("unlocked", method="pair")
 
     def challenge(self):
         """A new passkey challenge, which replaces the last one."""
@@ -438,6 +479,7 @@ class VaultService:
                          "or the recovery passphrase")
         root = self._proven_root(doc, proof)
         dek = store.rotate_data_key(path, root)
+        _key_log("data key rotated")
         self._drop_old_key(doc)
         self._hold(root, dek)
         return {"rotation": self._rotation(store.load(path))}
@@ -448,15 +490,23 @@ class VaultService:
         held, self._held = self._held, None
         if held is None and not store.exists(path):
             raise VaultError(f"no vault at {path}; {_RESTART_CLAUSE}")
+        holder = self.holder()
+        cleared = held is not None and holder.remaining(held) is not None
         if held is not None:
-            self.holder().clear(held)
+            holder.clear(held)
         if store.exists(path):
             try:
-                self.holder().clear(self._vault_id())
+                vault_id = self._vault_id()
+                cleared = cleared or holder.remaining(vault_id) is not None
+                holder.clear(vault_id)
             except VaultError as e:
                 # A damaged file: the key this server held is cleared, which is the lock.
                 if held is None:
                     raise VaultError(f"{e}; {_RESTART_CLAUSE}")
+        # Only a cleared key is an event: locking a vault that holds none, as a second
+        # lock or one after a restart with no key does, must not log one.
+        if cleared:
+            _key_log("locked")
 
     # -- entries -------------------------------------------------------------
 
@@ -719,7 +769,9 @@ class VaultService:
         """The data key a new secret is sealed under. A version-1 file has one key for
         both jobs; it is given a data key first, and the key held for it goes."""
         if doc["version"] == 1:
-            dek, _ = store.adopt_data_key(path, root)
+            dek, created = store.adopt_data_key(path, root)
+            if created:
+                _key_log("data key created")
             self._drop_old_key(doc)
             return dek
         return store.open_data_key(doc, root)

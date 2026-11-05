@@ -67,7 +67,7 @@ def test_create_writes_one_private_file_with_names_hidden(path):
 
 
 def test_the_default_path_follows_xdg_data_home(monkeypatch, tmp_path):
-    monkeypatch.delenv("JLAB_PASSKEY_VAULT", raising=False)
+    monkeypatch.delenv("JUPYTERLAB_PASSKEY_VAULT", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert store.vault_path() == str(tmp_path / "jupyterlab-passkey" / "vault.json")
 
@@ -75,9 +75,9 @@ def test_the_default_path_follows_xdg_data_home(monkeypatch, tmp_path):
 def test_a_set_path_expands_the_home_directory_and_is_absolute(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("JLAB_PASSKEY_VAULT", "~/vaults/v.json")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_VAULT", "~/vaults/v.json")
     assert store.vault_path() == str(tmp_path / "home" / "vaults" / "v.json")
-    monkeypatch.setenv("JLAB_PASSKEY_VAULT", "v.json")
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_VAULT", "v.json")
     assert store.vault_path() == str(tmp_path / "v.json")
 
 

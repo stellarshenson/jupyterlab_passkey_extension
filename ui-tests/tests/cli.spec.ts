@@ -104,7 +104,7 @@ const DISCOVERY_ENV = [
 /**
  * Spawn the real binary.
  *
- * JLAB_PASSKEY_RELAY_DIR is passed explicitly and deliberately: the test config sets it
+ * JUPYTERLAB_PASSKEY_RELAY_DIR is passed explicitly and deliberately: the test config sets it
  * inside the *server* process only, so a subprocess spawned from Playwright would
  * otherwise poll /dev/shm while the server writes here, and hang until the timeout.
  *
@@ -114,10 +114,10 @@ const DISCOVERY_ENV = [
 function runCli(args: string[]): Promise<IResult> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    JLAB_PASSKEY_RELAY_DIR: RELAY_DIR,
+    JUPYTERLAB_PASSKEY_RELAY_DIR: RELAY_DIR,
     // Pin shm so the CLI and the test server agree on the backend, and the tests can
     // read back the file the server writes. The server config pins the same value.
-    JLAB_PASSKEY_RELAY_BACKEND: 'shm',
+    JUPYTERLAB_PASSKEY_RELAY_BACKEND: 'shm',
     // Pointed at the suite's own port rather than deleted: with DISCOVERY_ENV removed,
     // JUPYTER_PORT is the variable that names the test server to cli.py, so a discovery
     // miss dies on connection refused against our own port and cannot reach a lab on
@@ -164,10 +164,10 @@ function runCli(args: string[]): Promise<IResult> {
 function runCopy(secret: string, args: string[] = []): Promise<IResult> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    JLAB_PASSKEY_RELAY_DIR: RELAY_DIR,
+    JUPYTERLAB_PASSKEY_RELAY_DIR: RELAY_DIR,
     // Pin shm so the CLI and the test server agree on the backend, and the tests can
     // read back the file the server writes. The server config pins the same value.
-    JLAB_PASSKEY_RELAY_BACKEND: 'shm',
+    JUPYTERLAB_PASSKEY_RELAY_BACKEND: 'shm',
     JUPYTER_PORT: PORT
   };
   for (const name of DISCOVERY_ENV) {
@@ -407,7 +407,7 @@ test('copy hands a piped secret to the clipboard through the real binary', async
   // The notification starts with who asks. The label is the only thing telling two
   // staged secrets of one caller apart.
   await expect(page.locator('.jp-toast-message').first()).toContainText(
-    '**the copy test**: Copy **GitHub token**'
+    'the copy test: Copy GitHub token'
   );
   await buttons.first().click();
 
@@ -525,10 +525,10 @@ test('copy stages nothing when the trigger cannot reach a server', async () => {
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    JLAB_PASSKEY_RELAY_DIR: RELAY_DIR,
+    JUPYTERLAB_PASSKEY_RELAY_DIR: RELAY_DIR,
     // Pin shm so the CLI and the test server agree on the backend, and the tests can
     // read back the file the server writes. The server config pins the same value.
-    JLAB_PASSKEY_RELAY_BACKEND: 'shm',
+    JUPYTERLAB_PASSKEY_RELAY_BACKEND: 'shm',
     JUPYTER_RUNTIME_DIR: emptyRuntime,
     // Nothing listens here, so the trigger POST dies on connection refused.
     JUPYTER_PORT: '1'

@@ -18,7 +18,7 @@ VALID_NONCE = "test_nonce_ABCDEF0123456789-_"
 def relay_dir(tmp_path, monkeypatch):
     """Point the handler's relay directory at a fresh path under tmp_path."""
     d = tmp_path / "relay"
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(d))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(d))
     return d
 
 
@@ -545,7 +545,7 @@ def test_ensure_relay_dir_refuses_a_symlinked_relay_path(tmp_path, monkeypatch):
     attacker.mkdir()
     squatted = tmp_path / "relay"
     squatted.symlink_to(attacker)
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(squatted))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(squatted))
 
     with pytest.raises(PermissionError, match="squatting the relay path"):
         ensure_relay_dir()
@@ -565,7 +565,7 @@ def test_ensure_relay_dir_refuses_a_dangling_symlink_with_the_same_diagnosis(tmp
     """
     squatted = tmp_path / "relay"
     squatted.symlink_to(tmp_path / "nowhere")
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(squatted))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(squatted))
 
     with pytest.raises(PermissionError, match="squatting the relay path"):
         ensure_relay_dir()
@@ -582,7 +582,7 @@ def test_ensure_relay_dir_refuses_a_directory_owned_by_someone_else(tmp_path, mo
     """
     d = tmp_path / "relay"
     d.mkdir(mode=0o700)
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(d))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(d))
 
     real_lstat = os.lstat
 
@@ -607,7 +607,7 @@ def test_ensure_relay_dir_tightens_a_loose_directory_of_our_own(tmp_path, monkey
     """
     d = tmp_path / "relay"
     d.mkdir(mode=0o755)
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(d))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(d))
 
     assert ensure_relay_dir() == str(d)
     assert stat.S_IMODE(os.stat(d).st_mode) == 0o700
@@ -615,7 +615,7 @@ def test_ensure_relay_dir_tightens_a_loose_directory_of_our_own(tmp_path, monkey
 
 def test_ensure_relay_dir_creates_a_private_directory_when_absent(tmp_path, monkeypatch):
     d = tmp_path / "relay"
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(d))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(d))
 
     assert ensure_relay_dir() == str(d)
     assert stat.S_IMODE(os.stat(d).st_mode) == 0o700

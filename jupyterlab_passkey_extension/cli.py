@@ -39,7 +39,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import relay
+from . import env, relay
 from .relay import _say
 
 INGEST = "jupyterlab-notifications-extension/ingest"
@@ -306,14 +306,14 @@ NO_CALLER = "an unknown project"
 
 def _caller() -> str:
     """Who a notification says is asking: the name the caller states - `--caller`,
-    which main() puts in `JLAB_PASSKEY_CALLER`, or that variable set by a caller with
+    which main() puts in `JUPYTERLAB_PASSKEY_CALLER`, or that variable set by a caller with
     no command line (the Python `Vault` class) - else the project the command runs in:
     the name of the nearest directory, from the working directory upwards, that holds
     `.git`, or of the working directory when none does. One line of at most
     CALLER_MAX characters, so a name cannot push the request out of sight. The name is
     the caller's own statement: it tells the person who clicks which project asks,
     and it proves nothing."""
-    name = os.environ.get("JLAB_PASSKEY_CALLER", "")
+    name = env.get("CALLER") or ""
     if not any(c.isprintable() and not c.isspace() for c in name):
         try:
             here = os.getcwd()
@@ -344,6 +344,8 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str,
         "message": f"**{_caller()}**: {message}",
         "type": "info",
         "autoClose": False,
+        # No transient field: a transient row leaves the centre when its toast closes,
+        # and these rows need the button to stay until answered, waited on or not.
         "immediate": True,
         "actions": [{
             "label": label,
@@ -603,7 +605,7 @@ def cmd_passphrase(a) -> int:
         _wait(nonce, "pass", a.timeout, refused, watch_cancel=True)
         ref = relay.reference(nonce, "pass")
     except OSError as e:
-        # An operator who forced JLAB_PASSKEY_RELAY_BACKEND=keyctl on a host whose
+        # An operator who forced JUPYTERLAB_PASSKEY_RELAY_BACKEND=keyctl on a host whose
         # keyring is not functional gets a clean line here, not a traceback - the same
         # bar the other commands hold. (A missing/quota'd backend surfaces the same way.)
         raise Fail(f"relay backend unavailable: {e}", "relay")
@@ -906,11 +908,11 @@ environment:
   JUPYTER_PORT, JUPYTERHUB_SERVICE_PREFIX
                                        name the lab when JUPYTER_SERVER_URL is not set, and give
                                        the address when the list reports none
-  JLAB_PASSKEY_CALLER                  who a notification says is asking, for a caller that cannot
+  JUPYTERLAB_PASSKEY_CALLER            who a notification says is asking, for a caller that cannot
                                        pass --caller (default: the project directory the command
                                        runs in)
-  JLAB_PASSKEY_RELAY_BACKEND           auto (default), keyctl or shm: where a relayed secret waits
-  JLAB_PASSKEY_RELAY_DIR               the shm relay directory (default /dev/shm/jlab-passkey-<uid>)
+  JUPYTERLAB_PASSKEY_RELAY_BACKEND     auto (default), keyctl or shm: where a relayed secret waits
+  JUPYTERLAB_PASSKEY_RELAY_DIR         the shm relay directory (default /dev/shm/jlab-passkey-<uid>)
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -936,7 +938,7 @@ environment:
     debugp.add_argument(
         "--caller", metavar="NAME",
         help="who asks: your project, shown at the start of a notification this "
-             "command raises (default: JLAB_PASSKEY_CALLER, else the project directory "
+             "command raises (default: JUPYTERLAB_PASSKEY_CALLER, else the project directory "
              "the command runs in)",
     )
     # --json rides it too: stdout is one object and stderr stays empty, for a caller
@@ -1185,7 +1187,7 @@ def main() -> int:
     if getattr(a, "caller", None):
         # In the environment, where _caller reads it: the command of `vault exec`
         # inherits it, so a notification that command raises names the same caller.
-        os.environ["JLAB_PASSKEY_CALLER"] = a.caller
+        os.environ["JUPYTERLAB_PASSKEY_CALLER"] = a.caller
     if getattr(a, "debug", False):
         # Before the command runs, so the backend is on the record even if what follows
         # times out. _say, not print: a closed stderr must not fail the command.

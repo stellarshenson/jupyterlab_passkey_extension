@@ -35,9 +35,9 @@ def _relay_backend(request, monkeypatch):
                  "JUPYTER_PORT"):
         monkeypatch.delenv(name, raising=False)
     if request.node.get_closest_marker("keyctl"):
-        monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "keyctl")
+        monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "keyctl")
     else:
-        monkeypatch.setenv("JLAB_PASSKEY_RELAY_BACKEND", "shm")
+        monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_BACKEND", "shm")
     yield
 
 
@@ -49,9 +49,9 @@ def vault_env(tmp_path, monkeypatch):
     Argon2id cost."""
     from jupyterlab_passkey_extension.vault import handlers, holders, store
 
-    monkeypatch.setenv("JLAB_PASSKEY_VAULT", str(tmp_path / "vault" / "vault.json"))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_VAULT", str(tmp_path / "vault" / "vault.json"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setenv("JLAB_PASSKEY_RELAY_DIR", str(tmp_path / "relay"))
+    monkeypatch.setenv("JUPYTERLAB_PASSKEY_RELAY_DIR", str(tmp_path / "relay"))
     monkeypatch.setenv(holders.ENV, "memory")
     monkeypatch.setattr(holders, "_selected", None)
     monkeypatch.setattr(holders, "_skipped", {})

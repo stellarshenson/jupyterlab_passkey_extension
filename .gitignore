@@ -150,6 +150,9 @@ junit.xml
 # review screenshots and scratch output
 tmp/
 
+# subagent memory written by the agent harness
+.claude/agent-memory/
+
 # graphify's generated graph
 graphify-out/
 

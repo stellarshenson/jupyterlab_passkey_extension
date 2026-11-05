@@ -6,6 +6,7 @@ the credential it finds on stdout. The vault is the only writer, so `store` and 
 refuse and git ignores the helper for them.
 """
 
+import os
 import sys
 import urllib.parse
 
@@ -141,6 +142,9 @@ def _lookup(attrs):
 
 
 def main(argv=None):
+    # A testing aid: no credential answered, so git uses its next helper or prompts.
+    if os.environ.get("JUPYTERLAB_PASSKEY_GIT_IGNORE_VAULT") == "1":
+        return 0
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) != 1 or argv[0] not in OPERATIONS:
         print(f"usage: {PROGRAM} {'|'.join(OPERATIONS)}", file=sys.stderr)

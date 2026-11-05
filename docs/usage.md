@@ -9,7 +9,8 @@ The Jupyter server holds one encrypted file that the panel, the CLI and Python u
 - **Unlock** - any slot unwraps the root key, which opens the data key, and the recovery passphrase is mandatory
 - **Authenticator code** - the code is a server check that takes no part in encryption, so the file and the unlock password alone decrypt
 - **Passkey with no PRF** - it cannot hold a vault key. It works with a new unlock password of its own: the password decrypts, and the server checks the passkey. The file and that password alone decrypt, with no passkey
-- **File** - `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` (`~/.local/share/...`), mode `0600`, path set by `JLAB_PASSKEY_VAULT`
+- **File** - `$XDG_DATA_HOME/jupyterlab-passkey/vault.json` (`~/.local/share/...`), mode `0600`, path set by `JUPYTERLAB_PASSKEY_VAULT`
+- **Old names** - the old `JLAB_PASSKEY_` names are still read, after the new names
 - **Hostnames** - a passkey opens the vault only from its hostname or a subdomain; on another host unlock with the unlock password and an authenticator code, or the recovery passphrase; Password and passkey works only at the exact address it was added at
 
 ### Configuration
@@ -18,19 +19,19 @@ The four vault policy keys are organisation-controlled: the server administrator
 
 ```json
 {
-  "unlock_minutes": 30,
+  "unlock_minutes": 1,
   "password_min_length": 12,
   "reveal_seconds": 60,
   "rotate_days": 365
 }
 ```
 
-| Setting               | Default | Range     | Effect                                                                                       |
-| --------------------- | ------- | --------- | -------------------------------------------------------------------------------------------- |
-| `unlock_minutes`      | 30      | 1 to 1440 | minutes the server holds the key after an unlock; 30 is the NIST SP 800-63B AAL2 idle limit  |
-| `password_min_length` | 12      | 8 to 128  | fewest characters of an unlock password                                                      |
-| `reveal_seconds`      | 60      | 0 to 3600 | seconds a tab skips the proof after an unlock or a proof in that tab; 0 asks at every reveal |
-| `rotate_days`         | 365     | 0 to 3650 | days a data key serves before an unlock rotates it; 0 turns automatic rotation off           |
+| Setting               | Default | Range     | Effect                                                                                                                      |
+| --------------------- | ------- | --------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `unlock_minutes`      | 1       | 1 to 1440 | minutes the server holds the key after an unlock; the 1-minute default is stricter than the NIST SP 800-63B AAL2 idle limit |
+| `password_min_length` | 12      | 8 to 128  | fewest characters of an unlock password                                                                                     |
+| `reveal_seconds`      | 60      | 0 to 3600 | seconds a tab skips the proof after an unlock or a proof in that tab; 0 asks at every reveal                                |
+| `rotate_days`         | 365     | 0 to 3650 | days a data key serves before an unlock rotates it; 0 turns automatic rotation off                                          |
 
 Only the `sidebar` setting remains in the Settings Editor.
 
@@ -69,6 +70,7 @@ token = Vault().get("github/api")  # unlocks with the passkey (a notification) i
 - **No secret options** - no option holds a secret
 - **One-call unlock** - on a locked vault, `get`, `copy`, `show`, `exec` and `list` take `--recovery --in-browser` or `--password --in-browser`, so the agent supplies the method and the user types the secret; an unlocked vault ignores the flags and asks nothing
 - **Import** - `import FILE` or `import --pass-cli` adds entries
+- **Git helper** - `vault git install` points git at `git-credential-jupyterlab-passkey`; `JUPYTERLAB_PASSKEY_GIT_IGNORE_VAULT=1` makes the helper answer no credential, so git uses its next helper or prompts (a testing aid, not a security control)
 - **Reference** - [cli-reference.md](cli-reference.md#vault) lists every subcommand
 
 ### Where the unlocked key is kept
@@ -84,12 +86,12 @@ While the vault is unlocked the server holds its data key in a key holder - the 
 - **Reports** - each holder reports five properties: never in swap, never in crash dumps, expiry, lock on restart and container isolation
 - **Server copy** - the server also keeps the key in ordinary memory per request, which Python cannot wipe, so the key can be written to swap until reused even after a lock
 - **Debug** - `vault status` and `--debug` show all five properties, and the panel shows three: never in swap, never in crash dumps and lock on restart
-- **Pin** - `JLAB_PASSKEY_VAULT_HOLDER=keyctl|gpg-agent|memory` selects one holder, and a pinned holder that does not work is an error
+- **Pin** - `JUPYTERLAB_PASSKEY_VAULT_HOLDER=keyctl|gpg-agent|memory` selects one holder, and a pinned holder that does not work is an error
 - **Fallback** - the server logs the fallback reason only when it chooses the holder automatically
-- **Before changing** - run `vault lock` before changing the holder, `JLAB_PASSKEY_VAULT` or the vault file, because a key held before a restart can outlive the change until its unlock duration ends
+- **Before changing** - run `vault lock` before changing the holder, `JUPYTERLAB_PASSKEY_VAULT` or the vault file, because a key held before a restart can outlive the change until its unlock duration ends
 
 > [!WARNING]
-> The kernel keyring is per uid and user namespace, not per container. On a host where several containers run as the same uid, allow keyctl only where every user has a distinct uid, or pin `JLAB_PASSKEY_VAULT_HOLDER=gpg-agent`; gpg-agent is isolated only while its socket is not on a home directory the other containers mount, and without `/run/user/<uid>` the socket is in its GnuPG home under `$XDG_STATE_HOME`, and `vault status` then reports it as not isolated.
+> The kernel keyring is per uid and user namespace, not per container. On a host where several containers run as the same uid, allow keyctl only where every user has a distinct uid, or pin `JUPYTERLAB_PASSKEY_VAULT_HOLDER=gpg-agent`; gpg-agent is isolated only while its socket is not on a home directory the other containers mount, and without `/run/user/<uid>` the socket is in its GnuPG home under `$XDG_STATE_HOME`, and `vault status` then reports it as not isolated.
 
 ## Server API
 
@@ -102,7 +104,7 @@ All endpoints are under the server base URL and require Jupyter authentication (
 
 ### The relay contract
 
-- **Directory** - `/dev/shm/jlab-passkey-$(id -u)`, mode `0700`, ownership checked, override `JLAB_PASSKEY_RELAY_DIR`
+- **Directory** - `/dev/shm/jlab-passkey-$(id -u)`, mode `0700`, ownership checked, override `JUPYTERLAB_PASSKEY_RELAY_DIR`
 - **Files** - `<nonce>.json`, `.pass`, `.secret`, `.code`, `.cancel`
 - **Lifecycle** - mode `0600`, written with `mkstemp`-then-`os.replace`
 - **Deletion** - the consumer deletes `.json` and `.pass`, while `.secret` and `.code` are one-shot enforced by the server
@@ -136,7 +138,7 @@ jupyterlab-notify --now --no-auto-close -t info -m "Approve passkey" --action "A
 
 Every endpoint requires Jupyter authentication, and the bridge stores no secret. The vault is the one part that encrypts and stores secrets.
 
-- **Auth and backends** - every endpoint needs a Jupyter token or session, and a secret stages in a keyctl key or a `/dev/shm` `0600` file set by `JLAB_PASSKEY_RELAY_BACKEND=keyctl|shm|auto`
+- **Auth and backends** - every endpoint needs a Jupyter token or session, and a secret stages in a keyctl key or a `/dev/shm` `0600` file set by `JUPYTERLAB_PASSKEY_RELAY_BACKEND=keyctl|shm|auto`
 - **Same-uid exposure** - neither backend isolates a secret from your processes, and keyctl gives no access control
 - **Notification and shm** - a notification contains a nonce, never a secret, and the shm directory must be a real uid-owned directory
 - **Logs and cryptography** - bodies, passphrases and PRFs are never logged, and keyctl payloads are sent on stdin
