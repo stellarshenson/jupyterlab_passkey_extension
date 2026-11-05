@@ -1926,13 +1926,13 @@ The vault sidebar panel in JupyterLab
   - log: 2026-11-03T08:40:49Z @kj amended text "when the server refuses the pair with a 4xx answer other than a wrong code, the panel's line ends with: the entry your authenticator app added is unused - you can delete it in the app; a lost answer and a 5xx answer say nothing about the entry" -> "when the server refuses the pair with a 4xx answer other than a wrong code, the notification ends with: the entry your authenticator app added is unused - you can delete it in the app; a reason too long for both is cut, never this clause; a lost answer and a 5xx answer say nothing about the entry"; reason: the line is now a notification of 140 characters; registerMfa cuts the reason, not the clause
   - log: 2026-11-03T08:40:49Z @kj edited test "jest: registerMfa with a 403 'wrong recovery passphrase' rejects with that message and status; with NoAnswer it rejects with the same error object" -> "jest: registerMfa with a 403 'wrong recovery passphrase' rejects with that message and status; with NoAnswer it rejects with the same error object; a 403 or 404 page line is cut before the clause, the notification 140 characters"
   - log: 2026-11-03T08:40:49Z @kj edited evidence "jest 'the password and authenticator app' registerMfa test: a 403 is passed on with the sentence about the app's unused entry and its status, a lost answer unchanged; build 1.1.38, jest 252" -> "jest 'the password and authenticator app' registerMfa test: a 403 is passed on with the sentence about the app's unused entry and its status, a lost answer unchanged; build 1.1.38, jest 252; jest vault.spec.ts "keeps the app's unused entry whole in a notification after the page's own line for a %i that is not the vault's", 403 and 404; jest 385 of 385, 2026-11-03"; reason: names each test that proves a many-case item
-- [x] `ACC-PANEL-241-CATEGORY-COLLAPSE` **Categories collapse** - MEDIUM; a click on a category header collapses or expands its entries, as in the AI assistants panels: caret in the 14 px column, aria-expanded on the button; every category starts expanded; collapsed category names kept in localStorage, so they survive a reload
-  - evidence: jest 'collapses a category from its header and keeps it collapsed after a reload'; Galata 'a category collapses from its header and stays collapsed after a reload'; header measured equal to the AI panel's (21 px, caret 4 px, label 18 px); jest 259, pytest 475, Galata 41/41, build 1.1.50
+- [-] `ACC-PANEL-241-CATEGORY-COLLAPSE` **Categories collapse** - MEDIUM; a click on a category header collapses or expands its entries, as in the AI assistants panels: caret in the 14 px column, aria-expanded on the button; every category starts expanded; collapsed category names kept in localStorage, so they survive a reload
   - test: jest: click hides the rows, keeps the count and focus, writes localStorage; Galata: collapsed after page reload
   - test-tags: UNIT, E2E
   - mechanism: 2026-10-20T20:12:15Z @kj _fillList renders each header as a button; the collapsed set is loaded from and saved to localStorage key jupyterlab_passkey_extension:vault:collapsed
   - log: 2026-10-20T20:12:15Z @kj added
   - log: 2026-10-20T20:12:23Z @kj closed
+  - log: 2026-11-05T15:46:26Z @kj rejected: superseded by the harmonica: ACC-PANEL-302 to 312 define the bands, the one-open list and the wheel; nothing is stored in localStorage; evidence retired: jest 'collapses a category from its header and keeps it collapsed after a reload'; Galata 'a category collapses from its header and stays collapsed after a reload'; header measured equal to the AI panel's (21 px, caret 4 px, label 18 px); jest 259, pytest 475, Galata 41/41, build 1.1.50
 - [x] `ACC-PANEL-256-USED-AGE` **Used age in the entry list** - HIGH; each key shows last-used age in the AI sessions panel's three grades: under a minute, name and age in the theme's link colour; over seven days or never used, name at 65% opacity; otherwise normal colour; labels now, 5m ago, 3h ago, 4d ago, 2mo ago, 1y ago, never
   - related: DEF-PANEL-41-RECENCY-GRADES
   - evidence: jest 278/278: rows used 30 s, 5 min and 8 d ago and never take recent, neither, stale and stale; Galata 46/46 asserts the never-used row dim at 0.65 then recent after its reveal; lint 0 problems
@@ -2065,6 +2065,74 @@ The vault sidebar panel in JupyterLab
   - log: 2026-11-02T20:45:12Z @kj gaps after amend: list view has no section element (src/vault/panel.ts:1248-1269); row above first section is the filter box when shown, list view only, no line (style/base.css:269-272), otherwise the status row, cog view always, line present (style/base.css:181); widths written 1px (style/base.css:122, 181, 296)
   - log: 2026-11-03T06:06:52Z @kj closed
   - log: 2026-11-03T21:10:27Z @kj edited evidence "jest 368 of 368 and pytest 874 passed, 2026-11-03; vault.spec 'puts each category, the last and a collapsed one included, in its own section'; divider lines written `var(--jp-border-width)` at style/base.css:122, 181, 274, 302; Galata run follows at the final gates" -> "jest 368 of 368 and pytest 874 passed, 2026-11-03; vault.spec 'puts each category, the last and a collapsed one included, in its own section'; divider lines written `var(--jp-border-width)` at style/base.css:122, 181, 274, 302; Galata full suite 54 of 54 at the ship gate, 2026-11-03"
+- [x] `ACC-PANEL-302-BANDS` **every category band stays on screen** - HIGH; every category band stays on screen while the list view is shown; a folded category is its band only and the open category takes the list's height
+  - evidence: Jest 424 and Galata ux11 30 of 30, 2026-11-05: 'opens one category at a time from its band, at the list height'; 'puts each category, the last included, in its own section'; last band bottom 199 inside the list's 200
+  - test: open a vault with three categories, assert each band is visible and only the open category's viewport has height
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-11-05T13:47:23Z @kj added
+  - log: 2026-11-05T15:46:40Z @kj closed
+- [x] `ACC-PANEL-303-OPEN` **one category open at rest** - HIGH; one category is open at rest: the first category with entries, or the category that held focus when the filter changed
+  - evidence: Jest 424, 2026-11-05: 'opens one category at a time from its band, at the list height' and 'ignores the old collapsed-state key and opens the first category with entries'
+  - test: filter to another category, clear the filter, assert the focused category reopens
+  - test-tags: UNIT
+  - log: 2026-11-05T13:47:23Z @kj added
+  - log: 2026-11-05T15:46:40Z @kj closed
+- [x] `ACC-PANEL-304-CLICK` **a band click opens its category** - HIGH; a band click opens its category; the band is a button with aria-expanded and a folded category's viewport carries inert
+  - evidence: Jest 424 and Galata ux11 30 of 30, 2026-11-05: the band test asserts aria-expanded, the inert folded viewport and the heights; Galata clicks the work band and opens it
+  - test: click a folded category's band, assert the aria-expanded states and the viewport heights
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-11-05T13:47:23Z @kj added
+  - log: 2026-11-05T15:46:40Z @kj closed
+- [x] `ACC-PANEL-305-KEYS` **keyboard opens a band** - MEDIUM; a band focused by the keyboard opens its category with Enter or Space, as a native button
+  - evidence: Jest 424, 2026-11-05: the section test asserts each band is a button with aria-expanded, so Enter and Space fire the native click
+  - test: assert the band is a button element with aria-expanded; browsers dispatch the click on Enter and Space
+  - test-tags: UNIT
+  - log: 2026-11-05T13:47:23Z @kj added
+  - log: 2026-11-05T15:46:40Z @kj closed
+- [x] `ACC-PANEL-306-WHEEL` **one global wheel drives the open category** - HIGH; the wheel anywhere over the panel drives the open category, never the one under the pointer; the category takes the list's height before its rows scroll
+  - evidence: Jest 424 and Galata ux11 30 of 30, 2026-11-05: the wheel test drives the focused category from the status row and folds at the last entry; the line-mode delta test moves 48 px
+  - test: wheel over the status row, assert the focused category expands before its rows scroll
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-11-05T13:47:28Z @kj added
+  - log: 2026-11-05T15:46:40Z @kj closed
+- [x] `ACC-PANEL-307-HOLD` **hold or fresh gesture switches** - HIGH; at the last entry, 350 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end
+  - evidence: Jest 424 and Galata ux11 30 of 30, 2026-11-05: 'pins the hold at 350 ms: 300 ms is no fold, past 350 ms folds'; the fresh burst and wide swipe are in the wheel test
+  - test: fake timers: 300 ms of pull does not fold, past 350 ms it does, a fresh burst folds at once
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-11-05T13:47:28Z @kj added
+  - log: 2026-11-05T14:56:56Z @kj amended text "at the last entry, 700 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end" -> "HIGH; at the last entry, 350 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end"
+  - log: 2026-11-05T14:56:56Z @kj edited test "fake timers: 600 ms of pull does not fold, past 700 ms it does, a fresh burst folds at once" -> "fake timers: 300 ms of pull does not fold, past 350 ms it does, a fresh burst folds at once"
+  - log: 2026-11-05T15:46:44Z @kj closed
+- [x] `ACC-PANEL-308-PULL` **pull preview and spring** - MEDIUM; the pull preview eases the neighbour in 3 px per wheel event, capped at 22 px, and springs back after 160 ms idle
+  - evidence: Jest 424, 2026-11-05: the 22 px cap, the 160 ms release and the spring back without moving the rows are three tests with those names
+  - test: send ten pull events, assert 22 px; idle 150 ms and assert it stands, past 160 ms it returns
+  - test-tags: UNIT
+  - log: 2026-11-05T13:47:28Z @kj added
+  - log: 2026-11-05T15:46:44Z @kj closed
+- [x] `ACC-PANEL-309-FOLD` **fold and settle timing** - MEDIUM; the switch folds over 400 ms and a 250 ms settle after it ignores the wheel
+  - evidence: Jest 424, 2026-11-05: the wheel test pins the 400 ms eased fold and the 250 ms settle; the mid-fold banner test asserts the completion relayout
+  - test: fake timers: assert the 400 ms eased fold and that a wheel during the 250 ms settle moves nothing
+  - test-tags: UNIT
+  - log: 2026-11-05T13:47:28Z @kj added
+  - log: 2026-11-05T15:46:44Z @kj closed
+- [x] `ACC-PANEL-310-GUTTER` **the open category owns the scrollbar** - MEDIUM; the open category's rows own the scrollbar at the panel's right edge, and the status row's holder ends level with the rows' right edge
+  - evidence: Jest 424 and Galata ux11 30 of 30, 2026-11-05: 'keeps the status row gutter in one place in every view' stubs the measured scrollbar; the Galata geometry test passes on the same build
+  - test: stub the viewport's scrollbar width, assert --jp-passkey-vault-gutter and the status row's padding
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-11-05T13:47:31Z @kj added
+  - log: 2026-11-05T15:46:44Z @kj closed
+- [x] `ACC-PANEL-311-VIEWS` **other views unchanged** - HIGH; the settings, locked and create views keep their layout and scrolling; the wheel handler changes nothing there and no category state is stored
+  - evidence: Jest 424 and Galata ux11 30 of 30, 2026-11-05: the gutter test covers the settings and locked views; the old-key test proves no category state is stored
+  - test: wheel over the locked and settings views, assert no height change and no category key in localStorage
+  - test-tags: UNIT
+  - log: 2026-11-05T13:47:32Z @kj added
+  - log: 2026-11-05T15:46:44Z @kj closed
+- [x] `ACC-PANEL-312-END-LINE` **the last band's line is not clipped** - MEDIUM; under the harmonica the last category's section ends with its border line inside the list, so the divider paints above the panel's bottom edge and the last band is not cut
+  - evidence: Galata ux11 30 of 30, 2026-11-05: the exact containment passes with the last band bottom at 199 inside the list's 200; the reverted measurement fails at 201
+  - test: Galata: without a tolerance, the last band's bottom stays inside the list's box, so the section line below it is painted
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-11-05T14:56:58Z @kj added
+  - log: 2026-11-05T15:46:44Z @kj closed
 
 ## Vault settings `CONFIG`
 

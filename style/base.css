@@ -172,12 +172,31 @@
   fill: var(--jp-inverse-layout-color3);
 }
 
+/* A probe that always shows a classic scrollbar: its width is the status row's padding. */
+.jp-PasskeyVaultPanel-gutterProbe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50px;
+  height: 50px;
+  overflow-y: scroll;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .jp-PasskeyVaultPanel-status {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
   gap: 6px;
   padding: 4px var(--jp-passkey-vault-inset);
+
+  /* The status row keeps one place in every view: its right padding is the inset plus
+     the width a classic scrollbar takes, measured from the hidden probe that always
+     shows one, never from the section on display. */
+  padding-right: calc(
+    var(--jp-passkey-vault-inset) + var(--jp-passkey-vault-gutter, 0px)
+  );
   border-bottom: var(--jp-border-width) solid var(--jp-border-color3);
 }
 
@@ -237,6 +256,39 @@
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
+}
+
+/*
+ * The harmonica list (design system, Harmonica navigation): the body fills the
+ * panel and the open category's viewport owns the scrollbar at the panel's right
+ * edge. Every band stays on screen.
+ */
+.jp-PasskeyVaultPanel.jp-mod-harmonica > .jp-PasskeyVaultPanel-body {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.jp-PasskeyVaultPanel.jp-mod-harmonica
+  > .jp-PasskeyVaultPanel-body
+  > .jp-PasskeyVaultPanel-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* A panel too short for the bands: the list scrolls, so no band is hidden. */
+.jp-PasskeyVaultPanel.jp-mod-harmonica
+  > .jp-PasskeyVaultPanel-body
+  > .jp-PasskeyVaultPanel-list.jp-mod-short {
+  overflow-y: auto;
+}
+
+.jp-PasskeyVaultPanel-viewport {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: hidden auto;
 }
 
 .jp-PasskeyVaultPanel-empty {
@@ -300,6 +352,14 @@
   display: flex;
   flex-direction: column;
   border-bottom: var(--jp-border-width) solid var(--jp-border-color3);
+}
+
+/* One category: its band, then the viewport that scrolls its rows. */
+.jp-PasskeyVaultPanel.jp-mod-harmonica
+  .jp-PasskeyVaultPanel-list
+  > .jp-PasskeyVaultPanel-section {
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 /* A band, as the section headers of the AI assistants panels and the file browser. */

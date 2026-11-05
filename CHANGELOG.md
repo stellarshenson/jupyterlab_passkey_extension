@@ -2,6 +2,23 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.5] - 2026-11-05
+
+### Added
+
+- The vault list runs the harmonica: every category header stays on screen, the open category takes the list, and the wheel anywhere over the panel drives it; at the last entry a 3 px pull previews the next category up to 22 px and springs back after 160 ms, and 350 ms of held pull or a fresh gesture after a 220 ms gap folds to it over 400 ms with a 250 ms settle
+- A click on a category header opens that category
+
+### Changed
+
+- The usage guide and the design document describe the harmonica; the design document no longer describes the removed collapse accordion
+
+### Fixed
+
+- The last category's divider is painted: the free space measures each section less its viewport, so the sections fit the list and no band is clipped
+- The harmonica reads Firefox line-mode wheel deltas as lines, not pixels, converting the delta once per event
+- A banner line appearing or expiring no longer cancels a fold, and a fold clamps to the list's free space so no band is clipped mid-fold
+
 ## [1.2.4] - 2026-11-05
 
 ### Added

@@ -233,29 +233,24 @@ const vaultIcon = new LabIcon({
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" viewBox="0 0 24 23"><path class="jp-icon3" fill="#616161" d="M12 17a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h1V6a5 5 0 0 1 5-5 5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3"/></svg>'
 });
 
-/** The localStorage key of the categories the user collapsed in the entry list. */
-const COLLAPSED_KEY =
-  '@stellarshenson/jupyterlab-passkey-extension:vault:collapsed';
+/** The harmonica's values, from the design system's Harmonica navigation chapter. */
+const EXPAND_STEP = 160; // px of free space one wheel event may take
+const HOLD_MS = 350; // the held pull before a switch
+const GESTURE_GAP_MS = 220; // a pause that starts a new gesture
+const PULL_STEP = 3; // px the neighbour eases in per event
+const PULL_MAX = 22; // the cap of the pull preview
+const PULL_RELEASE_MS = 160; // idle before the spring starts
+const FOLD_MS = 400; // the fold from one category to the next
+const SETTLE_MS = 250; // wheel ignored after a switch
+const WHEEL_LINE_PX = 16; // px in one line-mode wheel delta
 
-function loadCollapsed(): Set<string> {
-  try {
-    const parsed = JSON.parse(
-      window.localStorage.getItem(COLLAPSED_KEY) ?? '[]'
-    );
-    return new Set(
-      Array.isArray(parsed) ? parsed.filter(v => typeof v === 'string') : []
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-function saveCollapsed(collapsed: Set<string>): void {
-  try {
-    window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed]));
-  } catch {
-    // Storage blocked or full: the state lasts until the page reloads.
-  }
+/** One category of the main list: its band, and the viewport that scrolls its rows. */
+interface ICategory {
+  category: string;
+  section: HTMLDivElement;
+  header: HTMLButtonElement;
+  caret: HTMLSpanElement;
+  viewport: HTMLDivElement;
 }
 
 /**
@@ -320,6 +315,9 @@ export class VaultPanel extends Widget {
     this._banner = el('div', `${C}-banner`);
     this._banner.setAttribute('role', 'status');
     this._body = el('div', `${C}-body`);
+    // The status row's padding is measured from this probe, in every view.
+    this._gutterProbe = el('div', `${C}-gutterProbe`);
+    this._gutterProbe.setAttribute('aria-hidden', 'true');
 
     this._filter = el('input', `${C}-filterInput`);
     this._filter.type = 'search';
@@ -334,7 +332,16 @@ export class VaultPanel extends Widget {
 
     // The banner is below the body: a line that appears or expires shrinks the body
     // from the bottom and never moves the entries under the pointer.
-    this.node.append(header, this._statusLine, this._body, this._banner);
+    this.node.append(
+      header,
+      this._statusLine,
+      this._body,
+      this._gutterProbe,
+      this._banner
+    );
+    // The harmonica's gesture is global: the wheel anywhere over the panel drives the
+    // category in focus, never the one under the pointer.
+    this.node.addEventListener('wheel', this._onWheel, { passive: false });
     this._render();
   }
 
@@ -384,6 +391,7 @@ export class VaultPanel extends Widget {
 
   protected onBeforeHide(msg: Message): void {
     this._stopTimer();
+    this._stopHarmonica();
     // A panel shown again starts in its main view, not in the settings it was left in.
     if (this._view === 'settings') {
       this._view = 'main';
@@ -398,6 +406,17 @@ export class VaultPanel extends Widget {
   /** Moved to the other sidebar, the panel is detached with no hide message. */
   protected onBeforeDetach(msg: Message): void {
     this._stopTimer();
+    this._stopHarmonica();
+  }
+
+  /** A splitter drag changes the free space and the scrollbar without a render. */
+  protected onResize(msg: Widget.ResizeMessage): void {
+    if (this._sections.length > 0) {
+      this._stopHarmonica();
+      this._layoutHeights();
+    } else {
+      this._syncGutter();
+    }
   }
 
   // -- state reads ----------------------------------------------------------
@@ -1010,6 +1029,11 @@ export class VaultPanel extends Widget {
 
   private _render(): void {
     const focus = this._focusKey();
+    // A redraw rebuilds the list: a fold or a spring has nothing left to act on.
+    this._stopHarmonica();
+    this._sections = [];
+    this._baseHeights = [];
+    this.node.classList.remove('jp-mod-harmonica');
     // First: a countdown that ran out marks the state locked, and the body follows.
     this._renderStatus();
     const s = this._status;
@@ -1052,6 +1076,19 @@ export class VaultPanel extends Widget {
       }
     }
     this._restoreFocus(focus);
+    this._syncGutter();
+  }
+
+  /**
+   * The scrollbar width the status row outside takes as extra right padding. It comes
+   * from the probe that always shows a scrollbar, so the row keeps one place in every
+   * view and section.
+   */
+  private _syncGutter(): void {
+    // Measured: an overlay scrollbar takes no width, so a fixed value would be wrong.
+    const gutter =
+      this._gutterProbe.offsetWidth - this._gutterProbe.clientWidth;
+    this.node.style.setProperty('--jp-passkey-vault-gutter', `${gutter}px`);
   }
 
   private _renderBanner(): void {
@@ -1082,6 +1119,16 @@ export class VaultPanel extends Widget {
       const line = el('div', `${C}-message`, this._readError);
       line.dataset.kind = 'error';
       this._banner.appendChild(line);
+    }
+    if (this._sections.length > 0) {
+      // The banner sits below the body that holds the list, so a line appearing or
+      // expiring changes the list's height; the fold's next frame rewrites both
+      // heights and its last frame re-lays out, so a mid-fold change is skipped here
+      // to keep the entering band from blanking its viewport and flipping its
+      // aria-expanded for one frame.
+      if (!this._folding) {
+        this._layoutHeights();
+      }
     }
   }
 
@@ -1215,9 +1262,14 @@ export class VaultPanel extends Widget {
     const focus = this._focusKey();
     this._fillList();
     this._restoreFocus(focus);
+    // Filtering can drop the list below the overflow threshold and remove the scrollbar.
+    this._syncGutter();
   }
 
   private _fillList(): void {
+    this._stopHarmonica();
+    this._sections = [];
+    this._baseHeights = [];
     const query = this._filter.value.trim().toLowerCase();
     const shown = this._entries.filter(
       e =>
@@ -1226,6 +1278,8 @@ export class VaultPanel extends Widget {
     );
     this._list.replaceChildren();
     if (shown.length === 0) {
+      this._openCategory = null;
+      this.node.classList.remove('jp-mod-harmonica');
       this._list.appendChild(
         el(
           'p',
@@ -1237,6 +1291,7 @@ export class VaultPanel extends Widget {
               : 'No entries yet.'
         )
       );
+      this._syncGutter();
       return;
     }
     const groups = new Map<string, IEntry[]>();
@@ -1244,41 +1299,364 @@ export class VaultPanel extends Widget {
       const key = e.category || 'Uncategorised';
       groups.set(key, [...(groups.get(key) ?? []), e]);
     }
-    for (const category of [...groups.keys()].sort((a, b) =>
-      a.localeCompare(b)
-    )) {
+    const categories = [...groups.keys()].sort((a, b) => a.localeCompare(b));
+    // The open category stays open after a filter change while it has matches;
+    // otherwise the first with matches opens.
+    const focus = Math.max(0, categories.indexOf(this._openCategory ?? ''));
+    this._focus = focus;
+    this._openCategory = categories[focus];
+    categories.forEach((category, i) => {
       const group = groups.get(category) as IEntry[];
-      const expanded = !this._collapsed.has(category);
       // A section, as in the cog view, so the category ends with the divider line.
       const section = el('div', `${C}-section`);
-      // A header collapses its category, as in the AI assistants panels.
+      // A band: the same button with aria-expanded as the AI assistants panels' headers.
       const header = el('button', `${C}-sectionHeader`);
       header.type = 'button';
       header.dataset.focusKey = `category:${category}`;
-      header.setAttribute('aria-expanded', String(expanded));
-      const caret = el('span', `${C}-caret`, expanded ? '▾' : '▸');
+      const caret = el('span', `${C}-caret`);
       // Decorative - the state it draws is already on the header's aria-expanded.
       caret.setAttribute('aria-hidden', 'true');
       header.append(
         caret,
         el('span', `${C}-sectionLabel`, `${category} (${group.length})`)
       );
-      header.addEventListener('click', () => {
-        if (!this._collapsed.delete(category)) {
-          this._collapsed.add(category);
-        }
-        saveCollapsed(this._collapsed);
-        this._renderList();
-      });
-      section.appendChild(header);
-      if (expanded) {
-        for (const e of group) {
-          section.appendChild(this._row(e));
+      header.addEventListener('click', () => this._openSection(i));
+      // The viewport owns the scrollbar at the panel's right edge; the rows scroll
+      // inside it. Collapsed viewports keep their rows for the pull preview.
+      const viewport = el('div', `${C}-viewport`);
+      for (const e of group) {
+        viewport.appendChild(this._row(e));
+      }
+      section.append(header, viewport);
+      this._list.appendChild(section);
+      this._sections.push({ category, section, header, caret, viewport });
+    });
+    this.node.classList.add('jp-mod-harmonica');
+    this._layoutHeights();
+  }
+
+  // -- harmonica ------------------------------------------------------------
+
+  /** One category takes the list's height; the pull is a render offset on top of it. */
+  private _layoutHeights(): void {
+    const free = this._freeSpace();
+    this._baseHeights = this._sections.map((_, i) =>
+      i === this._focus ? free : 0
+    );
+    this._apply();
+    this._syncGutter();
+  }
+
+  /** The rows' space: the list less each section's band and divider, clamped at 0. */
+  private _freeSpace(): number {
+    let bands = 0;
+    for (const s of this._sections) {
+      bands += s.section.offsetHeight - s.viewport.offsetHeight;
+    }
+    return Math.max(0, this._list.clientHeight - bands);
+  }
+
+  /** Draw the base heights, with the pull as an offset on its two boundary sections. */
+  private _apply(): void {
+    const short = this._freeSpace() <= 0;
+    this._list.classList.toggle('jp-mod-short', short);
+    this._sections.forEach((s, i) => {
+      // Boundary tests read the base height, never the rendered one.
+      const base = this._baseHeights[i] ?? 0;
+      let extra = 0;
+      if (this._pull.amount > 0) {
+        if (i === this._pull.from) {
+          extra = -this._pull.amount;
+        } else if (i === this._pull.to) {
+          extra = this._pull.amount;
         }
       }
-      this._list.appendChild(section);
+      // A panel too short for the bands: the open category keeps its natural height
+      // and the list scrolls, so no band is hidden.
+      s.viewport.style.height =
+        short && i === this._focus ? '' : `${Math.max(0, base + extra)}px`;
+      // A pull shows a folded neighbour without opening it: openness is the base height.
+      const open = short ? i === this._focus : base > 0;
+      s.header.setAttribute('aria-expanded', String(open));
+      s.caret.textContent = open ? '▾' : '▸';
+      // Collapsed rows stay rendered for the pull preview but leave the tab order.
+      if (open) {
+        s.viewport.removeAttribute('inert');
+      } else {
+        s.viewport.setAttribute('inert', '');
+      }
+    });
+  }
+
+  /** Open a category from its band: every other one folds to its band at once. */
+  private _openSection(i: number): void {
+    if (this._folding) {
+      return;
+    }
+    this._stopHarmonica();
+    this._focus = i;
+    this._openCategory = this._sections[i].category;
+    this._layoutHeights();
+    this._sections[i].viewport.scrollTop = 0;
+  }
+
+  /** The focused category takes up to `step` px more, from the other open sections. */
+  private _grow(step: number): boolean {
+    let want = Math.min(
+      step,
+      this._freeSpace() - (this._baseHeights[this._focus] ?? 0)
+    );
+    if (want <= 0) {
+      return false;
+    }
+    const others = this._baseHeights
+      .map((h, i) => (i !== this._focus && h > 0 ? i : -1))
+      .filter(i => i >= 0);
+    const total = others.reduce((sum, i) => sum + this._baseHeights[i], 0);
+    if (total <= 0) {
+      return false;
+    }
+    want = Math.min(want, total);
+    let left = want;
+    others.forEach((i, n) => {
+      const take = Math.min(
+        n === others.length - 1
+          ? left
+          : Math.round((want * this._baseHeights[i]) / total),
+        this._baseHeights[i],
+        left
+      );
+      this._baseHeights[i] -= take;
+      left -= take;
+    });
+    this._baseHeights[this._focus] += want - left;
+    this._apply();
+    return true;
+  }
+
+  /** Ease the boundary neighbour in by a step, and spring back when the wheel stops. */
+  private _pullTo(from: number, to: number): void {
+    this._pull.from = from;
+    this._pull.to = to;
+    this._pull.amount = Math.min(PULL_MAX, this._pull.amount + PULL_STEP);
+    this._apply();
+    if (this._pullTimer !== null) {
+      window.clearTimeout(this._pullTimer);
+    }
+    this._pullTimer = window.setTimeout(
+      () => this._springBack(),
+      PULL_RELEASE_MS
+    );
+  }
+
+  private _clearPull(): void {
+    if (this._pullTimer !== null) {
+      window.clearTimeout(this._pullTimer);
+      this._pullTimer = null;
+    }
+    if (this._pull.amount > 0) {
+      this._pull = { from: -1, to: -1, amount: 0 };
+      this._apply();
     }
   }
+
+  /** The damped spring of the pull preview; it moves no scroll position. */
+  private _springBack(): void {
+    this._pullTimer = null;
+    const from = this._pull.amount;
+    if (from <= 0 || this._folding) {
+      return;
+    }
+    let start: number | null = null;
+    const frame = (t: number): void => {
+      if (start === null) {
+        start = t;
+      }
+      const x = (t - start) / 1000;
+      const a = from * Math.exp(-7 * x) * Math.cos(16 * x);
+      if (Math.abs(a) < 0.4 || x > 0.7) {
+        this._pull = { from: -1, to: -1, amount: 0 };
+        this._frame = null;
+        this._apply();
+        return;
+      }
+      this._pull.amount = Math.abs(a);
+      this._apply();
+      this._frame = window.requestAnimationFrame(frame);
+    };
+    this._frame = window.requestAnimationFrame(frame);
+  }
+
+  /** Fold `from` into its band while `to` opens over FOLD_MS, then settle. */
+  private _foldInto(to: number, dir: number): void {
+    if (to < 0 || to >= this._sections.length) {
+      return;
+    }
+    this._folding = true;
+    const from = this._focus;
+    const total = this._baseHeights[from] ?? 0;
+    let start: number | null = null;
+    const frame = (t: number): void => {
+      if (start === null) {
+        start = t;
+      }
+      const p = Math.min(1, (t - start) / FOLD_MS);
+      const e = 1 - Math.pow(1 - p, 3);
+      const span = Math.min(total, this._freeSpace());
+      this._baseHeights[from] = Math.round(span * (1 - e));
+      this._baseHeights[to] = Math.round(span * e);
+      this._apply();
+      // The last rows stay in view through the fold: the leaving viewport pins to
+      // its bottom; the entering one to its top downward, its bottom upward.
+      this._sections[from].viewport.scrollTop =
+        this._sections[from].viewport.scrollHeight;
+      this._sections[to].viewport.scrollTop =
+        dir > 0 ? 0 : this._sections[to].viewport.scrollHeight;
+      if (p < 1) {
+        this._frame = window.requestAnimationFrame(frame);
+        return;
+      }
+      this._focus = to;
+      this._openCategory = this._sections[to].category;
+      this._hold = null;
+      this._armedSwitch = null;
+      this._folding = false;
+      this._frame = null;
+      this._settleUntil = Date.now() + SETTLE_MS;
+      this._layoutHeights();
+    };
+    this._frame = window.requestAnimationFrame(frame);
+  }
+
+  /** The next category with rows in a direction, or -1. */
+  private _openFrom(i: number, dir: number): number {
+    for (let j = i; j >= 0 && j < this._sections.length; j += dir) {
+      if ((this._baseHeights[j] ?? 0) > 0) {
+        return j;
+      }
+    }
+    return -1;
+  }
+
+  /** Stop a fold or a spring and drop the pull; the next render rebuilds the list. */
+  private _stopHarmonica(): void {
+    if (this._frame !== null) {
+      window.cancelAnimationFrame(this._frame);
+      this._frame = null;
+    }
+    if (this._pullTimer !== null) {
+      window.clearTimeout(this._pullTimer);
+      this._pullTimer = null;
+    }
+    this._folding = false;
+    this._hold = null;
+    this._armedSwitch = null;
+    this._pull = { from: -1, to: -1, amount: 0 };
+  }
+
+  /**
+   * The harmonica's one gesture: the wheel anywhere over the panel drives the category
+   * in focus - expand, scroll, pull, then fold. Other views keep their own scrolling.
+   */
+  private readonly _onWheel = (e: WheelEvent): void => {
+    if (
+      this._view !== 'main' ||
+      !this._status?.unlocked ||
+      this._sections.length === 0
+    ) {
+      return;
+    }
+    if (!e.deltaY) {
+      return;
+    }
+    const now = Date.now();
+    if (this._folding || now < this._settleUntil) {
+      // A fold, and the settle after it, swallows the carried momentum.
+      e.preventDefault();
+      return;
+    }
+    if (this._freeSpace() <= 0) {
+      // The bands alone do not fit: the list scrolls natively, as before.
+      return;
+    }
+    // A gap before this event means a new gesture, not the tail of the last one.
+    const newBurst = now - this._lastWheel > GESTURE_GAP_MS;
+    this._lastWheel = now;
+    const dir = e.deltaY > 0 ? 1 : -1;
+    e.preventDefault();
+    // Firefox mouse wheels report lines, not pixels; the native scroll is already off.
+    const dy =
+      e.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? e.deltaY * WHEEL_LINE_PX
+        : e.deltaY;
+    let i = this._focus;
+    if ((this._baseHeights[i] ?? 0) === 0) {
+      i = this._openFrom(i, dir);
+      if (i < 0) {
+        return;
+      }
+      this._focus = i;
+    }
+    const step = Math.min(Math.abs(dy) || 100, EXPAND_STEP);
+    // 1. The focused category takes the whole list first.
+    if (this._grow(step)) {
+      this._hold = null;
+      this._armedSwitch = null;
+      this._clearPull();
+      return;
+    }
+    // 2. Then its rows scroll.
+    const viewport = this._sections[i].viewport;
+    const base = this._baseHeights[i] ?? 0;
+    const maxTop = viewport.scrollHeight - base;
+    const canScroll =
+      base > 12 &&
+      (dir > 0 ? viewport.scrollTop < maxTop - 1 : viewport.scrollTop > 1);
+    if (canScroll) {
+      this._hold = null;
+      this._armedSwitch = null;
+      this._clearPull();
+      viewport.scrollTop += dy;
+      return;
+    }
+    // 3. At the end of the rows the neighbour eases in, so the gesture shows what it
+    // pulls on. A hold switches, or a fresh gesture after stopping: a wide swipe
+    // that reaches the end stops there.
+    const to = i + dir;
+    if (to < 0 || to >= this._sections.length) {
+      this._clearPull();
+      return;
+    }
+    this._pullTo(i, to);
+    if (dir < 0) {
+      this._sections[to].viewport.scrollTop =
+        this._sections[to].viewport.scrollHeight;
+    }
+    if (
+      this._armedSwitch &&
+      this._armedSwitch.dir === dir &&
+      this._armedSwitch.i === i &&
+      newBurst
+    ) {
+      this._armedSwitch = null;
+      this._hold = null;
+      this._clearPull();
+      this._foldInto(to, dir);
+      return;
+    }
+    if (!this._hold || this._hold.dir !== dir || this._hold.i !== i) {
+      this._hold = { dir, i, since: now };
+      this._armedSwitch = { dir, i };
+      return;
+    }
+    if (now - this._hold.since < HOLD_MS) {
+      return;
+    }
+    this._armedSwitch = null;
+    this._hold = null;
+    this._clearPull();
+    this._foldInto(to, dir);
+  };
 
   /** A row is the entry's name, username and last-used age; a click or Enter opens its popup. */
   private _row(e: IEntry): HTMLElement {
@@ -1602,6 +1980,7 @@ export class VaultPanel extends Widget {
   private readonly _statusLine: HTMLDivElement;
   private readonly _banner: HTMLDivElement;
   private readonly _body: HTMLDivElement;
+  private readonly _gutterProbe: HTMLDivElement;
   private readonly _filter: HTMLInputElement;
   private readonly _list: HTMLDivElement;
   private _status: IStatus | null = null;
@@ -1609,7 +1988,20 @@ export class VaultPanel extends Widget {
   private _entries: IEntry[] = [];
   private _view: 'main' | 'settings' = 'main';
   private _filterShown = false;
-  private readonly _collapsed = loadCollapsed();
+  /** The category open at rest; a filter change keeps it while it has matches. */
+  private _openCategory: string | null = null;
+  private _sections: ICategory[] = [];
+  private _baseHeights: number[] = [];
+  private _focus = 0;
+  /** The pull preview: an offset on the two boundary sections, never a base height. */
+  private _pull = { from: -1, to: -1, amount: 0 };
+  private _pullTimer: number | null = null;
+  private _hold: { dir: number; i: number; since: number } | null = null;
+  private _armedSwitch: { dir: number; i: number } | null = null;
+  private _lastWheel = 0;
+  private _folding = false;
+  private _settleUntil = 0;
+  private _frame: number | null = null;
   private _armed: string | null = null;
   private _bannerShown = '';
   private _entriesRead = true;

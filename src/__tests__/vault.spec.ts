@@ -435,6 +435,59 @@ function openFilter(panel: VaultPanel): HTMLInputElement {
   ) as HTMLInputElement;
 }
 
+/** Stub the harmonica's geometry (a 200 px list, a 22 px section) and lay it out. */
+function harmonica(panel: VaultPanel): void {
+  const list = panel.node.querySelector(
+    '.jp-PasskeyVaultPanel-list'
+  ) as HTMLElement;
+  Object.defineProperty(list, 'clientHeight', {
+    value: 200,
+    configurable: true
+  });
+  for (const section of Array.from(
+    panel.node.querySelectorAll<HTMLElement>('.jp-PasskeyVaultPanel-section')
+  )) {
+    // Band 21 plus the 1 px divider; the viewport stays jsdom's 0.
+    Object.defineProperty(section, 'offsetHeight', {
+      value: 22,
+      configurable: true
+    });
+  }
+  MessageLoop.sendMessage(panel, Widget.ResizeMessage.UnknownSize);
+}
+
+/** The list's category bands. */
+function bands(panel: VaultPanel): HTMLButtonElement[] {
+  return Array.from(
+    panel.node.querySelectorAll<HTMLButtonElement>(
+      'button.jp-PasskeyVaultPanel-sectionHeader'
+    )
+  );
+}
+
+/** The list's scrolling category viewports. */
+function viewports(panel: VaultPanel): HTMLElement[] {
+  return Array.from(
+    panel.node.querySelectorAll<HTMLElement>('.jp-PasskeyVaultPanel-viewport')
+  );
+}
+
+/** A wheel event over the panel, as the harmonica's global gesture sees it. */
+function wheel(
+  panel: VaultPanel,
+  deltaY: number,
+  deltaMode: number = WheelEvent.DOM_DELTA_PIXEL
+): WheelEvent {
+  const event = new WheelEvent('wheel', {
+    deltaY,
+    deltaMode,
+    cancelable: true,
+    bubbles: true
+  });
+  panel.node.dispatchEvent(event);
+  return event;
+}
+
 const flush = () => new Promise(r => setTimeout(r, 0));
 
 /** The banner's lines, each as its colour and its text. */
@@ -1576,6 +1629,56 @@ describe('VaultPanel', () => {
     ).toContain('jp-mod-active');
   });
 
+  it('keeps the status row gutter in one place in every view', async () => {
+    const panel = await panelWith(fakeApi());
+    const width = (node: HTMLElement, offset: number, client: number) => {
+      Object.defineProperty(node, 'offsetWidth', {
+        value: offset,
+        configurable: true
+      });
+      Object.defineProperty(node, 'clientWidth', {
+        value: client,
+        configurable: true
+      });
+    };
+    const probe = panel.node.querySelector(
+      '.jp-PasskeyVaultPanel-gutterProbe'
+    ) as HTMLElement;
+    const viewport = panel.node.querySelector(
+      '.jp-PasskeyVaultPanel-viewport'
+    ) as HTMLElement;
+    // The probe always shows a classic scrollbar: 17px.
+    width(probe, 447, 430);
+    // The open category scrolls: its own scrollbar is not the one the row takes.
+    width(viewport, 447, 430);
+    MessageLoop.sendMessage(panel, Widget.ResizeMessage.UnknownSize);
+    expect(panel.node.style.getPropertyValue('--jp-passkey-vault-gutter')).toBe(
+      '17px'
+    );
+    // A category that does not scroll takes the same width.
+    width(viewport, 447, 447);
+    MessageLoop.sendMessage(panel, Widget.ResizeMessage.UnknownSize);
+    expect(panel.node.style.getPropertyValue('--jp-passkey-vault-gutter')).toBe(
+      '17px'
+    );
+    // The settings view takes it too: the body's scrollbar is not the row's.
+    (
+      panel.node.querySelector(
+        'button[title="Vault settings and security"]'
+      ) as HTMLElement
+    ).click();
+    MessageLoop.sendMessage(panel, Widget.ResizeMessage.UnknownSize);
+    expect(panel.node.style.getPropertyValue('--jp-passkey-vault-gutter')).toBe(
+      '17px'
+    );
+    // An overlay scrollbar takes no width.
+    width(probe, 447, 447);
+    MessageLoop.sendMessage(panel, Widget.ResizeMessage.UnknownSize);
+    expect(panel.node.style.getPropertyValue('--jp-passkey-vault-gutter')).toBe(
+      '0px'
+    );
+  });
+
   it("says when the extension's own code holds the key, and why, in the banner and the Key holder tooltip", async () => {
     const s = status();
     s.holder = {
@@ -1631,6 +1734,11 @@ describe('VaultPanel', () => {
 
   it('groups entries by category and filters them as the user types', async () => {
     const panel = await panelWith(fakeApi());
+    // The first category with entries opens; the other stays as its band.
+    expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+      'true',
+      'false'
+    ]);
     const headers = Array.from(
       panel.node.querySelectorAll('.jp-PasskeyVaultPanel-sectionLabel')
     ).map(h => h.textContent);
@@ -1653,6 +1761,10 @@ describe('VaultPanel', () => {
       panel.node.querySelectorAll('.jp-PasskeyVaultPanel-rowName')
     ).map(n => n.textContent);
     expect(names).toEqual(['gitlab/api']);
+    // The open category has no match, so the category with matches opens in its place.
+    expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+      'true'
+    ]);
     // Hiding the field clears the filter: no filter the user cannot see narrows the rows.
     toggle.click();
     expect(panel.node.querySelector('input')).toBeNull();
@@ -1660,6 +1772,11 @@ describe('VaultPanel', () => {
     expect(
       panel.node.querySelectorAll('.jp-PasskeyVaultPanel-rowName')
     ).toHaveLength(3);
+    // The category that stayed open keeps its place after the filter is gone.
+    expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+      'false',
+      'true'
+    ]);
     expect(openFilter(panel).value).toBe('');
     // The button belongs to the entry list: out of the list it stays in place, disabled.
     (
@@ -2540,83 +2657,365 @@ describe('VaultPanel', () => {
     expect(headers).toEqual(['banking (1)', 'Uncategorised (1)', 'Work (1)']);
   });
 
-  it('collapses a category from its header and keeps it collapsed after a reload', async () => {
-    const header = (panel: VaultPanel, category: string) =>
-      Array.from(
-        panel.node.querySelectorAll<HTMLButtonElement>(
-          'button.jp-PasskeyVaultPanel-sectionHeader'
-        )
-      ).find(h => h.textContent?.includes(category)) as HTMLButtonElement;
-    const names = (panel: VaultPanel) =>
-      Array.from(
-        panel.node.querySelectorAll('.jp-PasskeyVaultPanel-rowName')
-      ).map(n => n.textContent);
+  it('opens one category at a time from its band, at the list height', async () => {
     const panel = await panelWith(fakeApi());
-    expect(header(panel, 'infra').getAttribute('aria-expanded')).toBe('true');
-    expect(header(panel, 'infra').textContent).toBe('▾infra (2)');
-    header(panel, 'infra').focus();
-    header(panel, 'infra').click();
-    // The header stays, with its count; the rows go, and the focus stays on it.
-    expect(header(panel, 'infra').getAttribute('aria-expanded')).toBe('false');
-    expect(header(panel, 'infra').textContent).toBe('▸infra (2)');
-    expect(names(panel)).toEqual(['nas/ugos']);
-    expect(document.activeElement).toBe(header(panel, 'infra'));
-    expect(
-      window.localStorage.getItem(
-        '@stellarshenson/jupyterlab-passkey-extension:vault:collapsed'
-      )
-    ).toBe('["infra"]');
-    // A panel built after a reload reads the state back.
-    panel.dispose();
-    const again = await panelWith(fakeApi());
-    expect(header(again, 'infra').getAttribute('aria-expanded')).toBe('false');
-    expect(names(again)).toEqual(['nas/ugos']);
-    header(again, 'infra').click();
-    expect(names(again)).toEqual(['nas/ugos', 'github/api', 'gitlab/api']);
-    expect(
-      window.localStorage.getItem(
-        '@stellarshenson/jupyterlab-passkey-extension:vault:collapsed'
-      )
-    ).toBe('[]');
-  });
-
-  it('puts each category, the last and a collapsed one included, in its own section', async () => {
-    // A section ends with the divider line; its header and rows are inside it.
-    const sections = (panel: VaultPanel) =>
-      Array.from(
-        panel.node.querySelectorAll(
-          '.jp-PasskeyVaultPanel-list > .jp-PasskeyVaultPanel-section'
-        )
-      ).map(section =>
-        Array.from(section.children).map(child =>
-          child.classList.contains('jp-PasskeyVaultPanel-sectionHeader')
-            ? child.querySelector('.jp-PasskeyVaultPanel-sectionLabel')
-                ?.textContent
-            : child.querySelector('.jp-PasskeyVaultPanel-rowName')?.textContent
-        )
-      );
-    const panel = await panelWith(fakeApi());
-    expect(sections(panel)).toEqual([
-      ['home (1)', 'nas/ugos'],
-      ['infra (2)', 'github/api', 'gitlab/api']
+    harmonica(panel);
+    // The first category with entries opens; every other one is its band only.
+    expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+      'true',
+      'false'
     ]);
-    (
-      panel.node.querySelectorAll(
-        'button.jp-PasskeyVaultPanel-sectionHeader'
-      )[1] as HTMLButtonElement
-    ).click();
-    expect(sections(panel)).toEqual([['home (1)', 'nas/ugos'], ['infra (2)']]);
+    expect(viewports(panel).map(v => v.style.height)).toEqual(['156px', '0px']);
+    // A folded category keeps its rows for the pull preview but leaves the tab order.
+    expect(viewports(panel)[0].hasAttribute('inert')).toBe(false);
+    expect(viewports(panel)[1].hasAttribute('inert')).toBe(true);
+    bands(panel)[1].focus();
+    bands(panel)[1].click();
+    expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+      'false',
+      'true'
+    ]);
+    expect(viewports(panel).map(v => v.style.height)).toEqual(['0px', '156px']);
+    expect(viewports(panel)[0].hasAttribute('inert')).toBe(true);
+    expect(viewports(panel)[1].hasAttribute('inert')).toBe(false);
+    // The click keeps focus on the band it opened.
+    expect(document.activeElement).toBe(bands(panel)[1]);
   });
 
-  it('shows every category expanded when the stored state is unreadable', async () => {
+  it('re-lays out the harmonica when a banner line expires and frees the list', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = new VaultPanel({
+        api: fakeApi(),
+        openSettings: jest.fn(),
+        host: HOST
+      });
+      Widget.attach(panel, document.body);
+      MessageLoop.sendMessage(panel, Widget.Msg.AfterShow);
+      await jest.advanceTimersByTimeAsync(0);
+      harmonica(panel);
+      const list = panel.node.querySelector(
+        '.jp-PasskeyVaultPanel-list'
+      ) as HTMLElement;
+      // A line stands in the banner, which takes 26 px of the list.
+      (panel as any)._message = { text: 'Data key rotated', at: Date.now() };
+      Object.defineProperty(list, 'clientHeight', {
+        value: 174,
+        configurable: true
+      });
+      (panel as any)._renderBanner();
+      expect(viewports(panel)[0].style.height).toBe('130px');
+      // The poll drops the expired line: the list grows back to 200 px, and the
+      // open category takes the new free space instead of keeping the stale height.
+      Object.defineProperty(list, 'clientHeight', {
+        value: 200,
+        configurable: true
+      });
+      await jest.advanceTimersByTimeAsync(REFRESH_MS);
+      expect(lines(panel)).toEqual([]);
+      expect(viewports(panel)[0].style.height).toBe('156px');
+      panel.dispose();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('finishes a fold a banner change lands in, and takes the new free space', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      const list = panel.node.querySelector(
+        '.jp-PasskeyVaultPanel-list'
+      ) as HTMLElement;
+      const [home] = viewports(panel);
+      Object.defineProperty(home, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      home.scrollTop = 500 - 156;
+      // One event arms the switch; a fresh gesture after the gap folds.
+      wheel(panel, 100);
+      await jest.advanceTimersByTimeAsync(300);
+      wheel(panel, 100);
+      // Mid-fold a banner line takes 26 px of the list.
+      await jest.advanceTimersByTimeAsync(100);
+      (panel as any)._message = { text: 'Data key rotated', at: Date.now() };
+      Object.defineProperty(list, 'clientHeight', {
+        value: 174,
+        configurable: true
+      });
+      (panel as any)._renderBanner();
+      // One frame later both heights come from the shrunk list: the section stack
+      // never stands taller than the space it has, so 156 is gone.
+      await jest.advanceTimersByTimeAsync(16);
+      expect(
+        viewports(panel).reduce(
+          (sum, v) => sum + Number.parseInt(v.style.height, 10),
+          0
+        )
+      ).toBeLessThanOrEqual(131);
+      await jest.advanceTimersByTimeAsync(400);
+      // The fold completed on the entering category, which took the new space.
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'true'
+      ]);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '130px'
+      ]);
+      panel.dispose();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('scrolls the open category, then folds into the next one at its last entry', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      const [home, infra] = viewports(panel);
+      Object.defineProperty(home, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      // The rows scroll inside the open category before anything folds.
+      expect(wheel(panel, 100).defaultPrevented).toBe(true);
+      expect(home.scrollTop).toBe(100);
+      // At the last entry the neighbour eases in 3 px per event.
+      home.scrollTop = 500 - 156;
+      wheel(panel, 100);
+      expect(home.style.height).toBe('153px');
+      expect(infra.style.height).toBe('3px');
+      // 350 ms of held pull folds: 400 ms later the next category owns the list.
+      for (const wait of [100, 100, 100, 50]) {
+        await jest.advanceTimersByTimeAsync(wait);
+        wheel(panel, 100);
+      }
+      await jest.advanceTimersByTimeAsync(400);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'true'
+      ]);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '156px'
+      ]);
+      // The settle swallows the carried momentum: no scroll and no new pull.
+      const before = infra.scrollTop;
+      expect(wheel(panel, -100).defaultPrevented).toBe(true);
+      expect(infra.scrollTop).toBe(before);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '156px'
+      ]);
+      // A fresh gesture after the settle folds back up.
+      await jest.advanceTimersByTimeAsync(300);
+      wheel(panel, -100);
+      expect(infra.style.height).toBe('153px');
+      await jest.advanceTimersByTimeAsync(300);
+      wheel(panel, -100);
+      await jest.advanceTimersByTimeAsync(400);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'true',
+        'false'
+      ]);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '156px',
+        '0px'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('moves a line-mode wheel delta as lines, not pixels', async () => {
+    const panel = await panelWith(fakeApi());
+    harmonica(panel);
+    const [home] = viewports(panel);
+    Object.defineProperty(home, 'scrollHeight', {
+      value: 500,
+      configurable: true
+    });
+    // Three lines, as a Firefox notch reports them: 3 x 16 px.
+    wheel(panel, 3, WheelEvent.DOM_DELTA_LINE);
+    expect(home.scrollTop).toBe(48);
+  });
+
+  it('stops the pull preview at 22 px, however far the wheel goes', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      const [home, infra] = viewports(panel);
+      Object.defineProperty(home, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      home.scrollTop = 500 - 156;
+      // Ten events would add 30 px; the preview stops at the 22 px cap.
+      for (let n = 0; n < 10; n += 1) {
+        wheel(panel, 100);
+      }
+      expect(infra.style.height).toBe('22px');
+      // The same 22 px come off the section being left.
+      expect(home.style.height).toBe('134px');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('pins the hold at 350 ms: 300 ms is no fold, past 350 ms folds', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      const [home] = viewports(panel);
+      Object.defineProperty(home, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      home.scrollTop = 500 - 156;
+      wheel(panel, 100);
+      // 300 ms of held pull, an event every 100 ms so the gesture stays one burst.
+      for (const wait of [100, 100, 100]) {
+        await jest.advanceTimersByTimeAsync(wait);
+        wheel(panel, 100);
+      }
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'true',
+        'false'
+      ]);
+      // The next event past 350 ms folds; both categories are open during the fold.
+      await jest.advanceTimersByTimeAsync(51);
+      wheel(panel, 100);
+      await jest.advanceTimersByTimeAsync(50);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'true',
+        'true'
+      ]);
+      // The fold settles on the next category.
+      await jest.advanceTimersByTimeAsync(400);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'true'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('springs the pull preview back when the wheel stops, without moving the rows', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      const [home, infra] = viewports(panel);
+      Object.defineProperty(home, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      home.scrollTop = 500 - 156;
+      wheel(panel, 100);
+      expect(home.style.height).toBe('153px');
+      expect(infra.style.height).toBe('3px');
+      // After 160 ms idle the damped spring runs and settles under 300 ms.
+      await jest.advanceTimersByTimeAsync(160 + 350);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '156px',
+        '0px'
+      ]);
+      // Decoration only: the rows never moved.
+      expect(home.scrollTop).toBe(500 - 156);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps the pull preview for 160 ms idle, then springs it to zero', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      const [home, infra] = viewports(panel);
+      Object.defineProperty(home, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      home.scrollTop = 500 - 156;
+      wheel(panel, 100);
+      expect(infra.style.height).toBe('3px');
+      // Before 160 ms idle the preview stands.
+      await jest.advanceTimersByTimeAsync(150);
+      expect(home.style.height).toBe('153px');
+      expect(infra.style.height).toBe('3px');
+      // After it the spring returns the preview ...
+      await jest.advanceTimersByTimeAsync(250);
+      expect(parseFloat(infra.style.height)).toBeLessThan(3);
+      expect(parseFloat(infra.style.height)).toBeGreaterThanOrEqual(0);
+      // ... to zero.
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '156px',
+        '0px'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('puts each category, the last included, in its own section with a band and a viewport', async () => {
+    const panel = await panelWith(fakeApi());
+    const sections = Array.from(
+      panel.node.querySelectorAll(
+        '.jp-PasskeyVaultPanel-list > .jp-PasskeyVaultPanel-section'
+      )
+    );
+    expect(
+      sections.map(section => [
+        section.querySelector('.jp-PasskeyVaultPanel-sectionLabel')
+          ?.textContent,
+        Array.from(
+          section.querySelectorAll(
+            '.jp-PasskeyVaultPanel-viewport .jp-PasskeyVaultPanel-rowName'
+          )
+        ).map(name => name.textContent)
+      ])
+    ).toEqual([
+      ['home (1)', ['nas/ugos']],
+      ['infra (2)', ['github/api', 'gitlab/api']]
+    ]);
+    // The band is the section's first child; the rows sit inside the viewport.
+    for (const section of sections) {
+      expect(
+        section.firstElementChild?.classList.contains(
+          'jp-PasskeyVaultPanel-sectionHeader'
+        )
+      ).toBe(true);
+      expect(
+        section.querySelector('.jp-PasskeyVaultPanel-viewport')?.parentElement
+      ).toBe(section);
+    }
+  });
+
+  it('ignores the old collapsed-state key and opens the first category with entries', async () => {
     window.localStorage.setItem(
       '@stellarshenson/jupyterlab-passkey-extension:vault:collapsed',
-      '{'
+      '["home"]'
     );
     const panel = await panelWith(fakeApi());
+    expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+      'true',
+      'false'
+    ]);
+    // The old key is neither read nor written any more.
     expect(
-      panel.node.querySelectorAll('.jp-PasskeyVaultPanel-rowName')
-    ).toHaveLength(3);
+      window.localStorage.getItem(
+        '@stellarshenson/jupyterlab-passkey-extension:vault:collapsed'
+      )
+    ).toBe('["home"]');
   });
 
   it('keeps focus in the panel when Lock is pressed from the keyboard', async () => {

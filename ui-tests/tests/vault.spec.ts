@@ -15,7 +15,25 @@ const VAULT_DIR = path.resolve(__dirname, '..', '.tmp-passkey-vault');
 const PANEL_ID = 'jp-passkey-vault';
 const RECOVERY = 'correct horse battery staple';
 
+/** Must match playwright.config.js - the one knob that moves the server and its URL. */
+const PORT = process.env.JUPYTER_TEST_PORT || '8888';
+const BASE_URL = `http://localhost:${PORT}`;
+const NOTIFICATIONS_URL = `${BASE_URL}/jupyterlab-notifications-extension/notifications`;
+
 test.use({ autoGoto: false });
+
+/**
+ * Empty the server's notification queue before the test's page opens.
+ *
+ * The ingest handler appends every notification to a process-global store and only a
+ * GET drains it. A notification left queued by an earlier test is replayed into this
+ * test's fresh page at activation as a stale toast, and a toast floats over the bottom
+ * of the right sidebar, where a category band sits - it swallows the band's click.
+ * cli.spec.ts drains the same queue for the same reason.
+ */
+test.beforeEach(async () => {
+  await fetch(NOTIFICATIONS_URL).catch(() => undefined);
+});
 
 /** A virtual authenticator; with `hasPrf` false, a passkey that has no PRF. */
 async function addAuthenticator(page: any, hasPrf = true): Promise<void> {
@@ -42,6 +60,21 @@ function panel(page: any) {
 
 function state(page: any) {
   return panel(page).locator('.jp-PasskeyVaultPanel-stateText');
+}
+
+/**
+ * Close every toast on screen.
+ *
+ * A toast floats over the bottom of the right sidebar, over a category band, and the
+ * click aimed at the band lands on the toast instead. This is the second line of
+ * defence behind the queue drain: whatever toast is still there goes before the click.
+ */
+async function dismissToasts(page: any): Promise<void> {
+  const close = page.locator('.jp-Notification-Toast-Close');
+  await close.evaluateAll((buttons: HTMLElement[]) =>
+    buttons.forEach(button => button.click())
+  );
+  await expect(close).toHaveCount(0);
 }
 
 /** A lab with no vault, a virtual authenticator, and the vault panel open. */
@@ -584,28 +617,67 @@ test('header icons stay in place and disable themselves when a view does not use
   await expect(icon('Vault settings and security')).toBeEnabled();
 });
 
-test('a category collapses from its header and stays collapsed after a reload', async ({
+test('one category opens at a time, and the wheel folds to the next at its last entry', async ({
   page
 }) => {
   await openVault(page);
   await createVault(page);
-  await addEntry(page, 's3cret-value');
-  const header = panel(page).getByRole('button', { name: 'Uncategorised (1)' });
-  const row = panel(page).locator('.jp-PasskeyVaultPanel-rowName', {
-    hasText: 'github/api'
+  const dialog = page.locator('.jp-Dialog');
+  // Home first, so it is the category left open when work arrives: a category with
+  // matches stays open across a redraw.
+  for (const [name, category] of [
+    ['home/one', 'home'],
+    ['work/one', 'work']
+  ]) {
+    await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+    await dialog.getByLabel('Name', { exact: true }).fill(name);
+    await dialog.getByLabel('Category', { exact: true }).fill(category);
+    await dialog.getByRole('button', { name: 'Save' }).click();
+    await expect(dialog).toHaveCount(0);
+  }
+  const C = '.jp-PasskeyVaultPanel';
+  const home = panel(page).getByRole('button', { name: 'home (1)' });
+  const work = panel(page).getByRole('button', { name: 'work (1)' });
+  const height = async (band: any) =>
+    band
+      .locator('..')
+      .locator(`${C}-viewport`)
+      .evaluate((node: HTMLElement) => node.getBoundingClientRect().height);
+  // The first category with entries takes the list; the other is its band only.
+  await expect(home).toHaveAttribute('aria-expanded', 'true');
+  await expect(work).toHaveAttribute('aria-expanded', 'false');
+  expect(await height(home)).toBeGreaterThan(100);
+  expect(await height(work)).toBe(0);
+  // Both bands are inside the list: the last one's divider is not clipped.
+  const listBox = (await panel(page).locator(`${C}-list`).boundingBox())!;
+  const lastBand = (await work.boundingBox())!;
+  expect(lastBand.y + lastBand.height).toBeLessThanOrEqual(
+    listBox.y + listBox.height
+  );
+  // A band click opens its category, and both bands stay on screen.
+  await dismissToasts(page);
+  await work.click();
+  await expect(home).toHaveAttribute('aria-expanded', 'false');
+  await expect(work).toHaveAttribute('aria-expanded', 'true');
+  expect(await height(home)).toBe(0);
+  expect(await height(work)).toBeGreaterThan(100);
+  await expect(home).toBeVisible();
+  await expect(work).toBeVisible();
+  // At the last entry the wheel previews the previous category, and a fresh gesture
+  // after the wheel stops folds into it. The wheel anywhere over the panel drives the
+  // open category, never the one under the pointer.
+  await panel(page).hover();
+  await page.mouse.wheel(0, -200);
+  await page.waitForTimeout(500);
+  await page.mouse.wheel(0, -200);
+  await page.waitForTimeout(500);
+  await page.mouse.wheel(0, -200);
+  await expect(home).toHaveAttribute('aria-expanded', 'true', {
+    timeout: 5000
   });
-  await expect(header).toHaveAttribute('aria-expanded', 'true');
-  await expect(row).toHaveCount(1);
-  await header.click();
-  await expect(header).toHaveAttribute('aria-expanded', 'false');
-  await expect(row).toHaveCount(0);
-  // The server keeps the vault unlocked across a reload, and the browser keeps the
-  // category collapsed.
-  await page.reload();
-  await page.sidebar.openTab(PANEL_ID);
-  await expect(state(page)).toContainText('Unlocked', { timeout: 20000 });
-  await expect(header).toHaveAttribute('aria-expanded', 'false');
-  await expect(row).toHaveCount(0);
+  await expect(work).toHaveAttribute('aria-expanded', 'false');
+  expect(await height(home)).toBeGreaterThan(100);
+  expect(await height(work)).toBe(0);
 });
 
 test('lock, then unlock with the passkey', async ({ page }) => {

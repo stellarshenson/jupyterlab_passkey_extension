@@ -963,6 +963,20 @@ The vault sidebar panel, its dialogs and styles
   - log: 2026-11-04T21:11:07Z @kj rejected: ?
   - log: 2026-11-04T21:12:38Z @kj reopened: rejecting again with the getter evidence in the reason
   - log: 2026-11-04T21:12:42Z @kj rejected: not reproduced; reason: @jupyterlab/apputils 4.7.5 lib/notification.js returns `this._queue.slice()` from `get notifications()`, the core bundle jlab_core.de9b5a093e5b1d3e.js holds `get notifications(){return this._queue.slice()}`, and the Jest mock returns `mockNotices.slice()`; each iteration walks a copy, so a dismiss during it cannot skip a row
+- [x] `DEF-PANEL-99-INSET` **holder name sits closer to the panel's right border than the entry ages** - MINOR; holder name (keyctl) ends 8 px from the panel's right border while the entry ages end 25 px from it; fix: pad the status row's right side by the scrollbar width measured in the page, leaving the status row and scrollbar in place; `src/vault/panel.ts`, `style/base.css`
+  - evidence: jest 416/416 with the new gutter test (447-430 gives 17px, 430-430 gives 0px); Galata vault spec 30/30 with no retry; the installed bundle carries _syncGutter and the padding-right calc
+  - repro: unlock the vault with enough entries to show the list scrollbar: the holder name sits nearer the right border than the row ages (8 px against 25 px)
+  - test-tags: UNIT, E2E
+  - root-cause: 2026-11-05T10:41:18Z @kj the status row sits outside the scrolling body, so the list's scrollbar narrows the entry rows but not the status row
+  - log: 2026-11-05T10:41:18Z @kj added
+  - log: 2026-11-05T10:49:40Z @kj closed: fixed: the status row takes the body's measured scrollbar width as extra right padding, so its text ends over the age column; the released layout is unchanged
+- [x] `DEF-PANEL-100-END-LINE` **The last category's divider is clipped** - MINOR; the last section's bottom line is never painted, so no divider shows between the last band and the row below
+  - evidence: root cause fixed in _freeSpace; Galata ux11 asserts the last band bottom at 199 inside the list's 200 and fails at 201 reverted; Jest 424; review round 4 SHIP
+  - repro: open the vault with three categories and scroll to the last band: the line above the band shows, the line below it does not
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-11-05T14:57:01Z @kj _freeSpace counted only the bands, so the sections summed one pixel per category more than the list; overflow hidden clipped the last section's bottom border; it now measures section.offsetHeight - viewport.offsetHeight
+  - log: 2026-11-05T14:57:01Z @kj added
+  - log: 2026-11-05T15:46:45Z @kj closed
 
 ## Lint `LINT`
 
