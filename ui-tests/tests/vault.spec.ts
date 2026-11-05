@@ -389,14 +389,14 @@ test('the panel has the geometry of the AI assistants panels', async ({
   expect(add.slice(0, 2)).toEqual([4, 4]);
 });
 
-test('the band separator is drawn only between two folded bands, in both views and both themes', async ({
+test('a folded band draws the separator, and the open section none, in both views and both themes', async ({
   page
 }) => {
   await openVault(page);
   await createVault(page);
   const dialog = page.locator('.jp-Dialog');
-  // Three categories: the first opens, so the middle band is folded with a section
-  // after it and the last is folded with nothing below it.
+  // Three categories: the first opens, so the middle and last bands are folded;
+  // both draw the separator, and the open first draws none.
   for (const [name, category] of [
     ['extra/one', 'extra'],
     ['home/one', 'home'],
@@ -436,6 +436,7 @@ test('the band separator is drawn only between two folded bands, in both views a
         const at = (selector: string) =>
           root.querySelector(selector) as HTMLElement;
         const sections = Array.from(root.querySelectorAll(`${prefix}-section`));
+        const list = root.querySelector(`${prefix}-list`);
         const edge = root.getBoundingClientRect();
         const row = at(aboveSelector).getBoundingClientRect();
         return {
@@ -461,6 +462,13 @@ test('the band separator is drawn only between two folded bands, in both views a
           ),
           sectionTops: sections.map(s => getComputedStyle(s).borderTopStyle),
           sectionShadows: sections.map(s => getComputedStyle(s).boxShadow),
+          // The last section's line must sit inside the list, or the list clips it.
+          lastOverflow: list
+            ? Math.round(
+                sections[sections.length - 1].getBoundingClientRect().bottom -
+                  list.getBoundingClientRect().bottom
+              )
+            : null,
           // A band: four border styles and its shadow.
           bands: sections.map(s => {
             const band = getComputedStyle(
@@ -485,20 +493,22 @@ test('the band separator is drawn only between two folded bands, in both views a
     expect(r.title, view).toBe(r.color2);
     expect(r.titleShadow, view).toBe('none');
     // The status row keeps its general border, and a shown filter box its own; the
-    // band separator is drawn only on a folded section that another section follows,
-    // where the two bands sit on each other, so the open first section and the last
-    // draw none. The cog view has no folded viewport, so it draws none there either.
+    // band separator is drawn under every folded section - between two bands, and
+    // under the last band at the panel's bottom edge - so only the open first
+    // section draws none. The cog view has no folded viewport, so it draws none there either.
     expect(r.status, view).toBe(r.color3);
     expect(r.row, view).toBe(above === `${C}-filterBox` ? r.layout3 : r.color3);
     expect(r.rowEdges, view).toEqual([0, 0, 0]);
     expect(r.sectionWidths, view).toEqual(
-      list ? ['0px', '1px', '0px'] : every('0px')
+      list ? ['0px', '1px', '1px'] : every('0px')
     );
     expect(r.sectionStyles, view).toEqual(
-      list ? ['none', 'solid', 'none'] : every('none')
+      list ? ['none', 'solid', 'solid'] : every('none')
     );
     if (list) {
       expect(r.sections[1], view).toBe(r.layout3);
+      expect(r.sections[2], view).toBe(r.layout3);
+      expect(r.lastOverflow, view).toBeLessThanOrEqual(0);
     }
     // No top line on a section, so two lines never touch.
     expect(r.sectionTops, view).toEqual(every('none'));

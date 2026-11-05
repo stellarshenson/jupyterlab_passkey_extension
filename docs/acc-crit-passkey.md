@@ -2153,11 +2153,22 @@ The vault sidebar panel in JupyterLab
   - evidence: Galata 30 of 30: the three-category test reads widths 0, 1 and 0 px and styles none, solid, none in both themes, with the drawn line equal to --jp-layout-color3; the cog view reads no lines; Jest 425 of 425
   - overrides: ACC-PANEL-313-SECTION-LINE - the separator now appears only between folded bands
   - overrides: ACC-PANEL-312-END-LINE - the last section draws no line
+  - overridden-by: ACC-PANEL-315-SECTION-BOTTOM
   - test: Galata: with three categories, the open, the folded middle and the last folded section read border widths 0, 1 and 0 px in both themes; no section line in the cog view
   - test-tags: FUNCTIONAL
   - mechanism: 2026-11-05T19:41:55Z @kj the reference AI panel matches :not(:has(> list)):has(+ section); the panel matches a folded viewport with [inert] and a following section
   - log: 2026-11-05T19:41:55Z @kj added
   - log: 2026-11-05T19:53:01Z @kj closed: verified on the installed build
+- [x] `ACC-PANEL-315-SECTION-BOTTOM` **a folded band draws its line at the panel bottom too** - MEDIUM; every folded band draws the 1px --jp-layout-color3 line under it, the last one included, so the panel's bottom edge above the status bar carries the same divider; the open section draws none
+  - evidence: Galata 30 of 30: widths 0, 1 and 1 px and styles none, solid, solid in both themes, the middle and last equal to --jp-layout-color3, the last section's bottom inside the list; the cog view reads none; Jest 425 of 425
+  - overrides: ACC-PANEL-314-SECTION-SEPARATOR - the last folded band draws the line at the panel bottom
+  - test: Galata: three categories read border widths 0, 1 and 1 px on the open, folded middle and last folded section in both themes; the cog view reads none
+  - test-tags: FUNCTIONAL
+  - mechanism: 2026-11-05T20:19:12Z @kj a folded viewport carries inert; the last folded band's line sits at the panel's bottom edge
+  - log: 2026-11-05T20:19:12Z @kj added
+  - log: 2026-11-05T20:33:48Z @kj closed: verified on the installed build
+  - log: 2026-11-05T21:29:38Z @kj edited evidence "Galata 30 of 30: widths 0, 1 and 1 px and styles none, solid, solid in both themes, the middle and last equal to --jp-layout-color3; the cog view reads none; Jest 425 of 425" -> "Galata 30 of 30: widths 0, 1 and 1 px and styles none, solid, solid in both themes, the middle and last equal to --jp-layout-color3, the last section's bottom inside the list; the cog view reads none; Jest 425 of 425"
+  - log: 2026-11-05T21:29:38Z @kj re-verified after the review plan: the divider test now measures the last section's containment, and the inert pre-set makes the first layout count the folded borders
 
 ## Vault settings `CONFIG`
 

@@ -352,19 +352,21 @@
   border-color: var(--jp-brand-color1);
 }
 
-/* A category of the list view or a section of the cog view. As the reference rule
-   `.jp-AiAssistantsPanel-section:not(:has(> list)):has(+ section)`, the design
-   system draws the band separator only on a folded section that another section
-   follows, where the two bands sit on each other; the open section and the last
-   draw none, and none has a top line, so two lines never touch. */
+/* A category of the list view or a section of the cog view. The last folded
+   band's line is the harmonica's own rule, stated by design-language.md,
+   Dividers of a docked panel, and by the design system's Harmonica navigation.
+   The reference AI assistants panel draws the line only on a folded section
+   that another follows, and this panel departs from it for the last band on
+   the owner's ruling, so the line separates two bands or
+   the last band from the panel's bottom edge above the status bar. The open
+   section ends in rows on the panel fill and draws none; no section has a top
+   line. */
 .jp-PasskeyVaultPanel-section {
   display: flex;
   flex-direction: column;
 }
 
-.jp-PasskeyVaultPanel-section:has(> .jp-PasskeyVaultPanel-viewport[inert]):has(
-    + .jp-PasskeyVaultPanel-section
-  ) {
+.jp-PasskeyVaultPanel-section:has(> .jp-PasskeyVaultPanel-viewport[inert]) {
   border-bottom: var(--jp-border-width) solid var(--jp-layout-color3);
 }
 

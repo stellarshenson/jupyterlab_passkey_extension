@@ -2,6 +2,17 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.9] - 2026-11-05
+
+### Changed
+
+- The Harmonica navigation chapter and design-language state that every folded band draws the separator and the last folded band's line sits at the panel's bottom edge above the status bar; the panel and CSS comments name the mechanism and the reference the panel departs from for the last band
+
+### Fixed
+
+- The last folded band draws the band separator above the status bar and the open section still draws none; `_fillList` sets `inert` before the first measurement so the folded bands' 1px borders are counted and the last line is no longer clipped on a fresh render
+- The Galata divider test measures the last section's containment, so a clipped line fails instead of passing on the computed declaration alone
+
 ## [1.2.8] - 2026-11-05
 
 ### Changed

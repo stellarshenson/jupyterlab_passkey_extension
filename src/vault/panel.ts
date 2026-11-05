@@ -1333,7 +1333,7 @@ export class VaultPanel extends Widget {
     this._openCategory = categories[focus];
     categories.forEach((category, i) => {
       const group = groups.get(category) as IEntry[];
-      // A section, as in the cog view; the separator is drawn only while it is folded with a section after it.
+      // A section, as in the cog view; the separator is drawn only while it is folded, so the open section draws none.
       const section = el('div', `${C}-section`);
       // A band: the same button with aria-expanded as the AI assistants panels' headers.
       const header = el('button', `${C}-sectionHeader`);
@@ -1350,6 +1350,10 @@ export class VaultPanel extends Widget {
       // The viewport owns the scrollbar at the panel's right edge; the rows scroll
       // inside it. Collapsed viewports keep their rows for the pull preview.
       const viewport = el('div', `${C}-viewport`);
+      // Pre-set inert so the first _freeSpace counts the folded border the [inert] rule paints; _apply sets inert only after the measurement.
+      if (i !== this._focus) {
+        viewport.setAttribute('inert', '');
+      }
       for (const e of group) {
         viewport.appendChild(this._row(e));
       }

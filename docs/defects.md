@@ -1016,6 +1016,25 @@ The vault sidebar panel, its dialogs and styles
   - root-cause: 2026-11-05T19:41:51Z @kj the base section rule draws the line unconditionally; the reference AI panel matches only a folded section with a sibling after it
   - log: 2026-11-05T19:41:51Z @kj added
   - log: 2026-11-05T19:53:01Z @kj closed: fixed: the separator is conditional
+- [x] `DEF-PANEL-106-LAST-LINE` **the last folded band has no line above the status bar** - MINOR; the last folded band draws no line, so the panel's bottom edge above the status bar has no divider while every divider between bands has one; the owner ordered the last band's line to match them; fix: every folded band takes the line, the open section none; `style/base.css`
+  - evidence: Galata 30 of 30: the divider test reads border widths 0, 1 and 1 px on the open, folded middle and last folded section in both themes, the last at the panel bottom; Jest 425 of 425
+  - related: ACC-PANEL-315-SECTION-BOTTOM - the rule this violates
+  - repro: open the vault with the last category folded; the bottom edge above the status bar has no line, while a divider sits under each folded band above it
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-11-05T20:19:12Z @kj the conditional rule required a following section; the last band has none, so its line was dropped
+  - log: 2026-11-05T20:19:12Z @kj added
+  - log: 2026-11-05T20:33:48Z @kj closed: fixed: every folded band draws the separator
+  - log: 2026-11-05T20:54:41Z @kj regressed as DEF-PANEL-106-LAST-LINE-1
+  - log: 2026-11-05T21:29:38Z @kj re-verified: regression LAST-LINE-1 fixed the pre-fold measurement; Galata 30 of 30 with the containment read green
+- [x] `DEF-PANEL-106-LAST-LINE-1` **the last folded band has no line above the status bar** - MINOR; the last folded band draws no line, so the panel's bottom edge above the status bar has no divider; the owner ordered the last band's line to match the band dividers; fix: the inert pre-set in _fillList makes the first measurement count the folded borders; `src/vault/panel.ts`
+  - evidence: Galata 30 of 30: the divider test reads the last section's bottom inside the list (lastOverflow <= 0) in both themes with widths 0, 1 and 1 px; the inert pre-set is in _fillList; Jest 425 of 425
+  - test-tags: FUNCTIONAL
+  - repro: fresh render with the last category folded: the last band's bottom line is clipped by the list until a band click re-measures
+  - log: 2026-11-05T20:54:41Z @kj regression of DEF-PANEL-106-LAST-LINE: adversarial review found the last band's line clipped on the first layout: _freeSpace measures before _apply sets inert, so the folded bands' borders are not counted
+  - log: 2026-11-05T20:54:48Z @kj edited repro added "fresh render with the last category folded: the last band's bottom line is clipped by the list until a band click re-measures"; test-tags added "FUNCTIONAL"
+  - log: 2026-11-05T21:29:38Z @kj closed: fixed: the measurement sees the folded borders
+  - log: 2026-11-05T21:42:41Z @kj edited text "the last folded band draws no line, so the panel's bottom edge above the status bar has no divider while every divider between bands has one; the owner ordered the last band's line to match them; fix: every folded band takes the line, the open section none; `style/base.css`" -> "MINOR; the last folded band draws no line, so the panel's bottom edge above the status bar has no divider; the owner ordered the last band's line to match the band dividers; fix: the inert pre-set in _fillList makes the first measurement count the folded borders; `src/vault/panel.ts`"
+  - log: 2026-11-05T21:42:42Z @kj edited the fix field after the round-2 review: the fix is the inert pre-set in _fillList, not the CSS
 
 ## Lint `LINT`
 
