@@ -3873,11 +3873,39 @@ describe('VaultPanel', () => {
       const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
       button(panel, 'Remove').click();
       now.mockReturnValue(1000 + ARM_DELAY_MS);
-      button(panel, 'Confirm remove').click();
+      button(panel, 'Confirm').click();
       now.mockRestore();
       await flush();
       expect(api.removePasskey).toHaveBeenCalledWith('AAEC');
       expect(button(panel, 'Add unlock method')).toBeTruthy();
+    });
+
+    it('lapses an armed Remove 5 s after arming, and never acts from the lapse', async () => {
+      jest.useFakeTimers();
+      try {
+        const api = fakeApi();
+        const panel = await openCog(api);
+        button(panel, 'Remove').click();
+        expect(button(panel, 'Confirm')).toBeTruthy();
+        // One millisecond short of the lapse the arm still stands.
+        await jest.advanceTimersByTimeAsync(4999);
+        expect(button(panel, 'Confirm')).toBeTruthy();
+        // Past 5 s the button reads its normal label again, and nothing ran.
+        await jest.advanceTimersByTimeAsync(2);
+        expect(button(panel, 'Remove').classList).not.toContain(
+          'jp-mod-confirm'
+        );
+        expect(api.removePasskey).not.toHaveBeenCalled();
+        // Armed again, a confirming click after ARM_DELAY_MS runs the action.
+        button(panel, 'Remove').click();
+        await jest.advanceTimersByTimeAsync(ARM_DELAY_MS + 100);
+        button(panel, 'Confirm').click();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(api.removePasskey).toHaveBeenCalledWith('AAEC');
+        panel.dispose();
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('lists every unlock method in one section, each with its one action', async () => {
@@ -5395,7 +5423,7 @@ describe('the password and authenticator app', () => {
       panel.node.querySelector('[data-focus-key="mfa"]') as HTMLButtonElement;
     const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
     remove().click();
-    expect(remove().textContent).toBe('Confirm remove');
+    expect(remove().textContent).toBe('Confirm');
     now.mockReturnValue(1000 + ARM_DELAY_MS);
     remove().click();
     now.mockRestore();

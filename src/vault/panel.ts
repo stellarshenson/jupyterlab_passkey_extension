@@ -196,6 +196,9 @@ type Message_ = { text: string; at: number } | null;
 /** How long an armed two-step button ignores clicks: a double-click never confirms. */
 export const ARM_DELAY_MS = 500;
 
+/** An armed two-step button lapses this long after arming: always 5 s. */
+export const ARM_LAPSE_MS = 5000;
+
 /**
  * An action whose request got no answer, or got a refusal while its final read
  * failed: it may have landed. The vault's state shows whether it did.
@@ -299,7 +302,7 @@ export class VaultPanel extends Widget {
       'Vault settings and security',
       () => {
         this._view = this._view === 'settings' ? 'main' : 'settings';
-        this._armed = null;
+        this._disarm();
         this._render();
       }
     );
@@ -395,7 +398,7 @@ export class VaultPanel extends Widget {
     // A panel shown again starts in its main view, not in the settings it was left in.
     if (this._view === 'settings') {
       this._view = 'main';
-      this._armed = null;
+      this._disarm();
       // An action that runs redraws when it ends (`_act`).
       if (!this._busy) {
         this._render();
@@ -593,7 +596,7 @@ export class VaultPanel extends Widget {
     this.node.setAttribute('aria-busy', 'true');
     this._message = null;
     this._dismissFailure();
-    this._armed = null;
+    this._disarm();
     let unanswered = false;
     let answered = false;
     let failure: { text: string; warn: boolean } | null = null;
@@ -996,7 +999,8 @@ export class VaultPanel extends Widget {
 
   /**
    * A two-step button: the first click arms it, the second acts. Clicks within
-   * ARM_DELAY_MS of arming are ignored, so a double-click never confirms.
+   * ARM_DELAY_MS of arming are ignored, so a double-click never confirms; the arm
+   * lapses ARM_LAPSE_MS after arming, so a forgotten arm never acts.
    */
   private _twoStep(
     key: string,
@@ -1005,13 +1009,25 @@ export class VaultPanel extends Widget {
   ): HTMLButtonElement {
     const armed = this._armed === key;
     const button = this._button(
-      armed ? `Confirm ${label.toLowerCase()}` : label,
+      armed ? 'Confirm' : label,
       () => {
         if (this._armed !== key) {
+          if (this._armTimer !== null) {
+            window.clearTimeout(this._armTimer);
+          }
           this._armed = key;
           this._armedAt = Date.now();
+          this._armTimer = window.setTimeout(() => {
+            this._armTimer = null;
+            if (this._armed === key) {
+              this._armed = null;
+              this._armedAt = 0;
+              this._render();
+            }
+          }, ARM_LAPSE_MS);
           this._render();
         } else if (Date.now() - this._armedAt >= ARM_DELAY_MS) {
+          this._disarm();
           void action();
         }
       },
@@ -1023,6 +1039,16 @@ export class VaultPanel extends Widget {
       button.classList.add('jp-mod-confirm');
     }
     return button;
+  }
+
+  /** Disarm a two-step button and stop its lapse. */
+  private _disarm(): void {
+    if (this._armTimer !== null) {
+      window.clearTimeout(this._armTimer);
+      this._armTimer = null;
+    }
+    this._armed = null;
+    this._armedAt = 0;
   }
 
   // -- rendering ------------------------------------------------------------
@@ -2006,6 +2032,7 @@ export class VaultPanel extends Widget {
   private _bannerShown = '';
   private _entriesRead = true;
   private _armedAt = 0;
+  private _armTimer: number | null = null;
   private _busy = false;
   private _message: Message_ = null;
   /** The id of the notification of the last failed action, until it is dismissed. */

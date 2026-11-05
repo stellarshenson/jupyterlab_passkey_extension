@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.6] - 2026-11-05
+
+### Changed
+
+- The armed two-step button reads `Confirm`, not `Confirm` followed by the verb, and the arm lapses 5 s after arming; a lapsed arm only disarms and redraws, so it never runs the action, and confirming, hiding, switching views or starting another action clears the lapse
+
+### Fixed
+
+- The armed Remove no longer stays armed indefinitely
+
 ## [1.2.5] - 2026-11-05
 
 ### Added

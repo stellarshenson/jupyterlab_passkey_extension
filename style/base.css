@@ -611,7 +611,7 @@ button.jp-mod-styled.jp-PasskeyVaultPanel-button {
   padding: 0 8px;
   font-size: var(--jp-ui-font-size0);
 
-  /* `Confirm remove` stays on one line in a narrow sidebar. */
+  /* `Confirm` stays on one line in a narrow sidebar. */
   white-space: nowrap;
 }
 

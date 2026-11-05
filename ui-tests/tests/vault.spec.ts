@@ -190,8 +190,8 @@ async function removeMethod(page: any, row: any) {
   // A confirming click within half a second of arming is ignored (no double-click
   // deletes), so the second click comes after that.
   await page.waitForTimeout(600);
-  const confirm = row.getByRole('button', { name: 'Confirm remove' });
-  // Both words on one line, inside the button, at the width of a sidebar.
+  const confirm = row.getByRole('button', { name: 'Confirm' });
+  // The single word on one line, inside the button, at the width of a sidebar.
   await expect(confirm).toHaveCSS('white-space', 'nowrap');
   await confirm.click();
 }

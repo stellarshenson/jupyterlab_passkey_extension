@@ -977,6 +977,13 @@ The vault sidebar panel, its dialogs and styles
   - root-cause: 2026-11-05T14:57:01Z @kj _freeSpace counted only the bands, so the sections summed one pixel per category more than the list; overflow hidden clipped the last section's bottom border; it now measures section.offsetHeight - viewport.offsetHeight
   - log: 2026-11-05T14:57:01Z @kj added
   - log: 2026-11-05T15:46:45Z @kj closed
+- [x] `DEF-PANEL-101-ARM-LAPSE` **The armed Remove never disarms** - MINOR; the armed label reads Confirm remove and the arm never lapses; the design rule now says the label is Confirm and the arm lapses after 5 s
+  - evidence: ARM_LAPSE_MS 5000 with a lapse timer that only disarms and re-renders; the armed label is Confirm; Jest 425 of 425 with 'lapses an armed Remove 5 s after arming, and never acts from the lapse'; Galata ux12 30 of 30, no retry
+  - repro: open Vault settings and security, press Remove beside a passkey, then wait: the button stays armed indefinitely
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-11-05T16:16:00Z @kj _twoStep sets _armed and schedules no lapse; only a render path clears it. Add ARM_LAPSE_MS 5000 and a timer that disarms, and label the arm Confirm
+  - log: 2026-11-05T16:16:00Z @kj added
+  - log: 2026-11-05T16:36:34Z @kj closed
 
 ## Lint `LINT`
 
