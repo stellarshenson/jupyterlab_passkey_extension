@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.8] - 2026-11-05
+
+### Changed
+
+- The Harmonica navigation chapter states the band hover, the 75 percent row hover, the square full-bleed band and selection fill and the conditional separator, so the pattern no longer defers with a stale hover value
+
+### Fixed
+
+- The band separator is drawn only on a folded section that another section follows: the open section and the last draw none, so no bright 3D edge sits under the open rows or around a band
+
 ## [1.2.7] - 2026-11-05
 
 ### Changed

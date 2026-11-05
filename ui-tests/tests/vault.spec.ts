@@ -389,16 +389,18 @@ test('the panel has the geometry of the AI assistants panels', async ({
   expect(add.slice(0, 2)).toEqual([4, 4]);
 });
 
-test("every section ends with the design system's band separator, in both views and both themes", async ({
+test('the band separator is drawn only between two folded bands, in both views and both themes', async ({
   page
 }) => {
   await openVault(page);
   await createVault(page);
   const dialog = page.locator('.jp-Dialog');
-  // Two categories, so the first and the last section of the list view differ.
+  // Three categories: the first opens, so the middle band is folded with a section
+  // after it and the last is folded with nothing below it.
   for (const [name, category] of [
-    ['work/one', 'work'],
-    ['home/one', 'home']
+    ['extra/one', 'extra'],
+    ['home/one', 'home'],
+    ['work/one', 'work']
   ]) {
     await panel(page).getByRole('button', { name: 'Add an entry' }).click();
     await dialog.getByLabel('Name', { exact: true }).fill(name);
@@ -407,7 +409,7 @@ test("every section ends with the design system's band separator, in both views 
     await expect(dialog).toHaveCount(0);
   }
   const C = '.jp-PasskeyVaultPanel';
-  await expect(panel(page).locator(`${C}-list > ${C}-section`)).toHaveCount(2);
+  await expect(panel(page).locator(`${C}-list > ${C}-section`)).toHaveCount(3);
   const filterButton = panel(page).getByRole('button', {
     name: 'Filter entries'
   });
@@ -451,6 +453,12 @@ test("every section ends with the design system's band separator, in both views 
             sections[0].getBoundingClientRect().top - row.bottom
           ].map(Math.round),
           sections: sections.map(line),
+          sectionWidths: sections.map(
+            s => getComputedStyle(s).borderBottomWidth
+          ),
+          sectionStyles: sections.map(
+            s => getComputedStyle(s).borderBottomStyle
+          ),
           sectionTops: sections.map(s => getComputedStyle(s).borderTopStyle),
           sectionShadows: sections.map(s => getComputedStyle(s).boxShadow),
           // A band: four border styles and its shadow.
@@ -470,18 +478,28 @@ test("every section ends with the design system's band separator, in both views 
       },
       [C, above]
     );
-  const check = async (view: string, above: string) => {
+  const check = async (view: string, above: string, list: boolean) => {
     const r = await read(above);
     const every = (value: string) => r.sections.map(() => value);
     expect(r.sections.length, view).toBeGreaterThan(1);
     expect(r.title, view).toBe(r.color2);
     expect(r.titleShadow, view).toBe('none');
-    // The status row keeps its general border; the sections and a shown filter box
-    // end with the band separator.
+    // The status row keeps its general border, and a shown filter box its own; the
+    // band separator is drawn only on a folded section that another section follows,
+    // where the two bands sit on each other, so the open first section and the last
+    // draw none. The cog view has no folded viewport, so it draws none there either.
     expect(r.status, view).toBe(r.color3);
     expect(r.row, view).toBe(above === `${C}-filterBox` ? r.layout3 : r.color3);
     expect(r.rowEdges, view).toEqual([0, 0, 0]);
-    expect(r.sections, view).toEqual(every(r.layout3));
+    expect(r.sectionWidths, view).toEqual(
+      list ? ['0px', '1px', '0px'] : every('0px')
+    );
+    expect(r.sectionStyles, view).toEqual(
+      list ? ['none', 'solid', 'none'] : every('none')
+    );
+    if (list) {
+      expect(r.sections[1], view).toBe(r.layout3);
+    }
     // No top line on a section, so two lines never touch.
     expect(r.sectionTops, view).toEqual(every('none'));
     expect(r.sectionShadows, view).toEqual(every('none'));
@@ -496,14 +514,14 @@ test("every section ends with the design system's band separator, in both views 
     );
     await expect(filterButton).toHaveAttribute('aria-pressed', 'false');
     await expect(panel(page).locator(`${C}-filterBox`)).toHaveCount(0);
-    await check(`${theme}, list view`, `${C}-status`);
+    await check(`${theme}, list view`, `${C}-status`, true);
     await filterButton.click();
     await expect(panel(page).locator(`${C}-filterBox`)).toHaveCount(1);
-    await check(`${theme}, list view with the filter`, `${C}-filterBox`);
+    await check(`${theme}, list view with the filter`, `${C}-filterBox`, true);
     // The filter stays pressed, and the cog view shows no filter box.
     await openCog(page);
     await expect(panel(page).locator(`${C}-filterBox`)).toHaveCount(0);
-    await check(`${theme}, cog view`, `${C}-status`);
+    await check(`${theme}, cog view`, `${C}-status`, false);
     await openCog(page);
     await filterButton.click();
   }

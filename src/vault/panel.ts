@@ -1333,7 +1333,7 @@ export class VaultPanel extends Widget {
     this._openCategory = categories[focus];
     categories.forEach((category, i) => {
       const group = groups.get(category) as IEntry[];
-      // A section, as in the cog view, so the category ends with the divider line.
+      // A section, as in the cog view; the separator is drawn only while it is folded with a section after it.
       const section = el('div', `${C}-section`);
       // A band: the same button with aria-expanded as the AI assistants panels' headers.
       const header = el('button', `${C}-sectionHeader`);

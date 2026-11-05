@@ -352,12 +352,19 @@
   border-color: var(--jp-brand-color1);
 }
 
-/* A category of the list view or a section of the cog view. Every section, the last
-   included, ends with the design system's section band separator; none has a top line,
-   so two lines never touch. */
+/* A category of the list view or a section of the cog view. As the reference rule
+   `.jp-AiAssistantsPanel-section:not(:has(> list)):has(+ section)`, the design
+   system draws the band separator only on a folded section that another section
+   follows, where the two bands sit on each other; the open section and the last
+   draw none, and none has a top line, so two lines never touch. */
 .jp-PasskeyVaultPanel-section {
   display: flex;
   flex-direction: column;
+}
+
+.jp-PasskeyVaultPanel-section:has(> .jp-PasskeyVaultPanel-viewport[inert]):has(
+    + .jp-PasskeyVaultPanel-section
+  ) {
   border-bottom: var(--jp-border-width) solid var(--jp-layout-color3);
 }
 

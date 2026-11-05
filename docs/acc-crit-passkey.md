@@ -2133,6 +2133,7 @@ The vault sidebar panel in JupyterLab
   - log: 2026-11-05T13:47:32Z @kj added
   - log: 2026-11-05T15:46:44Z @kj closed
 - [x] `ACC-PANEL-312-END-LINE` **the last band's line is not clipped** - MEDIUM; under the harmonica the last category's section ends with its border line inside the list, so the divider paints above the panel's bottom edge and the last band is not cut
+  - overridden-by: ACC-PANEL-314-SECTION-SEPARATOR
   - evidence: Galata ux11 30 of 30, 2026-11-05: the exact containment passes with the last band bottom at 199 inside the list's 200; the reverted measurement fails at 201
   - test: Galata: without a tolerance, the last band's bottom stays inside the list's box, so the section line below it is painted
   - test-tags: UNIT, FUNCTIONAL
@@ -2142,11 +2143,21 @@ The vault sidebar panel in JupyterLab
   - evidence: Galata 30 of 30: the renamed divider test compares the sections and a shown filter box with a --jp-layout-color3 probe in both themes and views, and the status row stays on --jp-border-color3; Jest 425 of 425
   - related: DEF-PANEL-102-SECTION-LINE - the reported wrong colour
   - overrides: ACC-PANEL-283-DIVIDERS - the divider token the colour guide replaces
+  - overridden-by: ACC-PANEL-314-SECTION-SEPARATOR
   - test: render the list in a browser and read the computed border colour of a section and of the filter row; each equals a probe set to --jp-layout-color3
   - test-tags: FUNCTIONAL
   - mechanism: 2026-11-05T18:14:51Z @kj both rules share the design system's section band separator token
   - log: 2026-11-05T18:14:51Z @kj added
   - log: 2026-11-05T19:04:26Z @kj closed: verified on the installed build
+- [x] `ACC-PANEL-314-SECTION-SEPARATOR` **the section separator is drawn only between bands** - MEDIUM; the line is drawn only on a folded section that another section follows, where its band sits on the next band; the open section and the last draw none; a drawn line is 1px solid --jp-layout-color3
+  - evidence: Galata 30 of 30: the three-category test reads widths 0, 1 and 0 px and styles none, solid, none in both themes, with the drawn line equal to --jp-layout-color3; the cog view reads no lines; Jest 425 of 425
+  - overrides: ACC-PANEL-313-SECTION-LINE - the separator now appears only between folded bands
+  - overrides: ACC-PANEL-312-END-LINE - the last section draws no line
+  - test: Galata: with three categories, the open, the folded middle and the last folded section read border widths 0, 1 and 0 px in both themes; no section line in the cog view
+  - test-tags: FUNCTIONAL
+  - mechanism: 2026-11-05T19:41:55Z @kj the reference AI panel matches :not(:has(> list)):has(+ section); the panel matches a folded viewport with [inert] and a following section
+  - log: 2026-11-05T19:41:55Z @kj added
+  - log: 2026-11-05T19:53:01Z @kj closed: verified on the installed build
 
 ## Vault settings `CONFIG`
 

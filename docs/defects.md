@@ -1008,6 +1008,14 @@ The vault sidebar panel, its dialogs and styles
   - root-cause: 2026-11-05T19:18:37Z @kj both elements are buttons, so the core .jp-ThemedContainer button border-radius rule applies and neither panel rule resets it
   - log: 2026-11-05T19:18:37Z @kj added
   - log: 2026-11-05T19:29:41Z @kj closed: fixed: the band and the row fill are square
+- [x] `DEF-PANEL-105-LINE-PLACE` **section lines paint on the open and last sections** - MINOR; the line paints on every section, including the open one and the last, so a bright edge sits under the open rows and around each folded band; the reference draws it only on a folded section that another follows; fix: the folded-and-followed condition; `style/base.css`
+  - evidence: Galata 30 of 30: the divider test reads border widths 0, 1 and 0 px on the open, folded middle and last sections in both themes, and none in the cog view; Jest 425 of 425
+  - related: ACC-PANEL-314-SECTION-SEPARATOR - the rule this violates
+  - repro: open the first category; the bright line under its rows is not a separator between two bands, and each folded band is bracketed by lines
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-11-05T19:41:51Z @kj the base section rule draws the line unconditionally; the reference AI panel matches only a folded section with a sibling after it
+  - log: 2026-11-05T19:41:51Z @kj added
+  - log: 2026-11-05T19:53:01Z @kj closed: fixed: the separator is conditional
 
 ## Lint `LINT`
 
