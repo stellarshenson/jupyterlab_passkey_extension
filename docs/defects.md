@@ -553,6 +553,12 @@ The vault server side, CLI and Python API
   - repro: run vault lock twice; the server log carries vault key: locked twice
   - log: 2026-11-04T20:44:32Z @kj added
   - log: 2026-11-04T21:26:38Z @kj closed
+- [-] `DEF-VAULT-107-UNLOCK` **The vault cannot be unlocked** - CRITICAL; the owner reports the vault cannot be unlocked, so no secret can be read; cause under investigation
+  - repro: owner report 2026-11-07, after the 1.2.9 release: every passkey unlock path fails; the panel (Locked, holder keyctl) shows the toast 'The passkey request was cancelled or not allowed.' after Unlock with passkey
+  - log: 2026-11-07T12:40:36Z @kj added
+  - log: 2026-11-07T12:48:55Z @kj edited repro "owner report 2026-11-07, after the 1.2.9 release: an unlock attempt does not unlock the vault; unlock method, surface (panel or CLI) and error text not yet captured" -> "owner report 2026-11-07, after the 1.2.9 release: every passkey unlock path fails to unlock the vault; the error text is not yet captured"
+  - log: 2026-11-07T12:50:37Z @kj edited repro "owner report 2026-11-07, after the 1.2.9 release: every passkey unlock path fails to unlock the vault; the error text is not yet captured" -> "owner report 2026-11-07, after the 1.2.9 release: every passkey unlock path fails; the panel (Locked, holder keyctl) shows the toast 'The passkey request was cancelled or not allowed.' after Unlock with passkey"
+  - log: 2026-11-07T12:55:36Z @kj rejected: rejected: owner ruling 2026-11-07, a Chrome issue, not the extension; the passkey unlock works again with no change to the code or the install
 
 ## Vault panel `PANEL`
 
