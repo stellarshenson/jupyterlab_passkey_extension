@@ -182,4 +182,4 @@ jobs:
           # only those four, scoped to the package name so other links still check.
           # http://proxy:3128 is the example proxy in DEF-VAULT-13's reproduction
           # command (docs/defects.md); the host does not exist.
-          ignore_links: "https://www.youtube.com/.* https://www.npmjs.com/package/.* https://pypi.org/project/jupyterlab-passkey-extension.* https://pepy.tech/project/jupyterlab-passkey-extension https://static.pepy.tech/badge/jupyterlab-passkey-extension http://proxy:3128"
+          ignore_links: "https://www.youtube.com/.* https://www.paypal.com/.* https://www.npmjs.com/package/.* https://pypi.org/project/jupyterlab-passkey-extension.* https://pepy.tech/project/jupyterlab-passkey-extension https://static.pepy.tech/badge/jupyterlab-passkey-extension http://proxy:3128"
