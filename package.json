@@ -1,6 +1,6 @@
 {
     "name": "@stellarshenson/jupyterlab-passkey-extension",
-    "version": "1.2.9",
+    "version": "1.2.11",
     "description": "JupyterLab extension that gives the terminal, scripts, CLIs and AI agents on the Jupyter server the passkeys of the user's browser or operating system, moves secrets between the browser and local processes without printing them, and keeps a password vault that a passkey unlocks",
     "keywords": [
         "jupyter",
@@ -159,6 +159,7 @@
         }
     },
     "allowScripts": {
-        "@fortawesome/fontawesome-free": true
+        "@fortawesome/fontawesome-free@5.15.4": true,
+        "file:../../@fortawesome/fontawesome-free": true
     }
 }

@@ -565,7 +565,15 @@ export class VaultPanel extends Widget {
       window.clearInterval(this._timer);
       this._timer = null;
     }
+    this._stopExpiry();
     document.removeEventListener('visibilitychange', this._onVisibility);
+  }
+
+  private _stopExpiry(): void {
+    if (this._expiryTimer !== null) {
+      window.clearTimeout(this._expiryTimer);
+      this._expiryTimer = null;
+    }
   }
 
   /** The tab shown again: read at once, not up to 15 s later (`_tick` skips a hide). */
@@ -1206,6 +1214,18 @@ export class VaultPanel extends Widget {
     const holder = el('span', `${C}-holder`, s.holder.name);
     holder.title = s.holder.name;
     this._statusLine.append(diode, el('span', `${C}-stateText`, text), holder);
+    // The key runs out between two reads: draw the state again then, so the locked
+    // view comes at the expiry, not up to REFRESH_MS later. Only while the poll runs.
+    this._stopExpiry();
+    if (unlocked && this._timer !== null) {
+      this._expiryTimer = window.setTimeout(() => {
+        this._expiryTimer = null;
+        // A hidden tab reads nothing (`_tick`); it reads when it is shown again.
+        if (!document.hidden) {
+          this._renderStatus();
+        }
+      }, remaining * 1000);
+    }
     if (s.unlocked && !unlocked) {
       // The local countdown ran out before the next read: take it as locked, then
       // read. Marking it first means a failed read cannot bring this branch back
@@ -2044,4 +2064,6 @@ export class VaultPanel extends Widget {
   /** Why the last read failed; the next successful read clears it. */
   private _readError: string | null = null;
   private _timer: number | null = null;
+  /** Fires when the local countdown of the unlock runs out. */
+  private _expiryTimer: number | null = null;
 }

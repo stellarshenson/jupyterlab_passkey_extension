@@ -1442,12 +1442,14 @@ The vault sidebar panel in JupyterLab
   - log: 2026-09-26T15:32:11Z @kj added
   - log: 2026-09-26T21:58:56Z @kj edited test "unit: click Open settings, assert `settingeditor:open` with the vault plugin id" -> "unit: click Open settings, assert the panel calls openSettings; the plugin opens settingeditor:open with the query Passkey Vault, the title in schema/vault.json"
   - log: 2026-09-28T00:23:23Z @kj closed
-- [x] `ACC-PANEL-141` **Time left refresh** - MEDIUM; time left refreshes while the panel is visible, and expiry switches the panel to the locked view
-  - evidence: jest vault.spec.ts 'switches to the locked view when the vault expires while shown', 'rounds time left up to the minute, with seconds under one minute'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
+- [x] `ACC-PANEL-141` **Time left refresh** - MEDIUM; time left refreshes while the panel is visible, and expiry switches the panel to the locked view when the local countdown ends, not at the next 15 s read
+  - evidence: jest vault.spec.ts 'switches to the locked view when the vault expires while shown', 'switches to the locked view when the countdown ends, before the next poll', 'rounds time left up to the minute, with seconds under one minute'; build_test 2026-11-13: Jest 426, pytest 1096, Galata 57
   - test: unit with fake timers: expire the status, assert the locked view
   - test-tags: UNIT
   - log: 2026-09-26T15:32:11Z @kj added
   - log: 2026-09-28T00:23:23Z @kj closed
+  - log: 2026-11-13T18:35:01Z @kj amended text "time left refreshes while the panel is visible, and expiry switches the panel to the locked view" -> "time left refreshes while the panel is visible, and expiry switches the panel to the locked view when the local countdown ends, not at the next 15 s read"
+  - log: 2026-11-13T18:35:05Z @kj edited evidence "jest vault.spec.ts 'switches to the locked view when the vault expires while shown', 'rounds time left up to the minute, with seconds under one minute'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108" -> "jest vault.spec.ts 'switches to the locked view when the vault expires while shown', 'switches to the locked view when the countdown ends, before the next poll', 'rounds time left up to the minute, with seconds under one minute'; build_test 2026-11-13: Jest 426, pytest 1096, Galata 57"
 - [x] `ACC-PANEL-148` **Recovery passphrase as a link** - MEDIUM; the locked view offers Use recovery passphrase as a text link, not a button, whether or not a passkey matches this host; Enter and Space activate it
   - evidence: jest vault.spec.ts 'shows the locked view with passkey and recovery unlock', 'offers only the recovery passphrase link when no passkey matches this host'; Galata vault.spec.ts 'unlock with the recovery passphrase'; pytest 433/433, jest 210/210, Galata 36/36 2026-09-28 v1.0.108
   - test: unit-render the locked view with and without a matching passkey, assert the link style and that a click opens the passphrase dialog

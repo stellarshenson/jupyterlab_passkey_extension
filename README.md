@@ -40,7 +40,7 @@ A passkey bridge for JupyterLab that exposes the passkey (WebAuthn) capability o
 - **Unlock methods** - a passkey with the PRF extension, the recovery passphrase, or an unlock password with the authenticator app; a passkey with no PRF becomes Password and passkey, where a new unlock password decrypts and the passkey is the server-checked second step
 - **Git credentials** - `git-credential-jupyterlab-passkey` answers git's credential request from the vault; `vault git install` and `vault git uninstall` set or remove it, and `vault git migrate` imports git's plaintext store; `JUPYTERLAB_PASSKEY_GIT_IGNORE_VAULT=1` makes the helper answer no credential, so git uses its next helper or prompts (a testing aid, not a security control)
 - **AWS credentials** - `aws-credential-jupyterlab-passkey` answers an AWS `credential_process` from the vault entry `aws/<profile>`, whose username is the access key id and whose password is the secret key; `vault aws install` and `vault aws uninstall` set or remove it, and a locked vault asks for its unlock
-- **`--json`** - every subcommand prints one object, `{"ok": true, "command", "result"}`, or on failure `{"ok": false, "command", "error", "code"}` with the code `denied`, `entry-not-found`, `invalid` or `locked`
+- **`--json`** - every subcommand prints one object, `{"ok": true, "command", "result"}`, or on failure `{"ok": false, "command", "error", "code"}` with the server's code `locked`, `denied`, `entry-not-found`, `invalid`, `conflict`, `no-action` or `server`, or the local `no-vault`, `no-server`, `relay` or `usage`
 
 ### Working with an AI agent
 

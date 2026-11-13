@@ -121,9 +121,9 @@ All endpoints are under the server base URL and require Jupyter authentication (
 
 ## For extension authors: the frontend commands
 
-Six JupyterLab commands POST to the API above. Use them only when an extension triggers a ceremony itself, since everything else is better served by the CLI.
+Seven JupyterLab commands POST to the API above. Use them only when an extension triggers a ceremony itself, since everything else is better served by the CLI.
 
-- **Commands** - `passkey:run`, `passkey:passphrase`, `passkey:copy`, `passkey:show`, `passkey:vault-unlock` and `passkey:vault-register` ([reference](commands-reference.md))
+- **Commands** - `passkey:run`, `passkey:passphrase`, `passkey:copy`, `passkey:show`, `passkey:vault-unlock`, `passkey:vault-register` and `passkey:vault-setup` ([reference](commands-reference.md))
 - **Gesture** - `passkey:run` reaches `navigator.credentials.*` before any `await` so the click's gesture survives
 - **Challenge** - the frontend generates the 32-byte challenge, and a notify button supplies the gesture
 

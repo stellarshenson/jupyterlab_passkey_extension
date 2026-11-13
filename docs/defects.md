@@ -1041,6 +1041,13 @@ The vault sidebar panel, its dialogs and styles
   - log: 2026-11-05T21:29:38Z @kj closed: fixed: the measurement sees the folded borders
   - log: 2026-11-05T21:42:41Z @kj edited text "the last folded band draws no line, so the panel's bottom edge above the status bar has no divider while every divider between bands has one; the owner ordered the last band's line to match them; fix: every folded band takes the line, the open section none; `style/base.css`" -> "MINOR; the last folded band draws no line, so the panel's bottom edge above the status bar has no divider; the owner ordered the last band's line to match the band dividers; fix: the inert pre-set in _fillList makes the first measurement count the folded borders; `src/vault/panel.ts`"
   - log: 2026-11-05T21:42:42Z @kj edited the fix field after the round-2 review: the fix is the inert pre-set in _fillList, not the CSS
+- [x] `DEF-PANEL-108-EXPIRY-LATE` **Panel says Unlocked after the key expired** - MINOR; status line reads `Unlocked, Ns left` up to 15 s after the server locked; a row opened then shows a popup whose eye answers `the vault is locked`; cause: `_renderStatus` runs only on the 15 s poll; fix: one timeout at the local expiry; `src/vault/panel.ts`
+  - evidence: jest vault.spec.ts 'switches to the locked view when the countdown ends, before the next poll' fails without the timeout and passes with it; build_test 2026-11-13: Jest 426, pytest 1096, Galata 57, lint 0
+  - root-cause: 2026-11-13T18:34:59Z @kj `_renderStatus` ran only from the 15 s poll and from a render; nothing fired at the local expiry, and the default unlock is 60 s
+  - repro: default 1-minute unlock, panel open: unlock, wait 60 s, read the status line before the next 15 s poll
+  - test-tags: UNIT
+  - log: 2026-11-13T18:04:00Z @kj added
+  - log: 2026-11-13T18:34:59Z @kj closed
 
 ## Lint `LINT`
 
@@ -1070,4 +1077,25 @@ Notifications this extension raises in the JupyterLab tab: their text, their cen
   - log: 2026-11-04T20:44:29Z @kj added
   - log: 2026-11-04T21:26:38Z @kj closed
   - log: 2026-11-04T23:29:26Z @kj edited evidence "transient removed from the cli.py _trigger payload; test_notification_texts.py:775 asserts "transient" not in payload, and fails with transient: True restored (exit 1); an answered row now leaves via dismissAnswered after the step, the core press dismissal and dismissStale" -> "the transient field is gone from the payload; the collector asserts its absence; a press dismisses through JupyterLab core and dismissStale bounds every row that names a wait at its seconds end"
+
+## Documentation `DOCS`
+
+README and docs claims the code does not keep
+
+- log: 2026-11-13T18:04:01Z @kj category created
+
+- [x] `DEF-DOCS-109-JSON-CODES` **README names 4 of 11 --json failure codes** - MINOR; README says the failure code is `denied`, `entry-not-found`, `invalid` or `locked`; the CLI also emits `conflict`, `no-action`, `server`, `no-vault`, `no-server`, `relay`, `usage`; fix: list all; `README.md`
+  - evidence: README.md Features, --json line names all 11 codes, the same set as SKILL.md and docs/cli-reference.md; prettier check clean in build_test 2026-11-13
+  - root-cause: 2026-11-13T18:35:00Z @kj the README line was written for the four server codes of ACC-VAULT-297-FAILURE-CODE and was not extended when the local codes and `conflict`, `no-action`, `server` reached --json
+  - repro: stop JupyterLab, run `jupyterlab-passkey vault list --json`: code is `no-server`, which the README does not name
+  - test-tags: UNIT
+  - log: 2026-11-13T18:04:01Z @kj added
+  - log: 2026-11-13T18:35:00Z @kj closed
+- [x] `DEF-DOCS-110-SETUP-COMMAND` **passkey:vault-setup registered, not documented** - MINOR; `docs/usage.md` says six frontend commands and `docs/commands-reference.md` lists six; `src/vault/plugin.ts` registers a seventh, `passkey:vault-setup`; fix: name it in both
+  - evidence: docs/usage.md says seven commands and names it; docs/commands-reference.md lists it and has a section with its nonce contract, read against setupVault and answerCli in src/vault; prettier check clean in build_test 2026-11-13
+  - root-cause: 2026-11-13T18:35:00Z @kj `passkey:vault-setup` was added with the browser set-up and written into docs/design-vault.md only
+  - repro: grep vault-setup docs/usage.md docs/commands-reference.md: no line; grep SETUP_COMMAND src/vault/plugin.ts: registered
+  - test-tags: UNIT
+  - log: 2026-11-13T18:04:01Z @kj added
+  - log: 2026-11-13T18:35:00Z @kj closed
 

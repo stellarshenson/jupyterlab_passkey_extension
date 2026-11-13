@@ -4955,6 +4955,38 @@ describe('VaultPanel', () => {
       jest.useRealTimers();
     }
   });
+
+  it('switches to the locked view when the countdown ends, before the next poll', async () => {
+    jest.useFakeTimers();
+    try {
+      const statuses = [
+        status({ remaining: 5 }),
+        status({ unlocked: false, remaining: null })
+      ];
+      const api = fakeApi({
+        status: jest.fn(() =>
+          Promise.resolve(statuses.length > 1 ? statuses.shift() : statuses[0])
+        )
+      });
+      const panel = new VaultPanel({
+        api,
+        openSettings: jest.fn(),
+        host: HOST
+      });
+      Widget.attach(panel, document.body);
+      MessageLoop.sendMessage(panel, Widget.Msg.AfterShow);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(text(panel)).toContain('Unlocked, 5s left');
+      await jest.advanceTimersByTimeAsync(4000);
+      expect(api.status).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(text(panel)).toContain('Locked');
+      expect(button(panel, 'Unlock with passkey')).toBeTruthy();
+      panel.dispose();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 // --------------------------------------------------------------------------- //

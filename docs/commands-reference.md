@@ -2,7 +2,7 @@
 
 The JupyterLab commands the extension registers, and the server contract behind them. These run **in the browser** - a consumer reaches them through a notification button, whose click supplies the user gesture WebAuthn requires. For a ready-made local wrapper, see [cli-reference.md](cli-reference.md).
 
-- **Commands** - `passkey:run` (ceremony), `passkey:passphrase` (secret capture), `passkey:copy` (secret to clipboard), `passkey:show` (code as a scraper-resistant image), and for the [vault](usage.md#vault) `passkey:vault-unlock` and `passkey:vault-register`
+- **Commands** - `passkey:run` (ceremony), `passkey:passphrase` (secret capture), `passkey:copy` (secret to clipboard), `passkey:show` (code as a scraper-resistant image), and for the [vault](usage.md#vault) `passkey:vault-unlock`, `passkey:vault-register` and `passkey:vault-setup`
 - **Described** - each command carries `describedBy` with a JSON schema of the arguments in its table below, so a caller can read them from the command registry
 - **Trigger** - a `jupyterlab-notify` action button bound to the command id
 - **Return path** - the frontend POSTs to the server, which stages the value in a relay
@@ -112,6 +112,10 @@ The two vault passkey steps; `jupyterlab-passkey vault unlock` and `vault passke
 | `label` | no       | `vault-register` only: the name offered for the passkey                                         |
 
 `vault-unlock` uses every passkey slot added for the tab's hostname. On an unlocked vault it asks nothing and posts nothing, and a click during a running unlock shares that run. A refusal after the passkey answered is posted as the outcome and opens no chooser. `vault-register` first gets the proof the server asks for a new slot - a request with a passkey added for the tab's hostname. When the hostname has none, that request gets no answer (the passkey is on another device, or lost) or the passkey gives no PRF, it asks the passkey of Password and passkey while the vault has one for this address and is unlocked, then a code of the authenticator app while the vault has one and is unlocked, or the recovery passphrase. On a tab at an IP address it asks for nothing and answers where to open JupyterLab. It then reads a server challenge (after a proof by the passkey of Password and passkey, which holds the live one, the page makes its own), asks for the passkey's name in a dialog whose button is the click that lets the browser create the passkey, creates it over that challenge, asks for a confirming click, evaluates a fresh PRF salt with `get` over the same challenge, and adds the slot. A passkey with no PRF goes on to the offer of Password and passkey and a new unlock password, with no further passkey prompt; the server checks its `create` with the WebAuthn registration steps and its `get` as the signature.
+
+## `passkey:vault-setup`
+
+Sets a vault up from the page; a command with no terminal, such as the git credential helper, raises it when no vault exists. On a vault that exists it asks nothing. Otherwise it asks the recovery passphrase in two fields, sends `POST vault/init`, then offers Passkey, Password and authenticator app, and Later. Its one argument is `nonce`, not required: the page POSTs `{nonce, ok: false, error}` to `result` for a vault state it could not read and for a cancelled or failed recovery step, and nothing on success, which the CLI reads in vault status.
 
 ## Result shapes of `passkey:run`
 
