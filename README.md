@@ -23,7 +23,7 @@ A passkey bridge for JupyterLab that exposes the passkey (WebAuthn) capability o
 | RFC 5869 HKDF-SHA256                | ✅ Met | the passkey slots, keyed from the WebAuthn PRF                          |
 | RFC 6238 TOTP                       | ✅ Met | 6-digit codes of the authenticator app, a used code refused             |
 | W3C WebAuthn Level 3, PRF extension | ✅ Met | each passkey slot is bound to one hostname                              |
-| NIST SP 800-63B, AAL2 idle limit    | ✅ Met | 1-minute default unlock duration, stricter than the AAL2 idle limit     |
+| NIST SP 800-63B, AAL2 idle limit    | ✅ Met | 15-minute default unlock duration, under the 30-minute AAL2 idle limit  |
 | NIST SP 800-57 key management       | ✅ Met | the data key rotates, with a one-year default cryptoperiod              |
 
 ## Features
@@ -35,12 +35,23 @@ A passkey bridge for JupyterLab that exposes the passkey (WebAuthn) capability o
 - **No terminal copy** - the value never appears in the terminal, the shell history, a process argument or the CLI
 - **`copy`** - places a value on the clipboard through a one-shot relay
 - **`show`** - renders a code as a distorted image absent from the DOM text and the accessibility tree
-- **Vault on demand** - `list`, `get`, `add`, `edit`, `rm`, `copy`, `show`, `exec`, `import` of a file, `passkey rm` and `git migrate` offer to create a missing vault at a terminal; `unlock`, `lock`, `import --pass-cli`, `passkey add`, `recovery` and `rotate` offer nothing. `vault get` unlocks a locked vault in the same call, and `list`, `get`, `copy`, `show` and `exec` do it with `--recovery` or `--password --in-browser`
+- **Vault on demand** - `list`, `get`, `add`, `edit`, `rename`, `rm`, `copy`, `show`, `exec`, `import` of a file, `passkey rm` and `git migrate` offer to create a missing vault at a terminal; `unlock`, `lock`, `import --pass-cli`, `passkey add`, `recovery` and `rotate` offer nothing. `vault get` unlocks a locked vault in the same call, and `list`, `get`, `copy`, `show` and `exec` do it with `--recovery` or `--password --in-browser`
 - **Set-up** - the panel, and a git request with no vault, ask the recovery passphrase, then offer Passkey, Password and authenticator app, and Later; `vault init` adds a passkey
 - **Unlock methods** - a passkey with the PRF extension, the recovery passphrase, or an unlock password with the authenticator app; a passkey with no PRF becomes Password and passkey, where a new unlock password decrypts and the passkey is the server-checked second step
 - **Git credentials** - `git-credential-jupyterlab-passkey` answers git's credential request from the vault; `vault git install` and `vault git uninstall` set or remove it, and `vault git migrate` imports git's plaintext store; `JUPYTERLAB_PASSKEY_GIT_IGNORE_VAULT=1` makes the helper answer no credential, so git uses its next helper or prompts (a testing aid, not a security control)
 - **AWS credentials** - `aws-credential-jupyterlab-passkey` answers an AWS `credential_process` from the vault entry `aws/<profile>`, whose username is the access key id and whose password is the secret key; `vault aws install` and `vault aws uninstall` set or remove it, and a locked vault asks for its unlock
-- **`--json`** - every subcommand prints one object, `{"ok": true, "command", "result"}`, or on failure `{"ok": false, "command", "error", "code"}` with the server's code `locked`, `denied`, `entry-not-found`, `invalid`, `conflict`, `no-action` or `server`, or the local `no-vault`, `no-server`, `relay` or `usage`
+- **Cookie entries** - a cookie entry holds a site's web authorization, its cookies and the request headers of the copied request: `vault add NAME --cookies --in-browser` reads a browser's Copy as cURL or another copied form, `vault exec --env VAR=NAME` gives a command such as curl the entry's Cookie header in its environment, as it gives a password, `vault get NAME --format headers | curl -H @- URL` gives curl the cookies and the kept headers on standard input, and `Vault().cookies(NAME)` and `Vault().headers(NAME)` give them to Python `requests`; see [Cookie entries](docs/cli-reference.md#cookie-entries)
+- **`--json`** - every subcommand prints one object, `{"ok": true, "command", "result"}`, or on failure `{"ok": false, "command", "error", "code"}` with the server's code `locked`, `denied`, `entry-not-found`, `invalid`, `conflict`, `expired`, `no-action` or `server`, or the local `no-vault`, `no-server`, `relay` or `usage`
+
+### Cookie limits
+
+A cookie entry is a copy of a logged-in session, and these limits follow from that:
+
+- **The cookie is the session** - whoever reads a cookie has the session, with no password and no second factor
+- **The user copies the cookies** - the extension cannot read the browser's cookies, so the user copies them from the browser
+- **Another address** - a site may refuse a session used from another address, such as the Jupyter server's IP address in place of the browser's
+- **No refresh** - the vault never refreshes an expired session; a read with no unexpired cookie fails with code `expired`, and the user pastes a new copy
+- **No header expiry** - a header has no expiry the vault can read, so an expired token is sent until the user pastes a new copy
 
 ### Working with an AI agent
 

@@ -120,6 +120,8 @@ def _lookup(attrs):
         if not vault.status()["initialized"]:
             _vcli.setup_in_browser(vault)
         entries = vault.list()
+    # A cookie entry is a website session, never git's credential, whatever its url.
+    entries = [entry for entry in entries if entry.get("type") != "cookies"]
     matched = select(entries, attrs)
     if matched:
         # Several entries left, with or without a username in the request: `store`

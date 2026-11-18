@@ -1,0 +1,1 @@
+curl "https://app.example.com/api" -H "Accept: */*" -H "Cookie: bs=a\\b; bt=a\`b; dq=x""y; dl=p\$q; amp=a&b; pipe=a^|b; lt=a^<b; gt=a^>b; caret=a^^b; pct=^%^41z; end=50^%"

@@ -142,11 +142,18 @@ def write_config(vault_env, values):
 async def test_status_before_init(jp_fetch, vault_env):
     s = await call(jp_fetch, "status", method="GET")
     assert s["initialized"] is False and s["unlocked"] is False
-    assert s["settings"] == {"unlock_minutes": 1, "password_min_length": 12,
+    assert s["settings"] == {"unlock_minutes": 15, "password_min_length": 12,
                              "reveal_seconds": 60, "rotate_days": 365}
     assert s["holder"]["name"].startswith("memory/")
     assert set(s["holder"]["capabilities"]) == {
         "locked_memory", "no_core_dump", "holder_ttl", "locks_on_restart", "container_isolated"}
+
+
+async def test_status_carries_the_server_clock(jp_fetch, vault_env):
+    # A tab measures a CLI notification's wait from its raise on this clock.
+    before = time.time()
+    s = await call(jp_fetch, "status", method="GET")
+    assert before <= s["now"] <= time.time()
 
 
 def test_status_shows_a_path_under_home_with_a_tilde(vault_env, monkeypatch):
@@ -161,7 +168,7 @@ async def test_init_unlocks_for_the_configured_duration(jp_fetch, vault_env):
     await init(jp_fetch)
     s = await call(jp_fetch, "status", method="GET")
     assert s["initialized"] and s["unlocked"]
-    assert 60 - 5 <= s["remaining"] <= 60
+    assert 900 - 5 <= s["remaining"] <= 900
     assert [slot["type"] for slot in s["slots"]] == ["recovery"]
 
 
@@ -936,12 +943,19 @@ async def test_the_config_file_values_reach_status(jp_fetch, vault_env):
 
 
 async def test_an_absent_or_invalid_config_key_uses_its_default(jp_fetch, vault_env):
-    defaults = {"unlock_minutes": 1, "password_min_length": 12,
+    defaults = {"unlock_minutes": 15, "password_min_length": 12,
                 "reveal_seconds": 60, "rotate_days": 365}
     assert (await call(jp_fetch, "status", method="GET"))["settings"] == defaults
     write_config(vault_env, {"unlock_minutes": 0, "password_min_length": "20",
                              "reveal_seconds": 3601, "rotate_days": True})
     assert (await call(jp_fetch, "status", method="GET"))["settings"] == defaults
+
+
+async def test_a_stored_unlock_duration_of_1440_is_kept_and_1441_uses_the_default(jp_fetch, vault_env):
+    write_config(vault_env, {"unlock_minutes": 1440})
+    assert (await call(jp_fetch, "status", method="GET"))["settings"]["unlock_minutes"] == 1440
+    write_config(vault_env, {"unlock_minutes": 1441})
+    assert (await call(jp_fetch, "status", method="GET"))["settings"]["unlock_minutes"] == 15
 
 
 async def test_the_reveal_window_comes_from_the_server_config(jp_fetch, vault_env):
@@ -1071,6 +1085,79 @@ async def test_delete_and_missing_names(jp_fetch, vault_env):
         assert code == 404 and "no entry named" in error
 
 
+async def rename(jp_fetch, name, new_name):
+    r = await jp_fetch("jupyterlab-passkey-extension", "vault", "rename", method="POST",
+                       body=json.dumps({"name": name, "new_name": new_name}))
+    return r.code
+
+
+async def test_rename_keeps_every_field_and_sets_updated(jp_fetch, vault_env, entry_clock):
+    await init(jp_fetch)
+    await add(jp_fetch, username="me", url="https://github.com", category="infra", notes="n")
+    await call(jp_fetch, "entries", {"name": "site/app", "fields": {
+        "type": "cookies", "url": "https://app.example.com", "notes": "s", "cookies": "sid=x; t=eyJh=="}})
+    before = {e["name"]: e for e in handlers._service._entries()}
+    entry_clock.stamp = "2026-01-02T03:05:06Z"
+    assert await rename(jp_fetch, "github/api", "github/token") == 204
+    assert await rename(jp_fetch, "site/app", "site/web") == 204
+    after = {e["name"]: e for e in handlers._service._entries()}
+    assert set(after) == {"github/token", "site/web"}
+    for old, new in (("github/api", "github/token"), ("site/app", "site/web")):
+        kept = {k: v for k, v in before[old].items() if k not in ("name", "updated")}
+        assert {k: v for k, v in after[new].items() if k not in ("name", "updated")} == kept
+        assert after[new]["updated"] == "2026-01-02T03:05:06Z" != before[old]["updated"]
+    assert after["site/web"]["type"] == "cookies" and len(after["site/web"]["cookies"]) == 2
+    assert (await call(jp_fetch, "reveal", {"name": "github/token"}))["value"] == SECRET
+
+
+async def test_rename_answers_conflict_not_found_and_the_name_rules(jp_fetch, vault_env):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    await add(jp_fetch, name="github/other")
+    before = vault_file(vault_env)
+    for body, status, code in [
+        ({"name": "github/api", "new_name": "github/other"}, 409, "conflict"),
+        ({"name": "absent/entry", "new_name": "x/y"}, 404, "entry-not-found"),
+        ({"name": "github/api", "new_name": "a\nb"}, 400, "invalid"),
+        ({"name": "github/api", "new_name": ""}, 400, "invalid"),
+    ]:
+        got, answer = await fails_body(jp_fetch, "rename", body)
+        assert (got, answer["code"]) == (status, code), body
+    assert vault_file(vault_env) == before
+    assert {e["name"] for e in (await call(jp_fetch, "entries", method="GET"))["entries"]} == {
+        "github/api", "github/other"}
+
+
+async def test_rename_to_its_own_name_writes_nothing_and_is_invalid(jp_fetch, vault_env):
+    await init(jp_fetch)
+    await add(jp_fetch)
+    before = vault_file(vault_env)
+    status, answer = await fails_body(jp_fetch, "rename", {"name": "github/api", "new_name": "github/api"})
+    assert (status, answer["code"]) == (400, "invalid")
+    assert "'github/api' equals the name 'github/api'" in answer["error"]
+    assert vault_file(vault_env) == before
+    status, answer = await fails_body(jp_fetch, "no-such-action", {})
+    assert (status, answer["code"]) == (404, "no-action")
+
+
+def test_a_rename_whose_write_fails_leaves_the_entry_under_its_old_name(vault_env, monkeypatch):
+    svc = handlers._service
+    svc.init(PASS)
+    svc.add("github/api", {"password": SECRET})
+    before = vault_file(vault_env)
+
+    def refused(src, dst):
+        raise OSError("no space left on device")
+
+    with monkeypatch.context() as m:
+        m.setattr(store.os, "replace", refused)
+        with pytest.raises(OSError):
+            svc.rename("github/api", "github/token")
+    assert vault_file(vault_env) == before
+    assert [e["name"] for e in svc.list_entries()] == ["github/api"]
+    assert not list((vault_env / "vault").glob(".vault-*.tmp"))
+
+
 @pytest.mark.parametrize("name", ["", "   ", "a\nb", "x" * 201, None, 5])
 async def test_bad_names_are_refused(jp_fetch, vault_env, name):
     await init(jp_fetch)
@@ -1128,7 +1215,7 @@ async def test_stage_refuses_a_code_too_long_to_show(jp_fetch, vault_env):
     await init(jp_fetch)
     await add(jp_fetch, password="x" * 300)
     code, error = await fails(jp_fetch, "stage", {"name": "github/api", "kind": "code"})
-    assert code == 400 and "too long" in error
+    assert code == 400 and "the password is too long to show as an image" in error
 
 
 # --------------------------------------------------------------------------- #

@@ -14,8 +14,8 @@ from jupyter_server.utils import url_path_join
 import tornado
 
 from ..routes import json_body
-from .service import (GENERATE_LENGTH, PROOFS, Conflict, Denied, Locked, NotFound, VaultError,
-                      VaultService, generate)
+from .service import (GENERATE_LENGTH, PROOFS, Conflict, Denied, Expired, Locked, NotFound,
+                      VaultError, VaultService, generate)
 
 _service = VaultService()
 
@@ -38,7 +38,7 @@ def _reveal(s, body):
     if any(k in body for k in PROOFS):
         proof = {k: body[k] for k in ("cred_id", *PROOFS) if k in body}
         return {"value": s.reveal_proven(body.get("name"), proof)}
-    return {"value": s.read(body.get("name"), body.get("field") or "password")}
+    return {"value": s.read(body.get("name"), body.get("field") or None)}
 
 
 def _generate(s, args):
@@ -63,9 +63,11 @@ _POST = {
     "challenge": lambda s, b: s.challenge(),
     "entries": lambda s, b: s.add(b.get("name"), b.get("fields") or {}),
     "delete": lambda s, b: s.delete(b.get("name")),
+    "rename": lambda s, b: s.rename(b.get("name"), b.get("new_name")),
+    "cookies-parse": lambda s, b: s.parse_cookies(b.get("text"), b.get("url")),
     "reveal": _reveal,
     "proof-check": lambda s, b: s.check_recovery(b.get("current")),
-    "stage": lambda s, b: {"nonce": s.stage(b.get("name"), b.get("field") or "password", b.get("kind"))},
+    "stage": lambda s, b: {"nonce": s.stage(b.get("name"), b.get("field") or None, b.get("kind"))},
     "import": lambda s, b: s.import_entries(b.get("entries")),
     "passkeys": lambda s, b: s.add_passkey(
         b.get("cred_id"), b.get("rp_id"), b.get("prf_salt"), b.get("prf"), b.get("label"),
@@ -99,6 +101,8 @@ class VaultHandler(APIHandler):
             return self._error(404, e, "entry-not-found")
         except Conflict as e:
             return self._error(409, e, "conflict")
+        except Expired as e:
+            return self._error(410, e, "expired")
         except VaultError as e:
             return self._error(400, e, "invalid")
         except (OSError, ValueError) as e:

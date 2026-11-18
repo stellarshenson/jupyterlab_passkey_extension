@@ -22,24 +22,26 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 
 from .. import cli as _cli
 from .. import relay
-from . import gitcred, store
+from . import cookies, gitcred, store
 from .client import (
     LOCKED,
     REGISTER_COMMAND,
+    REGISTER_TIMEOUT,
+    NoVault,
     Vault,
     VaultClientError,
     VaultLocked,
+    _missing_vault,
     browser_step,
     no_vault,
     request,
 )
 from .service import GENERATE_LENGTH, READABLE, _check_name
-
-REGISTER_TIMEOUT = 180.0
 
 
 def _duration(seconds):
@@ -53,15 +55,18 @@ def _minutes(minutes):
     return " ".join(part for part in (f"{hours}h" if hours else "", f"{rest}m" if rest else "") if part)
 
 
-def _read_secret(a, prompt, twice, blind_twice=False):
+def _read_secret(a, prompt, twice, blind_twice=False, multiline=False):
     """A secret from the browser dialog, a hidden prompt, or stdin - never argv.
 
     `twice` is the vault's rule for this kind of secret: two matching fields in the
     dialog and two entries at a blind prompt. `blind_twice` asks twice at the blind
-    prompt alone, where a typing mistake cannot be seen."""
+    prompt alone, where a typing mistake cannot be seen. `multiline` makes the dialog's
+    field a multi-line paste field."""
     if a.in_browser:
         nonce = secrets.token_urlsafe(24)
         args = {"nonce": nonce, "prompt": prompt, "twice": twice}
+        if multiline:
+            args["multiline"] = True
         _cli._trigger(_cli.PASSPHRASE_COMMAND, args, "Enter secret",
                       f"Enter {prompt[0].lower()}{prompt[1:]}")
         try:
@@ -93,6 +98,39 @@ def _new_password(a):
     if a.generate:
         return request("GET", "generate", params=_length(a))["value"]
     return _read_secret(a, "Password", twice=False, blind_twice=True)
+
+
+def _read_cookies(a):
+    """Pasted cookie text from stdin or the paste dialog, never a terminal: a paste there
+    runs as typed lines and stays in the scrollback."""
+    if not a.in_browser and sys.stdin.isatty():
+        raise SystemExit("--cookies reads a pipe or --in-browser, not a terminal")
+    return _read_secret(a, f"Cookies for {a.name}", twice=False, multiline=True)
+
+
+def _say_cookies(a, vault, verb):
+    """After a cookie write, the entry's count, expired count, domains, cookie names and
+    kept header names from the list: never a value. `verb` is the result's key, as on a
+    password entry; the other keys are the ones POST vault/cookies-parse answers."""
+    entry = next(e for e in vault.list() if e["name"] == a.name.strip())
+    jar = entry["cookies"]
+    names = [c["name"] for c in jar]
+    said = "".join(f"; {what}: {', '.join(found)}"
+                   for what, found in (("names", names), ("headers", entry["headers"])) if found)
+    _cli._say(f"{verb} {a.name} - {_say_jar(jar)}{said}")
+    _cli._emit(a, a.command, {verb: a.name, "count": len(jar), "domains": sorted({c["domain"] for c in jar}),
+                              "names": names, "expired": len(jar) - len(cookies.unexpired(jar, time.time())),
+                              "headers": entry.get("headers", [])})
+    return 0
+
+
+def _say_jar(jar):
+    """The count, expired count and domains of a listed cookie entry's cookies."""
+    if not jar:
+        return "cookies: 0"
+    expired = len(jar) - len(cookies.unexpired(jar, time.time()))
+    return (f"cookies: {len(jar)}, expired: {expired}, "
+            f"domains: {', '.join(sorted({c['domain'] for c in jar}))}")
 
 
 def _fields(a):
@@ -239,16 +277,70 @@ def cmd_list(a, vault):
     _cli._emit(a, "vault list", {"entries": entries})
     if not _cli._json(a):
         for e in entries:
-            print("\t".join((e["name"], e["username"], e["category"], e["url"])))
+            line = [e["name"], e["username"], e["category"], e["url"]]
+            if e.get("type") == "cookies":
+                line.append(f"{_say_jar(e['cookies'])}; headers: {len(e['headers'])}")
+            print("\t".join(line))
     return 0
+
+
+def _cookie_header(vault, name, jar, url, given):
+    """The Cookie header, `name=value; ...`, of the cookies of `jar` that match `url`, by
+    default the entry's url. `given` names what gives the command a missing url."""
+    url = url or vault.get(name, "url")
+    if not url:
+        raise SystemExit(f"{name} has no url - give the site's url with {given}")
+    try:
+        header = cookies.to_header(jar, url)
+    except store.VaultError as e:
+        raise SystemExit(f"{name}: {e}") from None
+    if not header:
+        domains = ", ".join(sorted({c["domain"] for c in jar}))
+        raise SystemExit(f"{name}: no cookie matches the domain, path and scheme of the url - its cookies are for {domains}"
+                         f"; give the site's url with {given}")
+    return header
+
+
+def _header_lines(vault, name, url, given):
+    """The text `get NAME --format headers` prints, one header a line: the Cookie header
+    for `url` when the entry stores cookies, then each kept header in stored order."""
+    kept = vault._read(name, "headers")
+    if next(e for e in vault.list() if e["name"] == name.strip())["cookies"]:
+        kept = [("Cookie", _cookie_header(vault, name, vault._read(name, "cookies"), url, given)), *kept]
+    return "".join(f"{key}: {value}\n" for key, value in kept)
+
+
+def _cookie_output(a, vault, jar):
+    """The cookies as --format asks, and the text that prints them: a cookies.txt, the
+    Cookie header for --url or the entry's url, or the cookie list."""
+    if a.format == "json":
+        return jar, json.dumps(jar, indent=2) + "\n"
+    if a.format == "header":
+        header = _cookie_header(vault, a.name, jar, a.url, "--url")
+        return header, header + "\n"
+    text = cookies.to_netscape(jar)
+    return text, text
 
 
 def cmd_get(a, vault):
     _unlock_before_read(a, vault)
-    value = vault.get(a.name, a.field)
-    _cli._emit(a, "vault get", {"name": a.name, "field": a.field, "value": value})
+    # The headers are read apart from the cookies: an entry may store no cookie.
+    headers = a.format == "headers" and not a.field
+    value = _header_lines(vault, a.name, a.url, "--url") if headers else vault._read(a.name, a.field)
+    if headers:
+        field, text = "headers", value
+    elif isinstance(value, list):
+        field = a.field or "cookies"
+        value, text = _cookie_output(a, vault, value)
+    elif a.format or a.url:
+        if a.field:
+            raise SystemExit(f"--format and --url are for the cookies field; {a.field} is text")
+        raise SystemExit(f"--format and --url are for a cookie entry; {a.name} is a login entry")
+    else:
+        field, text = a.field or "password", value + "\n"
+    _cli._emit(a, "vault get", {"name": a.name, "field": field, "value": value})
     if not _cli._json(a):
-        print(value)
+        sys.stdout.write(text)
     return 0
 
 
@@ -257,8 +349,10 @@ def cmd_add(a, vault):
     s = vault.status()
     if not s["initialized"]:
         raise VaultClientError(no_vault(s["path"]), "no-vault")
-    password = _new_password(a)
-    vault._unlocked(lambda: request("POST", "entries", {"name": a.name, "fields": {**_fields(a), "password": password}}))
+    if a.cookies:
+        vault.add(a.name, cookies=_read_cookies(a), **_fields(a))
+        return _say_cookies(a, vault, "added")
+    vault.add(a.name, password=_new_password(a), **_fields(a))
     _cli._say(f"added {a.name}")
     _cli._emit(a, "vault add", {"added": a.name})
     return 0
@@ -270,20 +364,43 @@ def cmd_edit(a, vault):
     if not s["initialized"]:
         raise VaultClientError(no_vault(s["path"]), "no-vault")
     fields = _fields(a)
+    if a.password or a.generate or a.cookies:
+        # The type before the secret, so nothing is asked that the server then refuses.
+        entry = next((e for e in vault.list() if e["name"] == a.name.strip()), None)
+        if entry is None:
+            # The server's sentence for a missing entry (service.py _find).
+            raise VaultClientError(f"no entry named {a.name.strip()!r} - run `jupyterlab-passkey "
+                                   "vault list --json` to see the names", "entry-not-found")
+        kind = entry.get("type")
+        if kind == "cookies" and not a.cookies:
+            raise VaultClientError(f"{a.name!r} is a cookies entry; it has no password", "invalid")
+        if kind == "login" and a.cookies:
+            raise VaultClientError(f"{a.name!r} is a login entry; it has no cookies", "invalid")
     if a.password or a.generate:
         fields["password"] = _new_password(a)
+    if a.cookies:
+        fields["cookies"] = _read_cookies(a)
     if not fields:
         raise SystemExit("nothing to change - give at least one field")
-    vault._unlocked(lambda: request("PATCH", "entries", {"name": a.name, "fields": fields}))
+    vault.edit(a.name, **fields)
+    if a.cookies:
+        return _say_cookies(a, vault, "updated")
     _cli._say(f"updated {a.name}")
     _cli._emit(a, "vault edit", {"updated": a.name})
     return 0
 
 
 def cmd_rm(a, vault):
-    vault._unlocked(lambda: request("POST", "delete", {"name": a.name}))
+    vault.delete(a.name)
     _cli._say(f"removed {a.name}")
     _cli._emit(a, "vault rm", {"removed": a.name})
+    return 0
+
+
+def cmd_rename(a, vault):
+    vault.rename(a.name, a.new_name)
+    _cli._say(f"renamed {a.name} to {a.new_name}")
+    _cli._emit(a, "vault rename", {"renamed": a.name, "to": a.new_name})
     return 0
 
 
@@ -296,30 +413,21 @@ def cmd_generate(a, vault):
     return 0
 
 
-def _stage_and_trigger(a, vault, kind, command, label, message, done):
+def _stage_and_trigger(a, vault, stage, done):
     _unlock_before_read(a, vault)
-    body = {"name": a.name, "field": a.field, "kind": kind}
-    nonce = vault._unlocked(lambda: request("POST", "stage", body))["nonce"]
-    try:
-        _cli._trigger(command, {"nonce": nonce, "label": a.name}, label, message)
-    except BaseException:
-        # No button was raised, so nothing can ever collect this relay.
-        relay.unstage(nonce, kind)
-        raise
+    stage(a.name, a.field)
     _cli._say(f"nothing is reported back here - the click is what {done} it")
     return 0
 
 
 def cmd_copy(a, vault):
-    _stage_and_trigger(a, vault, "secret", _cli.COPY_COMMAND, "Copy to clipboard",
-                       f"Copy **{a.name}**", "copies")
+    _stage_and_trigger(a, vault, vault.copy, "copies")
     _cli._emit(a, "vault copy", {"posted": True, "name": a.name})
     return 0
 
 
 def cmd_show(a, vault):
-    _stage_and_trigger(a, vault, "code", _cli.SHOW_COMMAND, "Show",
-                       f"Show **{a.name}**", "shows")
+    _stage_and_trigger(a, vault, vault.show, "shows")
     _cli._emit(a, "vault show", {"posted": True, "name": a.name})
     return 0
 
@@ -329,22 +437,31 @@ def _env_spec(spec):
     if not sep or not var or not ref:
         raise SystemExit(f"--env takes VAR=NAME[:FIELD], got {spec!r}")
     name, _, field = ref.rpartition(":")
-    if name and field in READABLE:
+    if name and field in (*READABLE, "headers"):
         return var, name, field
-    return var, ref, "password"
+    return var, ref, None
 
 
 def cmd_exec(a, vault):
-    command = a.command[1:] if a.command[:1] == ["--"] else a.command
+    command = a.argv[1:] if a.argv[:1] == ["--"] else a.argv
     if not command:
         raise SystemExit("exec needs a command after --")
     _unlock_before_read(a, vault)
     env = dict(os.environ)
     for spec in a.env:
         var, name, field = _env_spec(spec)
-        env[var] = vault.get(name, field)
+        # exec has no --url: a refusal names the command that gives the entry one.
+        given = f"`vault edit {name} --url URL`"
+        # NAME:headers is the text `get NAME --format headers` prints.
+        value = _header_lines(vault, name, None, given) if field == "headers" else vault._read(name, field)
+        if isinstance(value, list):
+            # A cookie entry: the text `get NAME --format header` prints.
+            value = _cookie_header(vault, name, value, None, given)
+        env[var] = value
     if _cli._json(a):
         # The caller reads the object; the child's streams become fields of it.
+        # With SIGCHLD ignored the kernel collects the child and Python reports status 0.
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
         try:
             done = subprocess.run(command, env=env, capture_output=True)
         except OSError as e:
@@ -888,7 +1005,9 @@ def _sort_lines(entries, items, read):
     """The store's lines against the vault: the lines to add, the count it holds with
     the same value, and the names that hold another value. `read` gives an entry's
     value. A line in two store files meets its own copy, so a line added counts too."""
-    known = list(entries)
+    # A cookie entry is a website session, never git's credential: a line with its name is
+    # skipped at the import, which overwrites no name.
+    known = [entry for entry in entries if entry.get("type") != "cookies"]
     fresh, held, differ = [], 0, []
     for item in items:
         same = _same_account(known, item)
@@ -908,6 +1027,8 @@ def _say_several(entries):
     """One line for each host with several entries: what a request with no username gets."""
     hosts = {}
     for entry in entries:
+        if entry.get("type") == "cookies":
+            continue  # the helper never answers with a cookie entry
         parts = gitcred._parts(entry)
         if parts is not None and parts[1]:
             hosts.setdefault(parts[1], {})[entry["name"]] = None
@@ -947,7 +1068,8 @@ def cmd_git_migrate(a, vault):
         _say_several(entries + _sort_lines(entries, items, lambda name: None)[0])
         _cli._emit(a, "vault git migrate", {"lines": _lines()})
         return 0
-    fresh, held, differ = _sort_lines(vault.list(), items, vault.get)
+    fresh, held, differ = _sort_lines(vault.list(), items,
+                                      lambda name: vault.get(name, "password"))
     # `store` answers its first line, and the helper the newest changed entry: the dates
     # step back one second a line, so a host answers as it did.
     now = datetime.datetime.now(datetime.UTC)
@@ -1134,14 +1256,6 @@ def cmd_aws_uninstall(a, vault):
     return 0
 
 
-def _missing_vault(error):
-    """The path of a vault a command found missing, or None for any other error."""
-    head, sep, tail = str(error).partition(" - run `jupyterlab-passkey vault init`")
-    if sep and not tail and head.startswith("no vault at "):
-        return head[len("no vault at "):]
-    return None
-
-
 def _terminal():
     """A question can be asked and answered. With --json stdout carries the object, so
     the prompt goes to stderr instead of needing a terminal there."""
@@ -1220,10 +1334,9 @@ def run(a):
         raise _cli.Fail(LOCKED, code, _fail(LOCKED, code))
     except VaultClientError as e:
         code = e.code or "server"
-        # The server calls a missing vault an invalid request; --json has a local name
-        # for it. Text mode keeps the server's word, as it always has.
-        json_code = "no-vault" if code == "invalid" and _missing_vault(e) else code
-        raise _cli.Fail(str(e), json_code, _fail(str(e), code))
+        # The server calls a missing vault an invalid request, which the client names
+        # no-vault. Text mode keeps the server's word, as it always has.
+        raise _cli.Fail(str(e), code, _fail(str(e), "invalid" if isinstance(e, NoVault) else code))
 
 
 # --------------------------------------------------------------------------- #
@@ -1314,7 +1427,7 @@ add Password and authenticator app under Vault settings and security (the cog).
             cmd_unlock,
             description="""
 unlock the vault for the unlock_minutes setting of the server's configuration file
-(default 1 minute), for every client:
+(default 15 minutes), for every client:
 this CLI, the Python Vault class and the panel. With a passkey: a notification to click,
 then the passkey prompt in the tab. A passkey works only in a tab opened at the hostname it
 was added at, or a subdomain of it. In a tab with no such passkey, or at an IP address, the
@@ -1356,7 +1469,9 @@ app and a password and passkey, and the unlock duration. Never waits.
 
     p = add("list", "entry names and metadata, never passwords", cmd_list,
             description=f"""
-print one line per entry, tab-separated: name, username, category, url. Never passwords.
+print one line per entry, tab-separated: name, username, category, url; a cookie entry
+adds its cookie count, expired count, domains and the count of its kept request
+headers. Never a password, a cookie value or a header value.
 {unlocks_first}
 {read_unlocks}
 """,
@@ -1371,14 +1486,35 @@ print one line per entry, tab-separated: name, username, category, url. Never pa
 print one field of an entry and a newline to stdout. Whatever reads stdout receives the
 value: send it to a pipe or a file, not to a screen or a log. To give a value to a
 command, use exec; to give it to the user, use copy or show.
+With no --field, a cookie entry prints its unexpired cookies in the --format asked:
+netscape (default), a cookies.txt starting `# Netscape HTTP Cookie File`, every cookie
+a plain line, which curl -b, wget --load-cookies (wget 1.x too) and yt-dlp --cookies
+read; header, `name=value; ...` of the cookies whose domain, path and secure flag match
+--url (default the entry's url), refused when no cookie matches; json, the cookie list;
+headers, one line per request header, which curl -H @- reads from standard input:
+`Cookie: ` and the text header prints when the entry stores cookies, then each request
+header the entry keeps as `Name: value`. An entry that keeps headers and stores no
+cookie is read with --format headers only, and needs no url.
+A read that leaves no unexpired cookie fails with code expired. A header has no expiry
+the vault can read: it is printed until a new copy of the request is pasted.
+In `get NAME --format headers | curl -H @- URL`, when the read is refused, get prints
+its reason on stderr and curl still sends the request, without the headers; under
+`exec --env VAR=NAME:headers` the command does not run.
 {unlocks_first}
 {read_unlocks}
 """,
             examples=("jupyterlab-passkey vault get github/api | gh auth login --with-token",
                       "jupyterlab-passkey vault get github/api --field username",
-                      "jupyterlab-passkey vault get github/api --recovery --in-browser"))
+                      "jupyterlab-passkey vault get github/api --recovery --in-browser",
+                      "jupyterlab-passkey vault get site/app --format header --url https://app.example.com/api",
+                      "jupyterlab-passkey vault get site/app --format headers | curl -H @- https://app.example.com/api"))
     p.add_argument("name", help="entry name, such as github/api")
-    p.add_argument("--field", default="password", choices=READABLE, help="the field (default password)")
+    p.add_argument("--field", choices=READABLE,
+                   help="the field (default password, or the cookies of a cookie entry)")
+    p.add_argument("--format", choices=("netscape", "header", "json", "headers"),
+                   help="how a cookie entry prints (default netscape, a cookies.txt)")
+    p.add_argument("--url", help="the url --format header and headers match the cookies against "
+                                 "(default the entry's url)")
     read_methods(p)
 
     new_password = f"""
@@ -1386,31 +1522,59 @@ The password comes from a hidden prompt typed twice, from stdin, from a JupyterL
 with --in-browser (one field; Cancel exits 1), or from --generate; never from an option.
 --generate makes {GENERATE_LENGTH} characters by default, without l I 1 | O 0, quotes, backslash,
 backtick and space.
-{unlocks_first}
+"""
+    pasted_cookies = """
+The cookies come from pasted text on stdin, or from a JupyterLab dialog with a multi-line
+paste field with --in-browser (Cancel exits 1); never from an option or a terminal. The
+vault reads the form itself: a browser's Copy as cURL (bash or cmd) or Copy as fetch
+(Node.js), Set-Cookie lines, a cookies.txt (Netscape format), a Cookie-Editor or
+EditThisCookie JSON export, a Playwright storage state, or a Cookie header or name=value,
+which needs the site's --url. It prints the count, the expired count, the domains, the
+cookie names and the names of the request headers the entry keeps, never a value. A
+paste whose every cookie has expired is refused with code expired. A cookie entry has no
+password: --password and --generate are refused on it, and --cookies on a login entry.
 """
     for name, help_, fn, description, examples in (
             ("add", "add an entry; the password is prompted, piped or generated", cmd_add,
-             "add an entry." + new_password,
+             "add an entry." + new_password + "\n--cookies adds a cookie entry instead." + pasted_cookies
+             + unlocks_first,
              ('jupyterlab-passkey vault add github/api -u me -c infrastructure --url https://github.com --in-browser',
               "jupyterlab-passkey vault add db/prod -u app --generate --length 32",
-              "<producer> | jupyterlab-passkey vault add gitlab/api -u me    # the password on stdin")),
+              "<producer> | jupyterlab-passkey vault add gitlab/api -u me    # the password on stdin",
+              "jupyterlab-passkey vault add site/app --cookies --in-browser   # paste a Copy as cURL")),
             ("edit", "change fields of an entry", cmd_edit,
-             "change fields of an entry; a field not given keeps its value. --password or\n"
-             "--generate also sets a new password." + new_password,
+             "change fields of an entry and set `updated`; a field not given keeps its value.\n"
+             "--password or --generate also sets a new password." + new_password
+             + "\n--cookies replaces the cookies and the headers of a cookie entry." + pasted_cookies + unlocks_first,
              ("jupyterlab-passkey vault edit github/api --password --in-browser",
-              'jupyterlab-passkey vault edit github/api --notes "rotated 2026-09"'))):
+              'jupyterlab-passkey vault edit github/api --notes "rotated 2026-09"',
+              "jupyterlab-passkey vault edit site/app --cookies --in-browser"))):
         p = add(name, help_, fn, description=description, examples=examples)
         p.add_argument("name", help="entry name, such as github/api")
         p.add_argument("-u", "--username", help="the account name")
         p.add_argument("--url", help="where the entry is used")
         p.add_argument("-c", "--category", help="a group name that list --category filters on")
         p.add_argument("--notes", help="free text")
-        p.add_argument("--generate", action="store_true", help="generate the password")
+        secret = p.add_mutually_exclusive_group()
+        secret.add_argument("--generate", action="store_true", help="generate the password")
+        secret.add_argument("--cookies", action="store_true",
+                            help="cookies pasted on stdin or with --in-browser (a cookie entry)")
         p.add_argument("--length", type=int, help=f"generated password length (default {GENERATE_LENGTH})")
         in_browser(p)
         if name == "edit":
-            p.add_argument("--password", action="store_true",
-                           help="also set a new password (prompted, piped or --in-browser)")
+            secret.add_argument("--password", action="store_true",
+                                help="also set a new password (prompted, piped or --in-browser)")
+
+    p = add("rename", "give an entry a new name", cmd_rename,
+            description=f"""
+give an entry a new name; every other field, its type and its cookies stay, and
+`updated` is set. A new name that exists is refused with code conflict, a missing entry
+with entry-not-found, and the entry's own name with invalid.
+{unlocks_first}
+""",
+            examples=("jupyterlab-passkey vault rename github/api github/token",))
+    p.add_argument("name", help="entry name, such as github/api")
+    p.add_argument("new_name", metavar="NEW_NAME", help="the new name")
 
     p = add("rm", "remove an entry", cmd_rm,
             description=f"""
@@ -1439,18 +1603,21 @@ reboot in /dev/shm; lock does not remove it.
 """
     for name, help_, fn, description, examples in (
             ("copy", "put a value on the browser clipboard", cmd_copy,
-             "put a value on the browser clipboard: the click copies it." + staged,
+             "put a value on the browser clipboard: the click copies it. With no --field, a\n"
+             "cookie entry copies its unexpired cookies as a cookies.txt." + staged,
              ("jupyterlab-passkey vault copy github/api",
               "jupyterlab-passkey vault copy github/api --field username",
-              "jupyterlab-passkey vault copy github/api --recovery --in-browser")),
+              "jupyterlab-passkey vault copy github/api --recovery --in-browser",
+              "jupyterlab-passkey vault copy site/app            # the cookies.txt")),
             ("show", "show a value in the browser as a distorted image", cmd_show,
              f"show a value in the browser as a distorted image, to type elsewhere; at most\n"
-             f"{relay.MAX_CODE_CHARS} characters." + staged,
+             f"{relay.MAX_CODE_CHARS} characters. The cookies of a cookie entry are refused: use copy." + staged,
              ("jupyterlab-passkey vault show wifi/guest",
               "jupyterlab-passkey vault show wifi/guest --password --in-browser"))):
         p = add(name, help_, fn, description=description, examples=examples)
         p.add_argument("name", help="entry name, such as github/api")
-        p.add_argument("--field", default="password", choices=READABLE, help="the field (default password)")
+        p.add_argument("--field", choices=READABLE,
+                       help="the field (default password, or the cookies of a cookie entry)")
         read_methods(p)
 
     p = add("exec", "run a command with vault values in its environment", cmd_exec,
@@ -1458,15 +1625,40 @@ reboot in /dev/shm; lock does not remove it.
 run COMMAND with vault values in its environment only. This process becomes the command,
 so the exit status, the signals and the output are the command's own: do not run a
 command that prints the values it was given. Fields: {", ".join(READABLE)}.
+--env VAR=NAME on a cookie entry sets VAR to its Cookie header, `name=value; ...`, of
+the unexpired cookies that match the entry's url: the text `get NAME --format header`
+prints. curl reads it from standard input:
+printf "Cookie: %s\\n" "$VAR" | curl -H @- URL
+Never put "$VAR" in a tool's arguments: the process list shows a command line. The
+shell that runs vault exec expands $VAR before VAR is set, so such a command runs
+under sh -c '...'.
+It is refused when the entry has no url (give one with `vault edit NAME --url URL`), when
+no cookie matches the url, and with code expired when no unexpired cookie is left.
+--env VAR=NAME:headers on a cookie entry sets VAR to the text `get NAME --format headers`
+prints for the entry's url, one request header a line: the Cookie header when the entry
+stores cookies, then each header it keeps. curl reads them from standard input:
+printf "%s" "$VAR" | curl -H @- URL
+With no exec, curl reads the same lines from get:
+jupyterlab-passkey vault get NAME --format headers | curl -H @- URL
+In that pipe, when the read is refused, get prints its reason on stderr and curl still
+sends the request, without the headers; under `exec --env VAR=NAME:headers` the command
+does not run.
+A header has no expiry the vault can read. On a login entry NAME:headers is refused.
+NAME:FIELD reads a field of a cookie entry as of any entry. A tool that reads a
+cookies.txt file takes the output of `get NAME`, in bash:
+wget --load-cookies <(jupyterlab-passkey vault get NAME) URL
 {unlocks_first}
 {read_unlocks}
 """,
             examples=("jupyterlab-passkey vault exec --env GITHUB_TOKEN=github/api -- gh repo list",
                       "jupyterlab-passkey vault exec --recovery --in-browser --env GITHUB_TOKEN=github/api -- gh repo list",
-                      "jupyterlab-passkey vault exec --env DB_USER=db/prod:username --env DB_PASS=db/prod -- ./migrate.sh"))
+                      "jupyterlab-passkey vault exec --env DB_USER=db/prod:username --env DB_PASS=db/prod -- ./migrate.sh",
+                      'jupyterlab-passkey vault exec --env C=site/app -- sh -c \'printf "Cookie: %s\\n" "$C" | curl -H @- https://app.example.com/api\''))
     p.add_argument("--env", action="append", default=[], metavar="VAR=NAME[:FIELD]",
-                   help="set VAR to the entry's field (password by default); repeatable")
-    p.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND [ARGS...]")
+                   help="set VAR to the entry's field (by default the password, or the Cookie "
+                        "header of a cookie entry); repeatable")
+    # Not `command`: that is the name a --json object reports, and argv can hold anything.
+    p.add_argument("argv", nargs=argparse.REMAINDER, metavar="command", help="-- COMMAND [ARGS...]")
     read_methods(p)
 
     p = add("import", "add entries from a JSON list, or from a pass-cli vault", cmd_import,

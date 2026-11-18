@@ -33,9 +33,14 @@ def _credential(profile):
             _vcli.setup_in_browser(vault)
         entries = vault.list()
     name = f"aws/{profile}"
-    if not any(entry["name"] == name for entry in entries):
+    entry = next((entry for entry in entries if entry["name"] == name), None)
+    if entry is None:
         print(f"{PROGRAM}: no vault entry {name} - run `jupyterlab-passkey vault add "
               f"{name} -u <access-key-id>`", file=sys.stderr)
+        return None
+    if entry.get("type") == "cookies":
+        print(f"{PROGRAM}: vault entry {name} is a cookies entry - an AWS profile needs a login "
+              "entry with the access key id as username", file=sys.stderr)
         return None
     # A read opens a locked vault through the existing notification and wait.
     username = vault.get(name, "username")

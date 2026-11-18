@@ -337,8 +337,8 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str,
     """Post the notification whose button runs `command_id` with `args_obj`. Its text
     starts with who asks (`_caller`), so the person who clicks knows which project
     raised it. `seconds` is how long the caller waits for the click: the data names it
-    with the command, so a tab can drop a vault notification nothing waits for any more
-    (`dismissStale` in src/vault/plugin.ts)."""
+    with the command and the raise time on the server's clock, this host's, so a tab can
+    drop a vault notification nothing waits for any more (`dismissStale` in plugin.ts)."""
     base, token = _server()
     payload = {
         "message": f"**{_caller()}**: {message}",
@@ -356,7 +356,7 @@ def _trigger(command_id: str, args_obj: dict, label: str, message: str,
     }
     if seconds is not None:
         # The ingest refuses a number that is not finite; `--timeout inf` has no end.
-        payload["data"] = {"command": command_id,
+        payload["data"] = {"command": command_id, "raised": time.time(),
                            "seconds": seconds if math.isfinite(seconds) else None}
     headers = {"Content-Type": "application/json"}
     if token:

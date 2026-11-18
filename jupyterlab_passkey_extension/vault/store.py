@@ -66,15 +66,11 @@ import re
 import tempfile
 from datetime import datetime, timezone
 
-from argon2.exceptions import HashingError
-from argon2.low_level import Type, hash_secret_raw
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
-
 from .. import env
+
+# argon2 and cryptography are imported where they are used: the git and AWS helpers
+# import this module, and a `make install` elsewhere reinstalls argon2-cffi and cffi with
+# jupyter_server (DEF-VAULT-112).
 
 FORMAT = "jupyterlab-passkey-vault"
 VERSION = 2
@@ -145,11 +141,13 @@ def _now():
 
 
 def _seal(key, plaintext, aad):
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     nonce = os.urandom(12)
     return _b64e(nonce + AESGCM(key).encrypt(nonce, plaintext, aad))
 
 
 def _open(key, sealed, aad):
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     blob = _b64d(sealed)
     return AESGCM(key).decrypt(blob[:12], blob[12:], aad)
 
@@ -174,6 +172,7 @@ def _slot_aad(slot):
 
 def _scrypt_kek(slot, secret):
     """The key of an older recovery or unlock password slot, from the secret typed."""
+    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
     for name, bound in _SCRYPT_BOUNDS.items():
         value = slot.get(name)
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= bound:
@@ -185,6 +184,7 @@ def _scrypt_kek(slot, secret):
 
 def _argon2_kek(slot, secret):
     """The key of a recovery or an unlock password slot, from the secret typed."""
+    from argon2.low_level import Type, hash_secret_raw
     for name, bound in _ARGON2_BOUNDS.items():
         value = slot.get(name)
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= bound:
@@ -207,6 +207,8 @@ def _kek(slot, secret):
 
 
 def _passkey_kek(slot, prf):
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     return HKDF(
         algorithm=hashes.SHA256(), length=32, salt=_b64d(slot["hkdf_salt"]), info=_HKDF_INFO
     ).derive(prf)
@@ -324,6 +326,8 @@ def create(path, passphrase):
 
 def _unwrap_typed(doc, kind, secret, wrong, missing):
     """The root key from the slot of type `kind`, which a typed secret opens."""
+    from argon2.exceptions import HashingError
+    from cryptography.exceptions import InvalidTag
     for slot in doc["slots"]:
         if slot.get("type") == kind:
             try:
@@ -354,6 +358,7 @@ def unwrap_pair(doc, password):
 
 def pair_key(doc, dek):
     """The slot of Password and passkey and its COSE public key, opened with the data key."""
+    from cryptography.exceptions import InvalidTag
     slot = next((s for s in doc["slots"] if s.get("type") == PAIR), None)
     if slot is None:
         raise VaultError("the vault has no password and passkey")
@@ -365,6 +370,7 @@ def pair_key(doc, dek):
 
 
 def unwrap_passkey(doc, cred_id, prf):
+    from cryptography.exceptions import InvalidTag
     for slot in doc["slots"]:
         if slot.get("type") == "passkey" and slot.get("cred_id") == cred_id:
             try:
@@ -377,6 +383,7 @@ def unwrap_passkey(doc, cred_id, prf):
 def open_data_key(doc, root):
     """The data key of `doc`, opened with `root`: for a version-1 file the root itself,
     where the two jobs had one key."""
+    from cryptography.exceptions import InvalidTag
     if doc.get("version") == 1:
         return root
     try:
@@ -446,6 +453,7 @@ def data_key_created(doc):
 
 
 def read_entries(doc, dek):
+    from cryptography.exceptions import InvalidTag
     try:
         entries = json.loads(_open(dek, doc["entries"], _entries_aad(doc)))
     except (InvalidTag, ValueError):
@@ -595,6 +603,7 @@ def remove_mfa(path):
 
 def authenticator_secret(doc, dek):
     """The secret of the authenticator app, or None when there is none."""
+    from cryptography.exceptions import InvalidTag
     if "authenticator" not in doc:
         return None
     try:

@@ -358,3 +358,64 @@ describe('the reveal window after an unlock or a proof', () => {
     expect(sent()).toEqual({ name: 'nas', current: 'the passphrase' });
   });
 });
+
+describe('rename and the cookie preview', () => {
+  const vault = () => new VaultApi({ baseUrl: 'http://host/' } as any);
+  const request = () => mockMakeRequest.mock.calls[0];
+
+  it('renames with one POST to vault/rename, and a taken name is the 409 refusal', async () => {
+    mockMakeRequest.mockResolvedValue({
+      ok: true,
+      status: 204,
+      text: async () => ''
+    });
+    await vault().rename('nas/ugos', 'nas/new');
+    expect(request()[0]).toBe(
+      'http://host//jupyterlab-passkey-extension/vault/rename'
+    );
+    expect(request()[1].method).toBe('POST');
+    expect(JSON.parse(request()[1].body)).toEqual({
+      name: 'nas/ugos',
+      new_name: 'nas/new'
+    });
+    mockMakeRequest.mockResolvedValue({
+      ok: false,
+      status: 409,
+      text: async () =>
+        JSON.stringify({
+          error: "an entry named 'nas/new' already exists",
+          code: 'conflict'
+        })
+    });
+    const err = await vault()
+      .rename('nas/ugos', 'nas/new')
+      .catch(e => e);
+    expect(err.status).toBe(409);
+    expect(err.message).toBe("an entry named 'nas/new' already exists");
+  });
+
+  it('posts the pasted text and the URL to vault/cookies-parse and answers the summary', async () => {
+    const summary = {
+      count: 2,
+      domains: ['example.com'],
+      names: ['sid', 'theme'],
+      expired: 0,
+      headers: ['authorization']
+    };
+    mockMakeRequest.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(summary)
+    });
+    expect(
+      await vault().parseCookies('sid=1; theme=2', 'https://example.com')
+    ).toEqual(summary);
+    expect(request()[0]).toBe(
+      'http://host//jupyterlab-passkey-extension/vault/cookies-parse'
+    );
+    expect(JSON.parse(request()[1].body)).toEqual({
+      text: 'sid=1; theme=2',
+      url: 'https://example.com'
+    });
+  });
+});

@@ -69,6 +69,18 @@ export interface IStatus {
   path: string;
   /** Changes whenever the entries do; absent with no vault. */
   revision?: string;
+  /** The server's clock at this answer, in Unix seconds; absent from an older server. */
+  now?: number;
+}
+
+/** What an entry holds: a password, or the cookies and request headers of a browser session. */
+export type EntryType = 'login' | 'cookies';
+
+/** A stored cookie as the list shows it: never its value. `expires` is Unix seconds, null for a session cookie. */
+export interface ICookieInfo {
+  domain: string;
+  name: string;
+  expires: number | null;
 }
 
 export interface IEntry {
@@ -80,6 +92,11 @@ export interface IEntry {
   created: string;
   updated: string;
   used?: string;
+  type?: EntryType;
+  /** A cookie entry's cookies. */
+  cookies?: ICookieInfo[];
+  /** A cookie entry's kept request headers: their names, never a value. */
+  headers?: string[];
 }
 
 export interface IEntryFields {
@@ -88,6 +105,20 @@ export interface IEntryFields {
   url?: string;
   category?: string;
   notes?: string;
+  /** Sent by Add only: an edit never changes the type. */
+  type?: EntryType;
+  /** Pasted cookie text, which the server reads; empty or absent in an edit keeps the jar. */
+  cookies?: string;
+}
+
+/** What pasted cookie text reads as: never a value. */
+export interface ICookieSummary {
+  count: number;
+  domains: string[];
+  names: string[];
+  expired: number;
+  /** The names of the request headers the entry would keep. */
+  headers: string[];
 }
 
 export interface IPasskeySlot {
@@ -266,6 +297,15 @@ export class VaultApi {
 
   remove(name: string): Promise<void> {
     return this._call('delete', 'POST', { name });
+  }
+
+  rename(name: string, newName: string): Promise<void> {
+    return this._call('rename', 'POST', { name, new_name: newName });
+  }
+
+  /** Read pasted cookie text as the server would store it; writes nothing. */
+  parseCookies(text: string, url: string): Promise<ICookieSummary> {
+    return this._call('cookies-parse', 'POST', { text, url });
   }
 
   /**

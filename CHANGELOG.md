@@ -2,6 +2,34 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.12] - 2026-11-18
+
+### Added
+
+- Cookie entries: `vault add NAME --cookies` takes a browser's Copy as cURL or Copy as fetch, Set-Cookie lines, a cookies.txt or a JSON export, and stores the session's cookies beside the request headers of the copied request, every header except the browser's own; `vault get NAME --format headers`, `vault exec --env VAR=NAME:headers`, `Vault().headers()` and the vault panel read them
+- A copy that carries request headers and no cookie is stored, and every cookie read of that entry is refused with code `invalid`
+- The old Firefox Copy as cURL (Windows) form, as Firefox 138 and earlier writes it, is read
+- The edit form renames an entry, and a name already in use is refused under the field
+- The request headers of a paste are shown under the field before Save
+
+### Changed
+
+- The default unlock duration is 15 minutes, down from 1; the range stays 1 to 1,440 minutes
+- A vault panel success is a transient success notification shown once in each open tab, with no row left in the notification centre; deleting an entry raises nothing
+- The edit form's empty-paste help names what is kept, and a headers-only entry reads `Leave empty to keep the 1 header`
+- `vault exec --cookie-file` is removed; a cookie entry reaches a command through `vault exec --env VAR=NAME:headers`, and the pipe and wget recipes state their limits
+- The CLI help, the CLI reference, the design document and the agent skill describe the cookie entry, its headers and its reads
+
+### Fixed
+
+- `vault edit` no longer ends in a KeyError against a server started before cookie entries
+- `vault get NAME --format header` refuses an empty header instead of printing an empty line and exiting 0
+- The cookies.txt output writes every cookie as a plain line, so wget sends an HttpOnly cookie too
+- A copy that names `curl.exe` is read
+- A cookie or header value that UTF-8 cannot encode refuses the paste instead of being stored lossily
+- Ctrl-C early in an unlock claim no longer leaves a second unlock running
+- A success toast the page never shows, with the "Silence all notifications" setting on, loses its notification-centre row within 4 s
+
 ## [1.2.9] - 2026-11-05
 
 ### Changed

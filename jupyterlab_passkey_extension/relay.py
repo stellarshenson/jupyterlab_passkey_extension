@@ -580,11 +580,19 @@ def stage(nonce, kind, content, ttl=None):
     block-wait uses it so the key always outlives the wait (a key that self-destructs
     mid-wait would read as a collection). shm files never expire, so it is ignored
     there.
+
+    On the auto backend, a value the keyring refuses goes to the file relay, which every
+    keyctl reader cross-reads: a user key holds at most 32767 bytes, and the uid's key
+    quota (kernel.keys.maxbytes, 20000 bytes by default) can refuse less. A pinned keyctl
+    backend refuses it.
     """
     if backend() == "keyctl":
-        _keyctl_stage(nonce, kind, content, ttl)
-    else:
-        write_relay(nonce, f"{nonce}.{kind}", content)
+        try:
+            return _keyctl_stage(nonce, kind, content, ttl)
+        except OSError:
+            if env.get("RELAY_BACKEND") == "keyctl":
+                raise
+    write_relay(nonce, f"{nonce}.{kind}", content)
 
 
 def collect(nonce, kind):

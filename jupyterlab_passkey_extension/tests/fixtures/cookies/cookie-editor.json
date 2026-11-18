@@ -1,0 +1,39 @@
+[
+    {
+        "domain": ".example.com",
+        "expirationDate": 4102444800.25,
+        "hostOnly": false,
+        "httpOnly": false,
+        "name": "tok",
+        "path": "/",
+        "sameSite": "no_restriction",
+        "secure": true,
+        "session": false,
+        "storeId": "0",
+        "value": "eyJhbGc=="
+    },
+    {
+        "domain": "app.example.com",
+        "hostOnly": true,
+        "httpOnly": true,
+        "name": "sid",
+        "path": "/",
+        "sameSite": "lax",
+        "secure": true,
+        "session": true,
+        "storeId": "0",
+        "value": "s%3Aab.c%2F"
+    },
+    {
+        "domain": "app.example.com",
+        "hostOnly": true,
+        "httpOnly": false,
+        "name": "q",
+        "path": "/account",
+        "sameSite": "lax",
+        "secure": false,
+        "session": true,
+        "storeId": "0",
+        "value": "\"a b\""
+    }
+]

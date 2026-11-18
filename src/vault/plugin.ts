@@ -5,10 +5,6 @@ import {
 
 import { Notification } from '@jupyterlab/apputils';
 
-import { URLExt } from '@jupyterlab/coreutils';
-
-import { ServerConnection } from '@jupyterlab/services';
-
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
 
 import { ITranslator } from '@jupyterlab/translation';
@@ -20,7 +16,7 @@ import { setTranslator, trans } from '../trans';
 import { IStatus, VaultApi, VaultError } from './api';
 
 // eslint-disable-next-line jupyter/prefer-lazy-imports -- activate() needs the panel class at once
-import { REFRESH_MS, VaultPanel } from './panel';
+import { raiseSuccessToast, REFRESH_MS, VaultPanel } from './panel';
 
 const VAULT_PLUGIN_ID = '@stellarshenson/jupyterlab-passkey-extension:vault';
 const UNLOCK_COMMAND = 'passkey:vault-unlock';
@@ -90,51 +86,17 @@ async function answerCli(
 }
 
 /**
- * Raise the "Vault unlocked" toast through the notifications extension's ingest, so
- * it is transient: closing it, by its 3 s autoClose or by the user, leaves no row in
- * the notification centre. A lab without that extension, or a failed post, falls back
- * to a local toast, so the user still learns the vault opened. Never throws.
- */
-export async function raiseUnlockedToast(
-  settings: ServerConnection.ISettings,
-  message: string
-): Promise<void> {
-  try {
-    const response = await ServerConnection.makeRequest(
-      URLExt.join(
-        settings.baseUrl,
-        'jupyterlab-notifications-extension',
-        'ingest'
-      ),
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message,
-          type: 'success',
-          autoClose: 3000,
-          immediate: true,
-          transient: true
-        })
-      },
-      settings
-    );
-    if (response.ok) {
-      return;
-    }
-  } catch {
-    // A network failure takes the same path as an answer that is not 2xx.
-  }
-  Notification.emit(message, 'success', { autoClose: 3000 });
-}
-
-/**
  * Dismiss the vault notifications in this tab that nothing waits for, and say whether
  * one is left. An unlock notification goes when `status` shows the vault unlocked, and
  * a set-up one when it shows a vault, with its read begun at `since`, after the
  * notification came: a read begun earlier can predate the lock that raised it. One
  * that names a wait in its data goes when that wait has run out, whatever command it
- * names; the CLI writes both into the notification's data (`_trigger` in cli.py).
+ * names; the CLI writes both into the notification's data (`_trigger` in cli.py). The
+ * wait runs from the raise time in that data on the server's clock, which `status`
+ * carries: a tab can show a notification late, as after a wake, and a browser clock
+ * can differ from the server's. One with no raise time, or a read with no server
+ * time, measures it from when this tab showed the notification. A call with no
+ * status leaves one with a raise time to the next read.
  */
 export function dismissStale(status: IStatus | null, since = 0): boolean {
   let left = false;
@@ -142,6 +104,7 @@ export function dismissStale(status: IStatus | null, since = 0): boolean {
     const data = (n.options.data ?? {}) as {
       command?: unknown;
       seconds?: unknown;
+      raised?: unknown;
     };
     let reached: boolean | undefined;
     if (data.command === UNLOCK_COMMAND) {
@@ -151,9 +114,14 @@ export function dismissStale(status: IStatus | null, since = 0): boolean {
     } else if (typeof data.seconds !== 'number') {
       continue;
     }
+    const age =
+      typeof data.raised === 'number' && typeof status?.now === 'number'
+        ? (status.now - data.raised) * 1000
+        : Date.now() - n.createdAt;
     const over =
+      (status !== null || typeof data.raised !== 'number') &&
       typeof data.seconds === 'number' &&
-      Date.now() - n.createdAt >= data.seconds * 1000;
+      age >= data.seconds * 1000;
     if (over || (reached && since > n.createdAt)) {
       Notification.dismiss(n.id);
     } else {
@@ -202,12 +170,13 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
     const watch = (status: IStatus | null = null, since = 0): void => {
       if (status) {
         if (wasUnlocked === false && status.unlocked) {
-          void raiseUnlockedToast(
-            app.serviceManager.serverSettings,
-            trans.__('Vault unlocked')
-          );
+          // Each tab raises its own from the edge it reads, so it shows once in each.
+          raiseSuccessToast(trans.__('Vault unlocked'));
         }
-        wasUnlocked = status.unlocked;
+        // A missing vault is not a locked one: a new vault opens with no unlock
+        // notification, so Create, in the panel or from the set-up notification,
+        // raises one, 'Vault created'.
+        wasUnlocked = status.initialized ? status.unlocked : null;
       }
       const left = dismissStale(status, since);
       if (left && timer === null) {
@@ -387,7 +356,14 @@ export const vaultPlugin: JupyterFrontEndPlugin<void> = {
         answerCli(
           app,
           args.nonce as string | undefined,
-          async () => setupVault(api, await readOnPress(), location.hostname),
+          async () => {
+            const status = await readOnPress();
+            await setupVault(api, status, location.hostname);
+            // A vault that existed at the press needed no set-up.
+            if (!status.initialized) {
+              raiseSuccessToast(trans.__('Vault created'));
+            }
+          },
           panel,
           true
         )

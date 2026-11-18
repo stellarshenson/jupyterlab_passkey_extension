@@ -172,10 +172,10 @@
   fill: var(--jp-inverse-layout-color3);
 }
 
-/* A probe that reserves a classic scrollbar exactly as the open category's viewport
-   does: its width is the status row's padding. A browser that hides scrollbars but
-   still reserves the gutter would otherwise measure 0 and put the status row's holder
-   and the rows' age at different distances. */
+/* A probe that always reserves a classic scrollbar: its width is the status row's
+   padding, and the padding a row adds where its category draws no scrollbar. A
+   browser that hides scrollbars but still reserves the gutter would otherwise measure
+   0 and put the status row's holder and the rows' age at different distances. */
 .jp-PasskeyVaultPanel-gutterProbe {
   position: absolute;
   top: 0;
@@ -280,6 +280,9 @@
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+
+  /* 100cqw in a row is the list's width, so a row can measure its viewport's scrollbar. */
+  container-type: inline-size;
 }
 
 /* A panel too short for the bands: the list scrolls, so no band is hidden. */
@@ -293,9 +296,6 @@
   flex: 0 0 auto;
   min-height: 0;
   overflow: hidden auto;
-
-  /* The strip is reserved in every open category, so a row's right-aligned age stays level with the status row's holder, scrolling or not. */
-  scrollbar-gutter: stable;
 }
 
 .jp-PasskeyVaultPanel-empty {
@@ -452,6 +452,17 @@ button.jp-PasskeyVaultPanel-rowLine {
   border-radius: 0;
 }
 
+/* A row's fill reaches the scrollbar, or the panel's edge where none shows. Its right
+   padding is the status row's less the scrollbar drawn (the list's width, 100cqw, less
+   the row's, 100%), so the age stays level with the status row's holder, scrolling or
+   not. */
+.jp-PasskeyVaultPanel-viewport > .jp-PasskeyVaultPanel-rowLine {
+  padding-right: calc(
+    var(--jp-passkey-vault-inset) + var(--jp-passkey-vault-gutter, 0px) -
+      100cqw + 100%
+  );
+}
+
 .jp-PasskeyVaultPanel-rowLine:hover {
   background: color-mix(
     in srgb,
@@ -521,6 +532,44 @@ button.jp-PasskeyVaultPanel-rowLine {
 
 .jp-PasskeyVaultPanel-rowLine.jp-mod-stale .jp-PasskeyVaultPanel-rowName {
   opacity: 0.65;
+}
+
+/*
+ * A cookie entry's icon sits in the 14px column before the text, where the status
+ * dot sits: the negative margins take back that column and the row's 6px flex gap,
+ * so every name starts on the 18px text column.
+ */
+.jp-PasskeyVaultPanel-rowIcon {
+  display: flex;
+  flex: 0 0 calc(var(--jp-passkey-vault-text) - var(--jp-passkey-vault-inset));
+  justify-content: center;
+  margin: 0 -6px 0
+    calc(var(--jp-passkey-vault-inset) - var(--jp-passkey-vault-text));
+}
+
+.jp-PasskeyVaultPanel-rowIcon svg {
+  width: 12px;
+  height: 12px;
+}
+
+/*
+ * The design system's state tag, an outline with an uppercase word: a cookie entry
+ * with no cookie left unexpired, and an expired cookie in the entry's table. The
+ * word is in the text colour: no error colour reaches 4.5:1 on every row fill of
+ * both themes.
+ */
+.jp-PasskeyVault-expired {
+  flex: 0 0 auto;
+  padding: 0 7px;
+  border: 1px solid var(--jp-error-color1);
+  border-radius: 2px;
+  color: var(--jp-ui-font-color1);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 14px;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 /* Under the name of an unlock method. The line wraps between its parts: the minute
@@ -854,11 +903,6 @@ button.jp-mod-styled.jp-PasskeyVaultPanel-button.jp-mod-warn.jp-mod-confirm {
   border-radius: var(--jp-border-radius) 0 0 var(--jp-border-radius);
 }
 
-/* The name an edit is addressed by: shown like Add, dimmed because it cannot change. */
-.jp-PasskeyVaultForm:not(.jp-mod-view) .jp-PasskeyVaultForm-input:read-only {
-  color: var(--jp-ui-font-color2);
-}
-
 .jp-PasskeyVaultForm-field {
   display: flex;
   flex-direction: column;
@@ -884,7 +928,8 @@ button.jp-mod-styled.jp-PasskeyVaultPanel-button.jp-mod-warn.jp-mod-confirm {
   display: none;
 }
 
-textarea.jp-mod-styled.jp-PasskeyVaultForm-notes {
+textarea.jp-mod-styled.jp-PasskeyVaultForm-notes,
+textarea.jp-mod-styled.jp-PassphraseDialog-paste {
   box-sizing: border-box;
 
   /* At least 12 lines at the normal line height of about 1.2em */
@@ -899,10 +944,74 @@ textarea.jp-mod-styled.jp-PasskeyVaultForm-notes {
   resize: vertical;
 }
 
-textarea.jp-mod-styled.jp-PasskeyVaultForm-notes:focus {
+/* Pasted cookies: a copied request reads as code, and is a few lines high. */
+textarea.jp-mod-styled.jp-PasskeyVaultForm-paste,
+textarea.jp-mod-styled.jp-PassphraseDialog-paste {
+  height: 8em;
+  font-family: var(--jp-code-font-family);
+  font-size: var(--jp-code-font-size);
+}
+
+textarea.jp-mod-styled.jp-PasskeyVaultForm-notes:focus,
+textarea.jp-mod-styled.jp-PassphraseDialog-paste:focus {
   border-color: var(--jp-input-active-border-color);
   outline: none;
   box-shadow: var(--jp-input-box-shadow);
+}
+
+/*
+ * A cookie entry's cookies: the design system's static table, its rows 24px as the
+ * panel's. The box scrolls a long jar under the header.
+ */
+.jp-PasskeyVaultForm-cookieBox {
+  max-height: 240px;
+  overflow-y: auto;
+  border: var(--jp-border-width) solid var(--jp-border-color2);
+  border-radius: 2px;
+}
+
+.jp-PasskeyVaultForm-cookies {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  color: var(--jp-ui-font-color1);
+  font-size: var(--jp-ui-font-size1);
+}
+
+.jp-PasskeyVaultForm-cookies th {
+  position: sticky;
+  top: 0;
+  height: 24px;
+  padding: 0 6px;
+  background: var(--jp-layout-color2);
+  color: var(--jp-ui-font-color1);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+/* The expiry with its tag stays on one line. */
+.jp-PasskeyVaultForm-cookies th:last-child {
+  width: 240px;
+}
+
+.jp-PasskeyVaultForm-cookies td {
+  height: 24px;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.jp-PasskeyVaultForm-cookies tbody tr:nth-child(even) {
+  background: color-mix(
+    in srgb,
+    var(--jp-layout-color2) 50%,
+    var(--jp-layout-color1)
+  );
 }
 
 /*

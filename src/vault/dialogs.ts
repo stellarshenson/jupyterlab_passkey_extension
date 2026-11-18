@@ -13,6 +13,9 @@ import { mapCeremonyError } from '../passkey-util';
 import { trans } from '../trans';
 
 import {
+  EntryType,
+  ICookieInfo,
+  ICookieSummary,
   IEntry,
   IEntryFields,
   ISlot,
@@ -43,11 +46,23 @@ export interface IEntryFormValue extends IEntryFields {
   name: string;
 }
 
+/** Reads pasted cookie text with the URL field's value, for the form's preview. */
+export type ParseCookies = (
+  text: string,
+  url: string
+) => Promise<ICookieSummary>;
+
+/** The wait after the last change of the paste field before it is read. */
+export const PREVIEW_MS = 300;
+
 /**
  * The add / edit form. Save is gated on a name that no other entry has, the way the
  * passphrase dialog gates Submit: Dialog disables its accept button while anything
  * in the body matches `:invalid`, and a custom validity on the name field puts it
  * there - so a taken name is refused before the dialog closes and loses the input.
+ * In Edit the name can be changed, which renames the entry. With `parse` it is the
+ * form of a cookie entry: a paste field in place of Username and Password, read by
+ * the server PREVIEW_MS after its last change, and Save gated on a paste that reads.
  */
 export class EntryForm extends Widget {
   readonly name: HTMLInputElement;
@@ -57,21 +72,20 @@ export class EntryForm extends Widget {
   readonly category: HTMLInputElement;
   readonly notes: HTMLTextAreaElement;
   readonly generate: HTMLButtonElement;
+  /** The paste field of a cookie entry. */
+  readonly cookies?: HTMLTextAreaElement;
 
   constructor(
     private readonly _generate: () => Promise<string>,
     entry?: IEntry,
     private readonly _taken: string[] = [],
-    categories: string[] = []
+    categories: string[] = [],
+    private readonly _parse?: ParseCookies
   ) {
     super();
     this.addClass('jp-PasskeyVaultForm');
     this.name = input('text', entry?.name);
     this.name.required = true;
-    if (entry) {
-      // The name is the key an edit is addressed by.
-      this.name.readOnly = true;
-    }
     this._nameHelp = document.createElement('div');
     this._nameHelp.className = 'jp-PasskeyVaultForm-help';
     this.username = input('text', entry?.username);
@@ -166,15 +180,149 @@ export class EntryForm extends Widget {
     this.notes.className = 'jp-mod-styled jp-PasskeyVaultForm-notes';
     this.notes.value = entry?.notes ?? '';
 
+    this._cookieHelp = document.createElement('div');
+    this._cookieHelp.className = 'jp-PasskeyVaultForm-help';
+    // Announced: the line changes after a wait, with the focus in the paste field.
+    this._cookieHelp.setAttribute('role', 'status');
+    this._stored = entry?.cookies?.length ?? 0;
+    this._storedHeaders = entry?.headers?.length ?? 0;
+    if (_parse) {
+      this.cookies = document.createElement('textarea');
+      this.cookies.className =
+        'jp-mod-styled jp-PasskeyVaultForm-notes jp-PasskeyVaultForm-paste';
+      this.cookies.placeholder = trans.__(
+        'Paste a cURL copy, cookies.txt, JSON or a Cookie header'
+      );
+      // Never sent to a spelling service, kept by the browser or filled by a manager.
+      this.cookies.spellcheck = false;
+      this.cookies.autocomplete = 'off';
+    }
+
     this.node.append(
       field('Name', this.name, this._nameHelp),
-      field('Username', this.username),
-      field('Password', passwordRow, this._passwordHelp, this.password),
-      field('URL', this.url),
+      ...(this.cookies
+        ? [
+            field('Username', this.username),
+            field('URL', this.url),
+            field('Cookies', this.cookies, this._cookieHelp)
+          ]
+        : [
+            field('Username', this.username),
+            field('Password', passwordRow, this._passwordHelp, this.password),
+            field('URL', this.url)
+          ]),
       field('Category', combo, undefined, this.category),
       field('Notes', this.notes)
     );
     this._validate();
+    this._schedule();
+  }
+
+  /**
+   * Read the paste PREVIEW_MS after its last change; until the answer for the text
+   * now in the field comes, Save is disabled. An empty field keeps the jar in Edit and
+   * asks for a paste in Add. The line under the field names the cookies and the request
+   * headers read, never a value, or the reason none were. A change of the URL
+   * (`keepLine`) changes at most the domains read: the line of the last read stays
+   * until the new one answers, so the fields below it do not move at every pause in
+   * the typing.
+   */
+  private _schedule(keepLine = false): void {
+    const paste = this.cookies;
+    if (!paste || !this._parse) {
+      return;
+    }
+    window.clearTimeout(this._timer);
+    const seq = ++this._seq;
+    const text = paste.value;
+    if (text === '') {
+      paste.setCustomValidity(this._editing ? '' : 'Paste the cookies');
+      this._cookieHelp.textContent = this._editing
+        ? 'Leave empty to keep' +
+          (this._stored
+            ? ` the ${this._stored} ${this._stored === 1 ? 'cookie' : 'cookies'}`
+            : '') +
+          (this._storedHeaders
+            ? (this._stored ? ' and' : '') +
+              trans._n(' the %1 header', ' the %1 headers', this._storedHeaders)
+            : '')
+        : '';
+      return;
+    }
+    paste.setCustomValidity('The cookies are being read');
+    if (!keepLine) {
+      this._cookieHelp.textContent = trans.__('Reading the cookies...');
+    }
+    const parse = this._parse;
+    this._timer = window.setTimeout(() => {
+      parse(text, this.url.value).then(
+        read => {
+          if (seq === this._seq) {
+            this._read(read);
+          }
+        },
+        e => {
+          if (seq === this._seq) {
+            this._unread(e);
+          }
+        }
+      );
+    }, PREVIEW_MS);
+  }
+
+  private _read(read: ICookieSummary): void {
+    const count = `${read.count} ${read.count === 1 ? 'cookie' : 'cookies'} read`;
+    if (read.count > 0 && read.expired === read.count) {
+      // Saved, the entry would answer every read with the code `expired`.
+      this._cookieHelp.textContent = `${count}, all expired - copy the cookies again from the browser`;
+      this._settle('Every cookie has expired');
+      return;
+    }
+    const expired = read.expired ? `, ${read.expired} expired` : '';
+    // A copied request with headers and no cookie has no domain and no cookie name.
+    const cookies = read.count
+      ? `${count}${expired}, from ${read.domains.join(', ')}: ${read.names.join(', ')}`
+      : count;
+    const line = read.headers.length
+      ? cookies +
+        trans._n(
+          '; %1 header: %2',
+          '; %1 headers: %2',
+          read.headers.length,
+          read.headers.join(', ')
+        )
+      : cookies;
+    // A paste replaces the headers too, also with none of its own.
+    const replaced = this._storedHeaders
+      ? trans.__('Save replaces the current cookies and headers')
+      : 'Save replaces the current cookies';
+    this._cookieHelp.textContent = this._editing
+      ? `${line}. ${replaced}`
+      : line;
+    this._settle(
+      read.count > 0 || read.headers.length > 0 ? '' : 'No cookie was read'
+    );
+  }
+
+  private _unread(e: unknown): void {
+    // The server's reasons name the CLI's option; here the URL is a field.
+    const reason = (e instanceof Error ? e.message : String(e)).replace(
+      'with --url',
+      'in the URL field'
+    );
+    this._cookieHelp.textContent = `No cookie was read: ${reason}`;
+    this._settle('No cookie was read');
+  }
+
+  /**
+   * Set the paste field's validity after a read. Dialog checks validity only on an
+   * `input` event; one sent from the form itself makes it look again, and
+   * _revalidate, which reads the paste again only for an event from the paste field
+   * or the URL field, does not act on it.
+   */
+  private _settle(validity: string): void {
+    this.cookies?.setCustomValidity(validity);
+    this.node.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
   /**
@@ -192,11 +340,20 @@ export class EntryForm extends Widget {
   getValue(): IEntryFormValue {
     const value: IEntryFormValue = {
       name: this.name.value.trim(),
-      username: this.username.value,
       url: this.url.value,
       category: this.category.value,
       notes: this.notes.value
     };
+    value.username = this.username.value;
+    if (this.cookies) {
+      if (!this._editing) {
+        value.type = 'cookies';
+      }
+      if (this.cookies.value !== '') {
+        value.cookies = this.cookies.value;
+      }
+      return value;
+    }
     if (this.password.value !== '') {
       value.password = this.password.value;
     }
@@ -221,8 +378,13 @@ export class EntryForm extends Widget {
     window.removeEventListener('keydown', this._keysToMenu, true);
   }
 
-  /** Close the category menu with the dialog, so no menu stays in the page body. */
+  /**
+   * Close the category menu with the dialog, so no menu stays in the page body, and
+   * send no read of a paste the closed form no longer shows.
+   */
   dispose(): void {
+    window.clearTimeout(this._timer);
+    this._seq++;
     this._menu.dispose();
     super.dispose();
   }
@@ -236,6 +398,7 @@ export class EntryForm extends Widget {
     if (
       event.key === 'Enter' &&
       (event.target === this.notes ||
+        event.target === this.cookies ||
         event.target === this.generate ||
         event.target === this._toggle)
     ) {
@@ -284,6 +447,12 @@ export class EntryForm extends Widget {
   private readonly _revalidate = (event: Event): void => {
     if (event.target === this.name) {
       this._validate();
+    } else if (
+      event.target === this.cookies ||
+      // The URL is the domain of a Cookie header: a change reads the paste again.
+      (event.target === this.url && this.cookies?.value)
+    ) {
+      this._schedule(event.target === this.url);
     }
   };
 
@@ -302,6 +471,14 @@ export class EntryForm extends Widget {
   private readonly _nameHelp: HTMLDivElement;
   private readonly _menu: Menu;
   private readonly _toggle: HTMLButtonElement;
+  private readonly _cookieHelp: HTMLDivElement;
+  /** How many request headers the edited entry keeps. */
+  private readonly _storedHeaders: number;
+  /** How many cookies the edited entry holds. */
+  private readonly _stored: number;
+  private _timer = 0;
+  /** Counts the paste's changes: an answer for an older text is dropped. */
+  private _seq = 0;
 }
 
 const KEEP_HELP = 'Leave empty to keep the current password';
@@ -362,25 +539,27 @@ function field(
 }
 
 /**
- * Open the add or edit form; null when cancelled. `taken` are the names in use,
- * `categories` the categories the Category field offers. It
- * answers the name and only the fields the user changed - the form's own loading (a
- * textarea turns CRLF into LF, a one-line field drops line breaks) is no change, and
- * the vault stores a field an add leaves out as empty.
+ * Open the add or edit form; null when cancelled. `taken` are the names in use by
+ * other entries, `categories` the categories the Category field offers, and `parse`
+ * makes it the form of a cookie entry. It answers the name, which in Edit is the new
+ * name when it was changed, and only the fields the user changed - the form's own
+ * loading (a textarea turns CRLF into LF, a one-line field drops line breaks) is no
+ * change, and the vault stores a field an add leaves out as empty.
  */
 export async function editEntry(
   generate: () => Promise<string>,
   entry?: IEntry,
   taken: string[] = [],
-  categories: string[] = []
+  categories: string[] = [],
+  parse?: ParseCookies
 ): Promise<IEntryFormValue | null> {
-  const body = new EntryForm(generate, entry, taken, categories);
+  const body = new EntryForm(generate, entry, taken, categories, parse);
   const dialog = new Dialog({
     title: entry ? trans.__('Edit entry') : trans.__('Add entry'),
     body,
     // Dialog focuses its default button after the body attaches; this names the
-    // first field to type in instead - Name in Add, Username in Edit.
-    focusNodeSelector: 'input:not([readonly])',
+    // first field, Name, instead.
+    focusNodeSelector: 'input',
     hasClose: false,
     buttons: [
       Dialog.cancelButton(),
@@ -548,11 +727,26 @@ export class EntryView extends Widget {
       this._help,
       this.password
     );
+    // A cookie entry shows its cookies and the names of its request headers, never a
+    // value, and has no eye. One with no cookie, or with no header, has no such table.
     this.node.append(
       field('Name', shown(entry.name)),
-      field('Username', shown(entry.username)),
-      this._passwordField,
-      field('URL', shown(entry.url)),
+      ...(entry.type === 'cookies'
+        ? [
+            field('Username', shown(entry.username)),
+            field('URL', shown(entry.url)),
+            ...(entry.cookies?.length
+              ? [field('Cookies', cookieTable(entry.cookies))]
+              : []),
+            ...(entry.headers?.length
+              ? [field(trans.__('Headers'), headerTable(entry.headers))]
+              : [])
+          ]
+        : [
+            field('Username', shown(entry.username)),
+            this._passwordField,
+            field('URL', shown(entry.url))
+          ]),
       field('Category', shown(entry.category)),
       field('Notes', notes)
     );
@@ -719,6 +913,92 @@ export class EntryView extends Widget {
   /** Why a proof is typed, and the typed proofs with the one asked now first. */
   private _reason = '';
   private _typed: TypedProof[] = [];
+}
+
+/** True when `cookie` is past its expiry at `now` (Unix seconds); a session cookie never is. */
+export function cookieExpired(
+  cookie: ICookieInfo,
+  now = Date.now() / 1000
+): boolean {
+  return cookie.expires !== null && cookie.expires <= now;
+}
+
+/** The state tag of a cookie, or of a cookie entry, past its expiry. */
+export function expiredBadge(): HTMLSpanElement {
+  const badge = document.createElement('span');
+  badge.className = 'jp-PasskeyVault-expired';
+  badge.textContent = trans.__('expired');
+  return badge;
+}
+
+/** An expiry to the minute in UTC, as the cog view writes dates; `session` with none. */
+function expiry(seconds: number | null): string {
+  if (seconds === null) {
+    return 'session';
+  }
+  const at = new Date(seconds * 1000);
+  return Number.isNaN(at.getTime())
+    ? String(seconds)
+    : `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+/**
+ * The popup's static table, named `label`, with one column per title, in the box that
+ * scrolls a long list under the table's own header; `fill` adds the rows.
+ */
+function listTable(
+  label: string,
+  titles: string[],
+  fill: (body: HTMLTableSectionElement) => void
+): HTMLElement {
+  const table = document.createElement('table');
+  table.className = 'jp-PasskeyVaultForm-cookies';
+  table.setAttribute('aria-label', label);
+  const head = table.createTHead().insertRow();
+  for (const title of titles) {
+    const th = document.createElement('th');
+    th.scope = 'col';
+    th.textContent = title;
+    head.appendChild(th);
+  }
+  fill(table.createTBody());
+  const box = document.createElement('div');
+  box.className = 'jp-PasskeyVaultForm-cookieBox';
+  box.append(table);
+  return box;
+}
+
+/** A cell with `text`, and the whole text as its tooltip where the column cuts it. */
+function textCell(row: HTMLTableRowElement, text: string): void {
+  const cell = row.insertCell();
+  cell.textContent = text;
+  cell.title = text;
+}
+
+/** A cookie entry's cookies as a table of domain, name and expiry: never a value. */
+function cookieTable(cookies: ICookieInfo[]): HTMLElement {
+  const now = Date.now() / 1000;
+  return listTable(trans.__('Cookies'), ['Domain', 'Name', 'Expires'], body => {
+    for (const cookie of cookies) {
+      const row = body.insertRow();
+      textCell(row, cookie.domain);
+      textCell(row, cookie.name);
+      const cell = row.insertCell();
+      cell.textContent = expiry(cookie.expires);
+      if (cookieExpired(cookie, now)) {
+        cell.append(' ', expiredBadge());
+      }
+    }
+  });
+}
+
+/** A cookie entry's kept request headers as a table of their names: never a value. */
+function headerTable(names: string[]): HTMLElement {
+  return listTable(trans.__('Headers'), [trans.__('Name')], body => {
+    for (const name of names) {
+      textCell(body.insertRow(), name);
+    }
+  });
 }
 
 /**
@@ -1085,8 +1365,14 @@ export type VaultMethod = UnlockMethod | 'recovery';
 /** A button of the chooser: a method, or Later at set-up, which adds none. */
 type MethodChoice = VaultMethod | 'later';
 
+/** A button of a dialog of choices: its name, and one line on what it is. */
+interface IChoice {
+  label: string;
+  about: string;
+}
+
 /** Each choice as the dialog that offers them names it, with one line on what it is. */
-const METHODS: Record<MethodChoice, { label: string; about: string }> = {
+const METHODS: Record<MethodChoice, IChoice> = {
   passkey: {
     label: trans.__('Passkey'),
     about: 'Fingerprint, face, PIN or security key.'
@@ -1120,17 +1406,31 @@ const NOTE_ID = 'jp-PasskeyVaultForm-note';
 /** With no footer button, Dialog's arrow keys throw on a focus target that is not there. */
 const KEYS_NO_FOOTER = ['Enter', 'ArrowLeft', 'ArrowRight'];
 
-/** The body of the dialog that offers the methods: one button for each. */
-class MethodForm extends Widget {
-  /** The method whose button was pressed. */
-  chosen: MethodChoice | null = null;
+/** The kinds of entry Add offers, each with one line on what it holds. */
+const ENTRY_TYPES: Record<EntryType, IChoice> = {
+  login: {
+    label: trans.__('Password'),
+    about: 'A username and a password for a site.'
+  },
+  cookies: {
+    label: trans.__('Cookies'),
+    about: 'Cookies and request headers of a browser session, pasted.'
+  }
+};
+
+/** The body of a dialog of choices, the methods or the kinds of entry: one button for each. */
+class MethodForm<K extends string> extends Widget {
+  /** The choice whose button was pressed. */
+  chosen: K | null = null;
 
   /**
-   * `close` closes the dialog once a method is chosen. `note` shows a line above the
-   * buttons, for a dialog opened again after a step failed.
+   * `table` names the choices, `states` the ones offered. `close` closes the dialog
+   * once one is chosen. `note` shows a line above the buttons, for a dialog opened
+   * again after a step failed.
    */
   constructor(
-    states: Partial<Record<MethodChoice, IMethodState>>,
+    table: Record<K, IChoice>,
+    states: Partial<Record<K, IMethodState>>,
     close: () => void,
     note?: string
   ) {
@@ -1145,10 +1445,10 @@ class MethodForm extends Widget {
       line.textContent = note;
       this.node.appendChild(line);
     }
-    for (const kind of (Object.keys(METHODS) as MethodChoice[]).filter(
+    for (const kind of (Object.keys(table) as K[]).filter(
       kind => kind in states
     )) {
-      const { label, about } = METHODS[kind];
+      const { label, about } = table[kind];
       const { unavailable } = states[kind] ?? {};
       const name = document.createElement('span');
       name.textContent = label;
@@ -1207,12 +1507,27 @@ class MethodForm extends Widget {
  * dialog opened again. With Later among the choices it replaces Cancel: Cancel beside
  * it would suggest the vault goes away.
  */
-export async function chooseUnlockMethod(
+export function chooseUnlockMethod(
   states: Partial<Record<MethodChoice, IMethodState>>,
   title: string = trans.__('Add unlock method'),
   note?: string
 ): Promise<MethodChoice | null> {
-  const body = new MethodForm(states, () => dialog.reject(), note);
+  return choose(METHODS, states, title, note);
+}
+
+/** Ask which kind of entry Add makes: a password or cookies. Null when cancelled. */
+export function chooseEntryType(): Promise<EntryType | null> {
+  return choose(ENTRY_TYPES, { login: {}, cookies: {} }, trans.__('Add entry'));
+}
+
+/** The dialog of choices: a press on one chooses it and closes the dialog. */
+async function choose<K extends string>(
+  table: Record<K, IChoice>,
+  states: Partial<Record<K, IMethodState>>,
+  title: string,
+  note?: string
+): Promise<K | null> {
+  const body = new MethodForm(table, states, () => dialog.reject(), note);
   const dialog = new Dialog({
     title,
     body,

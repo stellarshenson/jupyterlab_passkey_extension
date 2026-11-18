@@ -1,5 +1,6 @@
-# Makefile for Jupyterlab extensions version 1.48
+# Makefile for Jupyterlab extensions version 1.49
 # changelog:
+#   1.49 - publish installs before it tests, so a suite that compares the installed artifact with the repository copy passes on the release it installs; a red suite now stops after the bump, before any registry.
 #   1.48 - mrproper removes tmp, logs, .venv, graphify-out, coverage and .pytest_cache too; install and publish are .NOTPARALLEL, the guard jupyterlab_vscode_icons_extension carried locally.
 #   1.47 - increment_version takes BUMP none|patch|minor|major; none leaves the version unchanged.
 #   1.46 - increment_version also writes the version into package-lock.json, in the text, and publish stages it.
@@ -27,7 +28,7 @@
 .PHONY: build install clean uninstall publish dependencies mrproper increment_version install_dependencies check_dependencies upgrade help test
 .DEFAULT_GOAL := help
 
-# Tests must finish before install, and the version must move before build,
+# Install must finish before test, and the version must move before build,
 # including when the caller supplies -j.
 .NOTPARALLEL: install publish
 
@@ -156,12 +157,16 @@ check_dependencies:
 		echo "All dependencies are installed."; \
 	fi
 
-# Order is load-bearing. The version is raised once, by install. test runs before
-# install, so a red suite stops the release before the version moves. The commit
-# and push happen before either registry is written to: a failure there costs nothing,
-# whereas npm permanently consumes a version it has accepted.
+# Order is load-bearing. install runs first because some suites compare the installed
+# artifact with the repository copy, so the release tests what it installs. The version
+# is raised once, by install, before the suite runs, so a red suite stops the release
+# after the bump and before any registry; revert the bump with
+# `git checkout -- package.json` and, where the project has one,
+# `git checkout -- package-lock.json`. The commit and push happen before either
+# registry is written to: a failure there costs nothing, whereas npm permanently
+# consumes a version it has accepted.
 ## publish package to npm and PyPI
-publish: check_dependencies test install
+publish: check_dependencies install test
 	@ls dist/*.whl >/dev/null 2>&1 && ls dist/*.tar.gz >/dev/null 2>&1 || { \
 		echo "publish: dist/ holds no wheel or sdist - run make build first" >&2; \
 		exit 1; \

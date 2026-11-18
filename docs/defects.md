@@ -415,6 +415,7 @@ The vault server side, CLI and Python API
   - log: 2026-11-03T00:50:50Z @kj edited repro "locked vault, `vault get <name>`, Ctrl-C during the wait, `vault unlock` within 130 s: no new notification, then the plain locked line at its deadline; a claim, an unlock and a lock in that order do the same" -> "locked vault, `vault get <name>`, Ctrl-C during the wait, `vault unlock` within 130 s: no new notification, then the plain locked line at its deadline; a locked status read, an unlock, the claim and a lock in that order do the same"
   - log: 2026-11-03T00:50:50Z @kj corrected: the order claim, unlock, lock in the `reported:` line does not reproduce, `_hold` removes that claim; the order that reproduces is locked status read, unlock, claim, lock; verify-promptres.json
   - log: 2026-11-03T08:59:08Z @kj closed: fixed: a claim of a process that is gone is void, and a process removes its own claim when its wait ends; verify-unlockwait-1.json bar 3 passed
+  - log: 2026-11-16T12:06:10Z @kj rule refined by DEF-VAULT-115-UNLOCK-TWICE: a raised claim now outlives its stopped raiser, at most 180 s; test_a_process_that_stops_leaves_no_claim replaced by test_a_raised_notification_outlives_the_process_that_raised_it and test_a_claim_never_raised_holds_no_later_caller; test_a_killed_set_up_process_leaves_no_claim by test_a_set_up_notification_outlives_the_process_that_raised_it; reason: the replaced and replacing test names are needed to trace the evidence
 - [x] `DEF-VAULT-76-RELAY-DIR` **Unusable relay directory fails an unlock on keyctl** - MEDIUM; an unusable relay directory fails an unlock with `cannot use the relay directory`, also on the keyctl backend, which needed no such directory before; cause: the shared unlock record lives there; fix: go on with no shared record and raise its own notification; `jupyterlab_passkey_extension/vault/client.py:122`
   - evidence: test_vault_unlock.py: test_a_relay_directory_that_cannot_be_used_on_keyctl_fails_no_unlock (real process, ran), test_an_unusable_relay_directory_on_keyctl_raises_its_own_notification, test_an_unusable_relay_directory_on_keyctl_raises_its_own_set_up; shm keeps the line; mutants killed; jest 385 of 385, pytest 910 passed, 2026-11-03
   - repro: `JLAB_PASSKEY_RELAY_BACKEND=keyctl`, `JLAB_PASSKEY_RELAY_DIR` under a plain file, locked vault, `vault unlock`: `cannot use the relay directory: [Errno 20] Not a directory`, 0 notifications
@@ -559,6 +560,125 @@ The vault server side, CLI and Python API
   - log: 2026-11-07T12:48:55Z @kj edited repro "owner report 2026-11-07, after the 1.2.9 release: an unlock attempt does not unlock the vault; unlock method, surface (panel or CLI) and error text not yet captured" -> "owner report 2026-11-07, after the 1.2.9 release: every passkey unlock path fails to unlock the vault; the error text is not yet captured"
   - log: 2026-11-07T12:50:37Z @kj edited repro "owner report 2026-11-07, after the 1.2.9 release: every passkey unlock path fails to unlock the vault; the error text is not yet captured" -> "owner report 2026-11-07, after the 1.2.9 release: every passkey unlock path fails; the panel (Locked, holder keyctl) shows the toast 'The passkey request was cancelled or not allowed.' after Unlock with passkey"
   - log: 2026-11-07T12:55:36Z @kj rejected: rejected: owner ruling 2026-11-07, a Chrome issue, not the extension; the passkey unlock works again with no change to the code or the install
+- [x] `DEF-VAULT-111-SIGINT-CLAIM` **Ctrl-C early in the unlock wait can leave the claim** - MEDIUM; under load a CLI process stopped with SIGINT right after its unlock notification leaves relay unlock-wait.json, so the next process waits on the old claim instead of raising its own notification
+  - evidence: client.py _one_notification opens its try/finally before the claim, claims named per wait; test_ctrl_c_between_the_claim_and_the_notification_leaves_no_claim fails before, passes after; test harness resets SIGINT; verifier loop 10/10 under load; pytest 1246 passed (logs/cookie-w1b-verify.log)
+  - repro: full pytest at load average 10 to 18: test_vault_unlock.py test_a_process_that_stops_leaves_no_claim[Ctrl-C], test_a_stopped_first_process_ends_no_wait[Ctrl-C], test_a_stopped_first_set_up_process_ends_no_wait fail; each passes alone
+  - root-cause: 2026-11-16T02:28:56Z @kj a pytest run started as a background job ignores SIGINT in every child, so the test's Ctrl-C did nothing and the owner waited out its timeout; product gap too: the claim was written (client.py _put_wait) before the try/finally of _one_notification, so Ctrl-C there left it
+  - root-cause: 2026-11-16T00:37:49Z @kj likely cause: SIGINT lands between raising the notification and entering the try/finally that removes the claim; unconfirmed
+  - log: 2026-11-16T00:37:49Z @kj added
+  - log: 2026-11-16T02:28:56Z @kj closed
+  - log: 2026-11-16T12:06:10Z @kj rule refined by DEF-VAULT-115-UNLOCK-TWICE; test_a_stopped_first_process_ends_no_wait replaced by test_a_stopped_first_process_leaves_its_notification_to_the_waiters, test_a_stopped_first_set_up_process_ends_no_wait by test_a_set_up_notification_outlives_the_process_that_raised_it; test_ctrl_c_between_the_claim_and_the_notification_leaves_no_claim kept; reason: the replaced and replacing test names are needed to trace the evidence
+- [x] `DEF-VAULT-112-GIT-IMPORT` **Git helper traceback at import under load** - MEDIUM; git credential fill sometimes gets a Python traceback from the helper's import of jupyterlab_passkey_extension/__init__.py line 10 (from .routes import setup_route_handlers), message truncated '...s disabled'; git then gets no credential from the vault
+  - evidence: routes import moved into _load_jupyter_server_extension; store.py and service.py import argon2, cryptography and webauthn inside the functions that use them; helper loads no module of jupyter_server's dependency closure; test_the_helper_imports_no_package_of_the_server_dependencies and the argon2 and _cffi_backend rows fail reverted; pytest 1249 passed (logs/cookie-w1c-verify.log)
+  - repro: full pytest during other load: test_vault_git.py test_a_request_path_that_is_not_utf8_gets_its_answer failed once in 4 full runs, logs/cookie-w1-gates-pytest.log; passes alone
+  - root-cause: 2026-11-16T02:29:02Z @kj make install of any extension runs pip install --force-reinstall, which reinstalls jupyter_server's dependency tree in the shared /opt/conda; the git helper imported jupyter_server (through __init__.py routes), argon2 and cffi at start, so it failed while their files were missing
+  - root-cause: 2026-11-16T00:37:49Z @kj cause unknown; the full traceback was truncated by pytest - reproduce with -vv first
+  - log: 2026-11-16T00:37:49Z @kj added
+  - log: 2026-11-16T02:58:17Z @kj closed
+- [x] `DEF-VAULT-114-PYTEST-SIGPIPE` **pytest run killed by SIGPIPE mid-suite** - MEDIUM; a pytest run over the vault test files sometimes dies with exit 141 (SIGPIPE) partway, here after 925 of 1040 tests during test_vault_unlock.py::test_a_process_that_stops_leaves_no_claim[Ctrl-C]; the rerun passes; predates the cookie change
+  - evidence: tests patch vcli.signal.signal and assert SIGPIPE, SIGXFSZ, SIGINT, SIGHUP unchanged (fail without the fix); probe exit 141 before, pass after; 17 files 1040 passed in one run twice (logs/cookie-review-r42-pytest.log, verifier)
+  - related: DEF-VAULT-111-SIGINT-CLAIM
+  - repro: pytest on the 17 files that import vault/cli.py with a temporary HOME; logs/cookie-review-r41-pytest.log run 1 exits 141
+  - test-tags: UNIT
+  - root-cause: 2026-11-16T09:12:27Z @kj confirmed: the cmd_exec case of test_vault_cli.py :470 and :484 patched os.execvpe but not signal.signal, so cli.py:359-361 left SIGPIPE at SIG_DFL in the pytest process; a send to a closed socketpair peer then exits 141; in test 926 the fake lab server's 1822-byte answer to the vault get child the test stops with Ctrl-C was traced as the killing write
+  - root-cause: 2026-11-16T08:39:02Z @kj likely cause: test_a_read_command_unlocks_with_the_recovery_passphrase_first and test_an_unlocked_vault_ignores_the_method (test_vault_cli.py:470, :484) run vcli.cmd_exec with os.execvpe patched but not signal.signal, so cli.py:359-361 sets SIGPIPE to SIG_DFL in the pytest process; a later write to a closed socket then kills it; unconfirmed which write
+  - log: 2026-11-16T08:39:02Z @kj added
+  - log: 2026-11-16T09:12:27Z @kj root-cause overridden; reason: the confirmed mechanism needs the site, the disposition change and the traced write
+  - log: 2026-11-16T09:12:32Z @kj closed
+- [x] `DEF-VAULT-115-UNLOCK-TWICE` **Second unlock notification while the first is on screen** - MEDIUM; when the process that raised the unlock notification stops before the vault unlocks, its notification stays on screen but its claim is gone, so the next caller, from any project, raises a second one; reported by the notifications extension session (its DEF-IMMED-286), owner chose the fix here
+  - evidence: test_a_raised_notification_outlives_the_process_that_raised_it gave 2 notifications for 1 before the fix, passes after; claim-never-raised, 180 s bound and vault-plugin dismissStale tests pass; final pytest 1275, Jest 470, Galata 64/64
+  - related: DEF-VAULT-111-SIGINT-CLAIM,ACC-GIT-265-UNLOCK
+  - repro: a caller raises the unlock notification and stops (timeout or Ctrl-C) while it is on screen; a second caller within its 120 s window raises a second notification
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-11-16T11:19:27Z @kj confirmed: _wait_record kept a pending claim only while its pid lived and _drop_claim removed it on every exit; test_a_raised_notification_outlives_the_process_that_raised_it[a kill, Ctrl-C] gave 2 notifications for 1 before the fix; dismissStale measured from createdAt, the time the tab showed it
+  - root-cause: 2026-11-16T09:42:31Z @kj from the code and jupyterlab.log of 2026-11-16 05:05-05:06: _wait_record shares a pending claim only while its pid is alive and _drop_claim removes it on every exit path (vault/client.py), so a notification on screen keeps no claim after its raiser stops; not yet shown by a test
+  - log: 2026-11-16T09:42:31Z @kj added; reason: the symptom, the report's origin and the owner's routing each need a clause
+  - log: 2026-11-16T11:19:27Z @kj first pass (patches/def115.patch): raised claim outlives its raiser to its window end, raise time in the notification data, server time in vault/status; verifier NOT OK on a stale cli-reference line and the panel's no-status path; second pass running (fix-def115b.js)
+  - log: 2026-11-16T11:58:07Z @kj second pass (patches/def115b.patch): cli-reference line, panel no-status path, takeover and set-up tests, 180 s cap on a stopped raiser's claim; verifier OK on code, tests and gates, NOT OK on one false doc clause; round 43 fixes it
+  - log: 2026-11-16T13:28:46Z @kj closed
+- [x] `DEF-VAULT-116-EDIT-KEYERROR` **vault edit crashes on a server from before cookie entries** - MEDIUM; vault edit NAME --password or --generate raises KeyError 'type' when the Jupyter server still runs the code from before cookie entries (after an install, before a restart): its entry list carries no type key
+  - evidence: cmd_edit reads e.get("type"); pytest test_edit_of_a_password_reaches_the_server_when_the_list_names_no_type fails with KeyError without it; verifier OK, pytest 1280 passed, 2026-11-16
+  - repro: new CLI against a vault/entries answer with no type key: vault edit NAME --generate
+  - root-cause: 2026-11-16T14:37:39Z @kj cli.py cmd_edit reads e["type"] from the list; every other reader uses .get("type")
+  - log: 2026-11-16T14:37:39Z @kj added
+  - log: 2026-11-16T15:26:46Z @kj closed
+- [x] `DEF-VAULT-117-HEADER-EMPTY` **get --format header prints an empty line when no cookie matches** - MINOR; vault get NAME --format header prints an empty line with exit 0 when no unexpired cookie matches the url, so a curl given that header sends the request with no cookie and reports no error
+  - evidence: _cookie_output refuses an empty header, naming the stored domains; pytest test_get_format_header_with_no_cookie_for_the_url_is_refused_naming_the_domains fails without it; verifier OK, pytest 1280 passed, 2026-11-16
+  - repro: cookie entry for example.com: vault get NAME --format header --url https://other.example.org/
+  - root-cause: 2026-11-16T14:37:39Z @kj cli.py _cookie_output prints the result of cookies.to_header unchecked; an empty match is an empty string
+  - log: 2026-11-16T14:37:39Z @kj added
+  - log: 2026-11-16T15:26:47Z @kj closed
+- [x] `DEF-VAULT-118-CURL-EXE` **Firefox Copy as cURL (Windows) refused** - MEDIUM; current Firefox writes the Windows copy with the command name `curl.exe`; the reader knew only `curl`, so the paste was refused and no cookie was read
+  - evidence: both matches accept `curl.exe`; pytest firefox_copy_as_curl_windows_reads_as_the_cmd_form (two fixtures, five values unchanged); final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65
+  - repro: vault add NAME --cookies < tests/fixtures/cookies/firefox-curl-windows.txt
+  - test-tags: UNIT
+  - root-cause: 2026-11-16T17:52:34Z @kj cookies.py matched only `curl` followed by whitespace, in the form detection and in the cmd test; `curl.exe` matched neither
+  - log: 2026-11-16T17:52:34Z @kj added
+  - log: 2026-11-16T17:52:42Z @kj closed
+- [x] `DEF-VAULT-119-WGET-HTTPONLY` **wget 1.x sent no HttpOnly cookie** - MEDIUM; every GNU wget 1.x release skips a cookies.txt line that begins with `#`, so `wget --load-cookies` on the file of `vault get` or `exec --cookie-file` sent no HttpOnly cookie, with no error
+  - evidence: to_netscape writes every cookie as a plain line; pytest to_netscape_writes_every_cookie_as_a_plain_line, get_prints_a_cookies_txt_with_every_line_and_flag; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65
+  - repro: vault get NAME on an entry with an HttpOnly cookie: its line starts `#HttpOnly_`
+  - test-tags: UNIT
+  - root-cause: 2026-11-16T17:52:34Z @kj to_netscape wrote an HttpOnly cookie with the `#HttpOnly_` prefix, which curl and wget2 read and wget 1.x takes as a comment
+  - log: 2026-11-16T17:52:34Z @kj added
+  - log: 2026-11-16T17:52:42Z @kj closed
+- [x] `DEF-VAULT-120-COOKIE-FD` **exec --cookie-file path opens only with the descriptor** - MEDIUM; VAR was /dev/fd/N, which only a process that inherited the descriptor opens; a child that a Python command starts with default close_fds got no file, and curl there sent no cookie with exit 0
+  - evidence: a holder process keeps the file, VAR=/proc/<holder pid>/fd/N; pytest a_python_child_that_inherits_no_descriptor_opens_the_cookie_file, a_command_that_waits_until_it_has_no_child_ends, the_holder_ends_after_the_command_and_its_jobs_and_nothing_holds_the_file; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65
+  - repro: vault exec --cookie-file C=NAME -- python3 script.py, where script.py runs `cat $C` through subprocess.run
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-11-16T17:52:34Z @kj the memory file had no path outside the descriptor table of the command, and subprocess closes inherited descriptors by default
+  - log: 2026-11-16T17:52:34Z @kj added
+  - log: 2026-11-16T17:52:43Z @kj first fix made the holder process a child of the command, so a command that waits for every child never returned; the holder is now started with a double fork
+  - log: 2026-11-16T17:52:43Z @kj closed
+  - log: 2026-11-17T08:11:34Z @kj owner 2026-11-17: --cookie-file, the memory file and the holder process removed; a cookie entry reaches a command through exec --env as its Cookie header (ACC-COOKIE-340-EXEC)
+- [-] `DEF-VAULT-121-OLD-SERVER` **add --cookies against a server not restarted stores a login entry** - MINOR; the new CLI against a Jupyter server not restarted since the install: `vault add NAME --cookies` stores a login entry with no password, because the old server knows no cookie entry
+  - repro: install the build, do not restart the server, run vault add NAME --cookies with a paste on stdin
+  - root-cause: 2026-11-17T07:07:40Z @kj the server loads the extension at its start, so the old code answers until the restart
+  - log: 2026-11-17T07:07:40Z @kj added
+  - log: 2026-11-17T07:07:40Z @kj rejected: owner 2026-11-17: this must work only for new ones, old ones will fail and that is ok
+- [x] `DEF-VAULT-122-FIREFOX-OLD` **Old Firefox Windows copy stored changed values** - MINOR; Copy as cURL (Windows) of Firefox 138 and earlier, `curl "URL" -H "Cookie: ..."`, was read by the bash reader: a cookie value holding `"`, `%` or `^` was stored changed, with no refusal
+  - evidence: `_firefox_old_words` in vault/cookies.py reads the old copy, the inverse of the old escapeStringWin; pytest firefox_138_copy_as_curl_windows_reads_every_value_byte_for_byte (two fixtures; failed before the change); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65
+  - repro: paste tests/fixtures/cookies/firefox-curl-windows-old.txt into vault add --cookies: b reads xy, d reads 50^%
+  - test-tags: UNIT
+  - root-cause: 2026-11-17T08:46:42Z @kj the form detection sent every `curl "` copy to the bash reader, which does not undo the old escapeStringWin: doubled quotes, `^` and `%^` escapes
+  - log: 2026-11-17T08:46:42Z @kj added
+  - log: 2026-11-17T08:46:53Z @kj closed
+- [x] `DEF-VAULT-123-EXEC-EXIT` **exec --json reported exit 0 under ignored SIGCHLD** - MINOR; in a CLI started with the SIGCHLD signal ignored, `vault exec --json` reported exit 0 and exited 0 for a command that failed
+  - evidence: the --json branch of cmd_exec sets SIGCHLD to its default before subprocess.run; pytest exec_json_reports_the_exit_of_the_command_in_a_cli_started_with_sigchld_ignored (exit 0 before, 3 after); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65
+  - repro: a launcher ignores SIGCHLD and execs `vault exec --json --env T=NAME -- sh -c 'exit 3'`: result.exit is 0
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-11-17T08:46:42Z @kj with SIGCHLD ignored the kernel collects the child, so subprocess.run cannot read its status and reports 0
+  - log: 2026-11-17T08:46:42Z @kj added
+  - log: 2026-11-17T08:46:53Z @kj closed
+- [x] `DEF-VAULT-124-COOKIE-ARGV` **Documented exec --env recipes put cookies in argv** - MAJOR; the documented `sh -c 'curl -b "$C" URL'` and `wget --header "Cookie: $C"` put the cookie values on the tool's command line, readable in the process list by other accounts, beside texts that say environment only
+  - evidence: the curl recipe is `printf "Cookie: %s\n" "$C" | curl -H @- URL`; the curl -b and wget --header recipes are removed; verifier scan of /proc/*/cmdline every 50 ms under dash and bash found no value; pytest a_tool_under_exec_env_sends_the_cookies_and_leaves_no_file, help_states_the_cookie_forms_format_and_exec_env_with_an_example_each; final gates 2026-11-17: pytest 1306, Jest 473, Galata 65/65
+  - repro: run the documented curl line against a slow local server and read /proc/<curl pid>/cmdline: it holds the values
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-11-17T10:17:31Z @kj the shell expands $C into the tool's arguments; curl and wget read no cookie from the environment; the recipe text of round 12 was the plan's, written with no check of the tool's command line
+  - log: 2026-11-17T10:17:31Z @kj added
+  - log: 2026-11-17T11:22:57Z @kj closed
+- [x] `DEF-VAULT-125-SKILL-JSON` **Skill cookies.txt recipe with --json sends no cookie** - MINOR; the agent skill says always pass --json; with it, `<(jupyterlab-passkey vault get NAME)` holds a JSON object, which wget reads as a cookies.txt with no cookie, exit 0
+  - evidence: SKILL.md marks the cookies.txt process substitution as taking no --json; pytest test_agent_skill.py (29 lines, installed copy equal); final gates 2026-11-17: pytest 1306, Jest 473, Galata 65/65
+  - repro: wget -qO- --load-cookies <(jupyterlab-passkey vault get --json NAME) URL: the server gets no Cookie header
+  - test-tags: UNIT
+  - root-cause: 2026-11-17T10:17:32Z @kj the skill line gave the recipe without saying it is the one `vault get` that takes no --json
+  - log: 2026-11-17T10:17:32Z @kj added
+  - log: 2026-11-17T11:22:57Z @kj closed
+- [x] `DEF-VAULT-126-EXEC-HINT` **exec refusal 'no cookie matches' names no fix** - MINOR; under `vault exec --env` the refusal 'no cookie matches the domain, path and scheme of the url' names no command; exec has no --url, the fix is `vault edit NAME --url URL`
+  - evidence: the refusal ends `; give the site's url with` and the caller's hint; pytest exec_env_refuses_a_cookie_entry_as_get_format_header_does, get_format_header_with_no_cookie_for_the_url_is_refused_naming_the_domains (both failed before); final gates 2026-11-17: pytest 1306, Jest 473, Galata 65/65
+  - repro: an entry with an http:// url and one Secure cookie: vault exec --env C=NAME -- true
+  - test-tags: UNIT
+  - root-cause: 2026-11-17T10:17:32Z @kj _cookie_header used its `given` hint in the no-url refusal only
+  - log: 2026-11-17T10:17:32Z @kj added
+  - log: 2026-11-17T11:22:57Z @kj closed
+- [x] `DEF-VAULT-127-SURROGATE` **Lone surrogate in a pasted value ends a read in a traceback** - MINOR; a fetch copy whose cookie value holds a lone surrogate escape is stored; `vault get` then ends with a UnicodeEncodeError traceback, exit 1, no value shown
+  - evidence: pytest a_cookie_or_header_value_that_is_not_utf8_refuses_the_paste, cookie value case: failed before the fix (DID NOT RAISE, the value was stored), now refused naming form and line, no traceback; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
+  - repro: add a fetch copy with \\ud800 in a cookie value, then vault get NAME
+  - test-tags: UNIT
+  - root-cause: 2026-11-17T19:16:27Z @kj cookies.py _cookie and _kept refused control characters and line breaks only, so a lone surrogate from a fetch copy's JSON escape was stored, and printing it raised UnicodeEncodeError
+  - root-cause: 2026-11-17T15:54:56Z @kj cookies.py refuses control characters in a value and not text that cannot be encoded as UTF-8
+  - log: 2026-11-17T15:54:56Z @kj added
+  - log: 2026-11-17T19:16:27Z @kj closed
 
 ## Vault panel `PANEL`
 
@@ -1048,6 +1168,45 @@ The vault sidebar panel, its dialogs and styles
   - test-tags: UNIT
   - log: 2026-11-13T18:04:00Z @kj added
   - log: 2026-11-13T18:34:59Z @kj closed
+- [x] `DEF-PANEL-113-ROW-HIGHLIGHT` **Row highlight stops short of the right edge** - MINOR; when the open category shows no scrollbar, the highlight of the current row ends one scrollbar width before the panel's right edge; expected: full width with no scrollbar, up to the scrollbar when one shows
+  - evidence: Galata 'one category opens at a time' asserts the hovered row reaches the viewport's right edge: 15 px short on the pre-fix build, passes on the installed fix; final Galata 64/64, 2026-11-16 (logs/galata-final-cookie-final-1.log)
+  - related: ACC-PANEL-310-GUTTER
+  - repro: open a category whose rows fit without scrolling, hover a row: the highlight ends a scrollbar width before the right edge
+  - test-tags: UNIT, E2E
+  - root-cause: 2026-11-16T06:37:19Z @kj confirmed: scrollbar-gutter: stable on .jp-PasskeyVaultPanel-viewport (style/base.css:298) reserves the strip outside the padding box, where the viewport clips; the row cannot paint there; Galata on the pre-fix build measures the row 15 px short
+  - root-cause: 2026-11-16T06:04:09Z @kj likely cause: scrollbar-gutter: stable on .jp-PasskeyVaultPanel-viewport (style/base.css:298) reserves the scrollbar strip in every open category, scrolling or not; the design system's Harmonica chapter prescribes the same rule
+  - log: 2026-11-16T06:04:09Z @kj added
+  - log: 2026-11-16T06:37:19Z @kj fix applied (review/patches/def113.patch): no scrollbar-gutter on the viewport; the row's right padding is inset + gutter - (100cqw - 100%), so the age stays level with the holder; verified; design system updated
+  - log: 2026-11-16T13:28:46Z @kj closed
+- [x] `DEF-PANEL-128-SUCCESS-TOAST` **Method change success is a panel line, not a notification** - MINOR; a successful unlock-method change in the cog view shows as a line at the panel bottom with a green bar, e.g. 'Passkey removed', 'Password and authenticator app added'; the owner expects a normal success notification, as the unlock gets (src/vault/plugin.ts:128, autoClose 3000)
+  - evidence: jest vault.spec.ts: the nine success texts each one transient ingest post, no panel line, none for Delete (15 fail on the pre-fix tree); vault-plugin.spec.ts 'raises one success notification, Vault created, and no Vault unlocked'; Galata expectSuccess in 4 tests; final gates 2026-11-17: pytest 1398, Jest 483, Galata 67/67
+  - overrides: ACC-PANEL-178
+  - repro: cog view, Remove on a passkey: 'Passkey removed' shows as the panel's bottom line, no notification; same after Add unlock method, Password and authenticator app
+  - test-tags: UNIT, E2E
+  - root-cause: 2026-11-17T19:09:11Z @kj _act (src/vault/panel.ts:604) puts every success text in this._message, drawn as the banner line, as ACC-PANEL-178 states; only a failure becomes a notification (ACC-PANEL-282-AMBER-TOAST)
+  - log: 2026-11-17T19:09:11Z @kj added
+  - log: 2026-11-17T21:34:02Z @kj closed; reason: the evidence names the tests of both fix rounds and the gate run
+- [x] `DEF-PANEL-130-TOAST-OBSERVER` **Success toast observer stays on in do-not-disturb mode** - MINOR; with the setting 'Silence all notifications' on, no toast element and no open centre ever appear, so raiseSuccessToast's observer never disconnects and its row waits until the centre opens; one document-wide observer per success
+  - related: ACC-NOTIFY-301-TOAST-TRANSIENT
+  - evidence: jest vault.spec.ts 'raiseSuccessToast removes the row of a toast the page never showed, once its time is up': fake timers, 4000 ms, dismiss called with the id; failed before the change; final gates 2026-11-18: pytest 1398, Jest 484, Galata 69/69
+  - test-tags: UNIT
+  - root-cause: 2026-11-17T23:20:33Z @kj the notification plugin returns before createToast in do-not-disturb mode; both observer branches need a toast element or an open centre
+  - log: 2026-11-17T23:20:33Z @kj added
+  - log: 2026-11-18T00:04:40Z @kj closed
+- [x] `DEF-PANEL-131-SUCCESS-MS` **Success toast duration is a bare 3000 literal** - MINOR; raiseSuccessToast passes autoClose 3000 inline while the file names its other load-bearing timings (REFRESH_MS, ARM_DELAY_MS, ARM_LAPSE_MS); tests and docs pin the value, so a change has to find the literal
+  - related: ACC-NOTIFY-301-TOAST-TRANSIENT
+  - evidence: the duration is SUCCESS_TOAST_MS = 3000 beside REFRESH_MS; jest vault.spec.ts successes() pins autoClose 3000; final gates 2026-11-18: pytest 1398, Jest 484, Galata 69/69
+  - test-tags: UNIT
+  - root-cause: 2026-11-17T23:20:33Z @kj the DEF-PANEL-128 follow-up added the emit call without a constant
+  - log: 2026-11-17T23:20:33Z @kj added
+  - log: 2026-11-18T00:04:40Z @kj closed
+- [x] `DEF-PANEL-132-KEEP-HELP` **Edit help for a headers-only entry says 'the 0 cookies'** - MINOR; an entry stored from a copy with headers and no cookie shows 'Leave empty to keep the 0 cookies and the 1 header' in the Edit form, and the header it does hold reads as an afterthought
+  - related: ACC-COOKIE-354-PANEL-EDIT
+  - evidence: jest vault-cookies.spec.ts 'says an empty paste keeps the headers too...': a headers-only entry reads 'Leave empty to keep the 1 header', the old expectation failed first; cookies strings unchanged; final gates 2026-11-18: pytest 1398, Jest 484, Galata 69/69
+  - test-tags: UNIT
+  - root-cause: 2026-11-17T23:20:38Z @kj dialogs.ts:241 composes the cookie clause from this._stored unconditionally
+  - log: 2026-11-17T23:20:38Z @kj added
+  - log: 2026-11-18T00:04:40Z @kj closed
 
 ## Lint `LINT`
 
@@ -1077,6 +1236,16 @@ Notifications this extension raises in the JupyterLab tab: their text, their cen
   - log: 2026-11-04T20:44:29Z @kj added
   - log: 2026-11-04T21:26:38Z @kj closed
   - log: 2026-11-04T23:29:26Z @kj edited evidence "transient removed from the cli.py _trigger payload; test_notification_texts.py:775 asserts "transient" not in payload, and fails with transient: True restored (exit 1); an answered row now leaves via dismissAnswered after the step, the core press dismissal and dismissStale" -> "the transient field is gone from the payload; the collector asserts its absence; a press dismisses through JupyterLab core and dismissStale bounds every row that names a wait at its seconds end"
+- [x] `DEF-NOTIFY-129-TAB-REPEAT` **Unlock toast repeats once per open tab** - MINOR; with N JupyterLab tabs open, one unlock shows N 'Vault unlocked' toasts in each tab, against ACC-VAULT-291-UNLOCK-TOAST (one notification); each tab's watch posts its own toast to the notifications ingest, and the ingest pushes every post to every open tab
+  - evidence: Galata 'one unlock shows one Vault unlocked toast in each of two tabs', 'a panel success shows only in the tab that did it' (old build: 2 per tab, 1 in the other); Jest 'removes the centre row once its toast closes'; final gates: pytest 1398, Jest 483, Galata 69/69
+  - related: ACC-VAULT-291-UNLOCK-TOAST
+  - repro: open the lab in two browser tabs, unlock the vault: each tab shows 'Vault unlocked' twice
+  - test-tags: UNIT, E2E
+  - root-cause: 2026-11-17T22:38:26Z @kj confirmed: each tab's watch posted its own toast to the notifications ingest, which has no target field and pushes every post to every connected tab (routes.py _push_immediate); reproduced with two Galata pages, 2 toasts per tab
+  - root-cause: 2026-11-17T21:12:58Z @kj likely cause, from code reading, not yet seen in a browser: watch (src/vault/plugin.ts) raises the toast in every tab on its own locked-to-unlocked read; jupyterlab_notifications_extension routes.py _push_immediate sends each ingested notification to every connected tab
+  - log: 2026-11-17T21:12:58Z @kj added
+  - log: 2026-11-17T21:33:55Z @kj edited text "with N JupyterLab tabs open, one unlock shows N 'Vault unlocked' toasts in each tab, against ACC-VAULT-291 (one notification); each tab's watch posts its own toast to the notifications ingest, and the ingest pushes every post to every open tab" -> "with N JupyterLab tabs open, one unlock shows N 'Vault unlocked' toasts in each tab, against ACC-VAULT-291-UNLOCK-TOAST (one notification); each tab's watch posts its own toast to the notifications ingest, and the ingest pushes every post to every open tab"
+  - log: 2026-11-17T22:38:39Z @kj closed
 
 ## Documentation `DOCS`
 

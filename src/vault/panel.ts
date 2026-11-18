@@ -34,10 +34,13 @@ import {
   askNewPassword,
   askProof,
   askUnlockCode,
+  chooseEntryType,
   chooseFirstMethod,
   chooseUnlockMethod,
   confirmDelete,
+  cookieExpired,
   editEntry,
+  expiredBadge,
   NEW_RECOVERY,
   registerMfa,
   registerWithProof,
@@ -62,6 +65,9 @@ import {
 
 /** How often a visible panel re-reads the vault state. */
 export const REFRESH_MS = 15000;
+
+/** How long a success toast shows before it closes; its centre row goes too. */
+export const SUCCESS_TOAST_MS = 3000;
 
 /** Left out of the security view as detail; `vault status` still prints them. */
 const CLI_ONLY: (keyof ICapabilities)[] = ['holder_ttl', 'container_isolated'];
@@ -190,8 +196,8 @@ export interface IVaultPanelOptions {
   onRead?: (status: IStatus, since: number) => void;
 }
 
-/** The banner's line of a success or a hint: `at` is when it was set. */
-type Message_ = { text: string; at: number } | null;
+/** The banner's 'First confirm' hint (`_sayProofFirst`). */
+type Message_ = { text: string } | null;
 
 /** How long an armed two-step button ignores clicks: a double-click never confirms. */
 export const ARM_DELAY_MS = 500;
@@ -236,6 +242,13 @@ const vaultIcon = new LabIcon({
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" viewBox="0 0 24 23"><path class="jp-icon3" fill="#616161" d="M12 17a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h1V6a5 5 0 0 1 5-5 5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3"/></svg>'
 });
 
+/** A cookie entry's mark on its row, in the column of the status dot. */
+const cookieIcon = new LabIcon({
+  name: 'jupyterlab-passkey-extension:cookie',
+  svgstr:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path class="jp-icon3" fill="#616161" d="M12 3a9 9 0 1 0 9 9c0-.5-.04-1-.13-1.5C20.6 10 20 10 20 10h-2V9c0-1-1-1-1-1h-2V7c0-1-1-1-1-1h-1V4c0-1-1-1-1-1zM9.5 6a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm-3 4a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm5 1a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm5 2a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM11 16a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z"/></svg>'
+});
+
 /** The harmonica's values, from the design system's Harmonica navigation chapter. */
 const EXPAND_STEP = 160; // px of free space one wheel event may take
 const HOLD_MS = 438; // the held pull before a switch
@@ -267,6 +280,37 @@ function pathValue(path: string): HTMLElement {
     value.append(el('span', '', i < parts.length - 1 ? `${part}/` : part));
   });
   return value;
+}
+
+/**
+ * Raise a success toast in this tab only, transient: closing it, by its 3 s autoClose
+ * or by the user, leaves no row in the notification centre. Not the notifications
+ * extension's ingest, which shows every post in every open tab of the server and
+ * queues it for a tab opened later. JupyterLab keeps a closed toast's row, so the row
+ * goes when the toast's element, whose id is the notification's, leaves the page. No
+ * toast shows while the centre is open or in do-not-disturb mode; the open centre then
+ * removes the row, as the ingest's transient rows are removed.
+ */
+export function raiseSuccessToast(message: string): void {
+  const id = Notification.emit(message, 'success', {
+    autoClose: SUCCESS_TOAST_MS
+  });
+  let shown = false;
+  const observer = new MutationObserver(() => {
+    if (document.getElementById(id)) {
+      shown = true;
+    } else if (shown || document.querySelector('.jp-Notification-Center')) {
+      cleanup();
+    }
+  });
+  const cleanup = () => {
+    window.clearTimeout(timer);
+    observer.disconnect();
+    Notification.dismiss(id);
+  };
+  // A toast the page never showed, held out by do-not-disturb, still gets its row.
+  const timer = window.setTimeout(cleanup, SUCCESS_TOAST_MS + 1000);
+  observer.observe(document.body, { childList: true, subtree: true });
 }
 
 /** The vault sidebar panel: create, unlock, browse and manage the vault. */
@@ -350,7 +394,6 @@ export class VaultPanel extends Widget {
 
   /** Re-read the state and, when unlocked, the entry list. */
   async refresh(): Promise<void> {
-    const before = shape(this._status);
     const since = Date.now();
     try {
       this._status = await this._api.status();
@@ -371,10 +414,6 @@ export class VaultPanel extends Widget {
         // The last entries stay drawn while the banner says why.
         this._entriesRead = false;
       }
-    }
-    // Not while an action runs: its line reports its own change.
-    if (!this._busy && shape(this._status) !== before) {
-      this._dropStale();
     }
     if (this._busy) {
       // An action runs, maybe behind a dialog: a redraw now would replace the element
@@ -424,11 +463,6 @@ export class VaultPanel extends Widget {
 
   // -- state reads ----------------------------------------------------------
 
-  /** Changed elsewhere (the CLI, another tab): a line about the old state is stale. */
-  private _dropStale(): void {
-    this._message = null;
-  }
-
   /** Read the state as the panel's own poll does, with the panel shown or hidden. */
   poll(): Promise<void> {
     return this._tick();
@@ -468,7 +502,6 @@ export class VaultPanel extends Widget {
       return;
     }
     if (shape(this._status) !== before) {
-      this._dropStale();
       await this.refresh();
       return;
     }
@@ -476,10 +509,6 @@ export class VaultPanel extends Widget {
       // The last read failed: try again now the server answers.
       await this.refresh();
       return;
-    }
-    // A success line stays one full refresh period.
-    if (this._message && Date.now() - this._message.at >= REFRESH_MS) {
-      this._message = null;
     }
     this._renderStatus();
     this._renderBanner();
@@ -512,10 +541,7 @@ export class VaultPanel extends Widget {
    */
   private _sayProofFirst(s: IStatus): void {
     if (matchingSlots(s.slots, this._host).length > 0) {
-      this._message = {
-        text: 'First confirm with a passkey you already have',
-        at: Date.now()
-      };
+      this._message = { text: 'First confirm with a passkey you already have' };
       this._renderBanner();
     }
   }
@@ -582,9 +608,9 @@ export class VaultPanel extends Widget {
   // -- actions --------------------------------------------------------------
 
   /**
-   * Run an action, report the outcome, then re-read. Success shows `done` in the
-   * banner, or `done` of what the action resolved to; an action that resolves to
-   * `false` was cancelled, and reports nothing. A
+   * Run an action, re-read, then report the outcome. Success raises `done`, or `done`
+   * of what the action resolved to, with `raiseSuccessToast`, as the unlock does; an
+   * action that resolves to `false` was cancelled, and reports nothing. A
    * failure is a notification (`fail`), amber for a passkey the browser made but the
    * vault did not take and for a dismissed passkey prompt (the user's choice), red
    * otherwise. `unconfirmed` is its text when the request may have landed. One at a
@@ -608,15 +634,12 @@ export class VaultPanel extends Widget {
     let unanswered = false;
     let answered = false;
     let failure: { text: string; warn: boolean } | null = null;
+    let success: string | null = null;
     try {
       const result = await action();
-      this._message =
-        result !== false && done
-          ? {
-              text: typeof done === 'string' ? done : done(result),
-              at: Date.now()
-            }
-          : null;
+      if (result !== false && done) {
+        success = typeof done === 'string' ? done : done(result);
+      }
     } catch (e) {
       // A proof that fails leaves its hint (`_sayProofFirst`) with no request running.
       this._message = null;
@@ -629,7 +652,7 @@ export class VaultPanel extends Widget {
     }
     try {
       // Read the new state while still busy: a tick in between would take the
-      // action's own change for one made elsewhere and drop the line above.
+      // action's own change for one made elsewhere.
       await this.refresh();
       if (failure && (unanswered || (answered && this._readError !== null))) {
         // No answer came, or an answer came (maybe not the vault's: a proxy page) while
@@ -644,6 +667,9 @@ export class VaultPanel extends Widget {
       this._render();
       if (failure) {
         this.fail(sentence(failure.text), failure.warn);
+      }
+      if (success) {
+        raiseSuccessToast(success);
       }
     }
   }
@@ -868,16 +894,25 @@ export class VaultPanel extends Widget {
     });
   }
 
-  private _add(): Promise<void> {
-    if (this._lockedMeanwhile()) {
-      return Promise.resolve();
+  /**
+   * Add an entry: the user chooses its kind, then fills its form. The choice is made
+   * before the panel is busy, so backing out leaves no line.
+   */
+  private async _add(): Promise<void> {
+    if (this._busy || this._lockedMeanwhile()) {
+      return;
+    }
+    const type = await chooseEntryType();
+    if (type === null) {
+      return;
     }
     return this._act(async () => {
       const value = await editEntry(
         () => this._api.generate(),
         undefined,
         this._entries.map(e => e.name),
-        this._entries.map(e => e.category)
+        this._entries.map(e => e.category),
+        type === 'cookies' ? this._parse : undefined
       );
       if (value) {
         const { name, ...fields } = value;
@@ -896,11 +931,24 @@ export class VaultPanel extends Widget {
         const value = await editEntry(
           () => this._api.generate(),
           entry,
-          [],
-          this._entries.map(e => e.category)
+          this._entries.map(e => e.name).filter(n => n !== entry.name),
+          this._entries.map(e => e.category),
+          entry.type === 'cookies' ? this._parse : undefined
         );
         if (value) {
           const { name, ...changed } = value;
+          // The rename first: a name taken meanwhile is refused before any field is
+          // written, and the fields are then written under the new name.
+          if (name !== entry.name) {
+            await this._api.rename(entry.name, name);
+            // The focused row is drawn again under the new name: its key follows, so
+            // focus lands on the renamed row. A focus elsewhere stays where it is.
+            if (this._focusKey() === `row:${entry.name}`) {
+              (document.activeElement as HTMLElement).dataset.focusKey =
+                `row:${name}`;
+            }
+            this._filter.value = '';
+          }
           if (Object.keys(changed).length > 0) {
             await this._api.edit(name, changed);
             // The saved row shows whatever the filter was.
@@ -919,7 +967,7 @@ export class VaultPanel extends Widget {
         return false;
       }
       await this._api.remove(entry.name);
-    }, `Deleted ${entry.name}`);
+    });
   }
 
   /** The entry's popup, then the Edit or Delete chosen there. */
@@ -1129,7 +1177,6 @@ export class VaultPanel extends Widget {
     const shown = JSON.stringify([
       this._view === 'main' ? this._status?.holder.notice : null,
       this._message?.text,
-      this._message?.at,
       this._readError
     ]);
     if (shown === this._bannerShown) {
@@ -1708,12 +1755,22 @@ export class VaultPanel extends Widget {
     this._foldInto(to, dir);
   };
 
-  /** A row is the entry's name, username and last-used age; a click or Enter opens its popup. */
+  /**
+   * A row is the entry's name, username and last-used age; a click or Enter opens its
+   * popup. A cookie entry's row has a cookie icon in the column of the status dot, and
+   * an `expired` badge after the name when it stores cookies and none is left unexpired.
+   */
   private _row(e: IEntry): HTMLElement {
     const line = el('button', `${C}-rowLine`);
     line.type = 'button';
     line.dataset.focusKey = `row:${e.name}`;
     line.setAttribute('aria-haspopup', 'dialog');
+    if (e.type === 'cookies') {
+      const icon = cookieIcon.element({ tag: 'span' });
+      icon.classList.add(`${C}-rowIcon`);
+      icon.setAttribute('aria-hidden', 'true');
+      line.appendChild(icon);
+    }
     line.append(
       el('span', `${C}-rowName`, e.name),
       el('span', `${C}-rowUser`, e.username),
@@ -1726,10 +1783,19 @@ export class VaultPanel extends Widget {
 
   /**
    * Draw an entry's age on its row: the age text, the recent and stale classes, the
-   * aria-label's part and the tooltip. The tick runs it again while the row stands,
-   * so an age that crosses a threshold changes without a redraw.
+   * aria-label's part and the tooltip, and a cookie entry's `expired` badge. The tick
+   * runs it again while the row stands, so an age that crosses a threshold and a last
+   * cookie that expires change without a redraw.
    */
   private _paintAge(e: IEntry, line: HTMLElement): void {
+    const badge = line.querySelector('.jp-PasskeyVault-expired');
+    if (this._allExpired(e) !== (badge !== null)) {
+      if (badge) {
+        badge.remove();
+      } else {
+        line.querySelector(`.${C}-rowName`)?.after(expiredBadge());
+      }
+    }
     const ago = formatAgo(e.used);
     const age = e.used ? Date.now() - Date.parse(e.used) : NaN;
     // The AI sessions panel's thresholds; never used counts as older than any age, so it dims.
@@ -1738,7 +1804,14 @@ export class VaultPanel extends Widget {
       'jp-mod-stale',
       Number.isNaN(age) || age > 7 * 86_400_000
     );
-    const label = e.username ? `${e.name}, ${e.username}` : e.name;
+    const label = [
+      e.name,
+      e.type === 'cookies' && 'cookies',
+      this._allExpired(e) && 'expired',
+      e.username
+    ]
+      .filter(Boolean)
+      .join(', ');
     const ageText = e.used ? `last used ${ago}` : 'never used';
     line.setAttribute('aria-label', `${label}, ${ageText}`);
     line.title = entryTooltip(e);
@@ -1747,6 +1820,19 @@ export class VaultPanel extends Widget {
       span.textContent = ago;
     }
   }
+
+  /** True for a cookie entry that stores cookies and has none left unexpired. */
+  private _allExpired(e: IEntry): boolean {
+    return (
+      e.type === 'cookies' &&
+      !!e.cookies?.length &&
+      e.cookies.every(c => cookieExpired(c))
+    );
+  }
+
+  /** The cookie form's preview: the server reads the paste and writes nothing. */
+  private readonly _parse = (text: string, url: string) =>
+    this._api.parseCookies(text, url);
 
   private _renderSettings(s: IStatus): void {
     const security = this._section('Security');

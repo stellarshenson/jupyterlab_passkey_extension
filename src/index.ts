@@ -103,6 +103,10 @@ const plugin: JupyterFrontEndPlugin<void> = {
             twice: {
               type: 'boolean',
               description: 'true asks the value in two fields that must match'
+            },
+            multiline: {
+              type: 'boolean',
+              description: 'true asks one multi-line paste field'
             }
           },
           required: ['nonce']

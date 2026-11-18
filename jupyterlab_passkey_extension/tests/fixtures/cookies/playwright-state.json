@@ -1,0 +1,45 @@
+{
+  "cookies": [
+    {
+      "name": "sid",
+      "value": "s%3Aab.c%2F",
+      "domain": "app.example.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "tok",
+      "value": "eyJhbGc==",
+      "domain": ".example.com",
+      "path": "/",
+      "expires": 4102444800.5,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "q",
+      "value": "\"a b\"",
+      "domain": "app.example.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://app.example.com",
+      "localStorage": [
+        {
+          "name": "theme",
+          "value": "dark"
+        }
+      ]
+    }
+  ]
+}

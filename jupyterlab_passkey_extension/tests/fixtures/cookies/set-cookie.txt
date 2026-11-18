@@ -1,0 +1,2 @@
+Set-Cookie: sid=s%3Aab.c%2F; Path=/; Max-Age=3600; Secure; HttpOnly; SameSite=Lax
+Set-Cookie: tok=eyJhbGc==; Domain=.example.com; Path=/; Expires=Fri, 01 Jan 2100 00:00:00 GMT; Secure; SameSite=None

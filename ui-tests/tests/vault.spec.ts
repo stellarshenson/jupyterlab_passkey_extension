@@ -155,10 +155,32 @@ async function createVault(page: any): Promise<void> {
   await expect(state(page)).toContainText('Unlocked');
 }
 
+/** A success: a notification that closes after 3 s, and no line in the panel. */
+async function expectSuccess(page: any, text: string): Promise<void> {
+  await expect(
+    page.locator('.jp-toast-message', { hasText: text })
+  ).toHaveCount(1);
+  await expect(panel(page)).not.toContainText(text);
+}
+
 async function openCog(page: any) {
   await panel(page)
     .getByRole('button', { name: 'Vault settings and security' })
     .click();
+}
+
+/**
+ * Press Add, then the kind of entry in the dialog that asks it - Password or Cookies -
+ * and wait for its form.
+ */
+async function pressAdd(
+  page: any,
+  kind: 'login' | 'cookies' = 'login'
+): Promise<void> {
+  await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+  const dialog = page.locator('.jp-Dialog');
+  await dialog.locator(`button[data-method="${kind}"]`).click();
+  await expect(dialog.getByLabel('Name', { exact: true })).toBeVisible();
 }
 
 /**
@@ -274,7 +296,7 @@ test('the panel has the geometry of the AI assistants panels', async ({
   await openVault(page);
   await createVault(page);
   const dialog = page.locator('.jp-Dialog');
-  await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+  await pressAdd(page);
   await dialog.getByLabel('Name', { exact: true }).fill('github/api');
   await dialog.getByLabel('Username').fill('me');
   await dialog.getByLabel('Password', { exact: true }).fill('s3cret-value');
@@ -402,7 +424,7 @@ test('a folded band draws the separator, and the open section none, in both view
     ['home/one', 'home'],
     ['work/one', 'work']
   ]) {
-    await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+    await pressAdd(page);
     await dialog.getByLabel('Name', { exact: true }).fill(name);
     await dialog.getByLabel('Category', { exact: true }).fill(category);
     await dialog.getByRole('button', { name: 'Save' }).click();
@@ -599,7 +621,7 @@ test('set-up offers the methods after the passphrase, says why a step stopped, a
     timeout: 20000
   });
   await expect(state(page)).toContainText('Unlocked');
-  await expect(panel(page)).toContainText('Vault created');
+  await expectSuccess(page, 'Vault created');
   await expect(
     panel(page).locator('.jp-PasskeyVaultPanel-message[data-kind="error"]')
   ).toHaveCount(0);
@@ -672,7 +694,7 @@ test('one category opens at a time, and the wheel folds to the next at its last 
     ['home/one', 'home'],
     ['work/one', 'work']
   ]) {
-    await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+    await pressAdd(page);
     await dialog.getByLabel('Name', { exact: true }).fill(name);
     await dialog.getByLabel('Category', { exact: true }).fill(category);
     await dialog.getByRole('button', { name: 'Save' }).click();
@@ -721,7 +743,7 @@ test('one category opens at a time, and the wheel folds to the next at its last 
   await expect(work).toHaveAttribute('aria-expanded', 'false');
   expect(await height(home)).toBeGreaterThan(100);
   expect(await height(work)).toBe(0);
-  // The open category's rows fit, so the reserved gutter must keep its first age
+  // The open category's rows fit, so the row's right padding must keep its first age
   // level with the status row's holder at the panel's right edge.
   const [ageEdge, holderEdge] = await panel(page).evaluate(
     (root: HTMLElement) => {
@@ -739,6 +761,14 @@ test('one category opens at a time, and the wheel folds to the next at its last 
   // in the AI assistants panel, never the band's colour.
   const firstRow = home.locator('..').locator(`${C}-rowLine`).first();
   await firstRow.hover();
+  // With no scrollbar the hovered row's fill reaches the open viewport's right edge.
+  const [rowEdge, viewportEdge] = await firstRow.evaluate(
+    (node: HTMLElement) => [
+      node.getBoundingClientRect().right,
+      (node.parentElement as HTMLElement).getBoundingClientRect().right
+    ]
+  );
+  expect(Math.abs(rowEdge - viewportEdge)).toBeLessThanOrEqual(1);
   const hoverColour = await page.evaluate(() => {
     const probe = document.createElement('span');
     probe.style.color =
@@ -819,7 +849,7 @@ test('an entry opens read-only in a popup, and its password shows only after a p
   await createVault(page);
 
   const SECRET = 'vault-e2e-secret-7Qp';
-  await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+  await pressAdd(page);
   const dialog = page.locator('.jp-Dialog');
   await dialog.getByLabel('Name', { exact: true }).fill('github/api');
   await dialog.getByLabel('Username').fill('me');
@@ -973,7 +1003,7 @@ test('the entry dialog is wide with a tall Notes, and Edit shows the same fields
 
   const labels = () =>
     page.locator('.jp-Dialog .jp-PasskeyVaultForm-label').allInnerTexts();
-  await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+  await pressAdd(page);
   const dialog = page.locator('.jp-Dialog');
   const addLabels = await labels();
   const box = await dialog.locator('.jp-Dialog-content').boundingBox();
@@ -1003,8 +1033,9 @@ test('the entry dialog is wide with a tall Notes, and Edit shows the same fields
   expect(await labels()).toEqual(addLabels);
   const name = dialog.getByLabel('Name', { exact: true });
   await expect(name).toHaveValue('github/api');
-  await expect(name).not.toBeEditable();
-  await expect(dialog.getByLabel('Username')).toBeFocused();
+  // The name can change, which renames the entry; typing starts there.
+  await expect(name).toBeEditable();
+  await expect(name).toBeFocused();
   await dialog.getByRole('button', { name: 'Cancel' }).click();
 });
 
@@ -1018,14 +1049,14 @@ test('the Category field lists the categories in use, and a choice fills the fie
     ['work/one', 'work'],
     ['home/one', 'home']
   ]) {
-    await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+    await pressAdd(page);
     await dialog.getByLabel('Name', { exact: true }).fill(name);
     await dialog.getByLabel('Category', { exact: true }).fill(category);
     await dialog.getByRole('button', { name: 'Save' }).click();
     await expect(dialog).toHaveCount(0);
   }
 
-  await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+  await pressAdd(page);
   const field = dialog.getByLabel('Category', { exact: true });
   await dialog.getByRole('button', { name: 'Existing categories' }).click();
   const menu = page.locator('.jp-PasskeyVaultForm-categoryMenu');
@@ -1252,7 +1283,7 @@ async function startMfa(page: any): Promise<string> {
 
 async function addEntry(page: any, secret: string) {
   const dialog = page.locator('.jp-Dialog');
-  await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+  await pressAdd(page);
   await dialog.getByLabel('Name', { exact: true }).fill('github/api');
   await dialog.getByLabel('Password', { exact: true }).fill(secret);
   await dialog.getByRole('button', { name: 'Save' }).click();
@@ -1321,9 +1352,7 @@ test('a password and an authenticator app are added in one flow, and the two unl
   await code.fill(appCode(setupKey, step));
   await add.click();
   await expect(dialog).toHaveCount(0);
-  await expect(panel(page)).toContainText(
-    'Password and authenticator app added'
-  );
+  await expectSuccess(page, 'Password and authenticator app added');
   // One row for the two. Its name is shown whole at the width of a sidebar: it
   // wraps beside Remove and is not cut.
   await expect(row).toContainText('Password and authenticator app');
@@ -1383,9 +1412,7 @@ test('a password and an authenticator app are added in one flow, and the two unl
   await openCog(page);
   await removeMethod(page, row);
   await expect(row).toHaveCount(0);
-  await expect(panel(page)).toContainText(
-    'Password and authenticator app removed'
-  );
+  await expectSuccess(page, 'Password and authenticator app removed');
   await openCog(page);
   await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
   await expect(state(page)).toHaveText('Locked');
@@ -1588,7 +1615,7 @@ test('the recovery passphrase is changed and then opens the vault', async ({
     .getByRole('button', { name: 'Change recovery passphrase' })
     .click();
   await submitSecret(page, 'a brand new recovery passphrase', true);
-  await expect(panel(page)).toContainText('Recovery passphrase changed');
+  await expectSuccess(page, 'Recovery passphrase changed');
 
   await openCog(page); // back to the main view
   await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
@@ -1619,7 +1646,7 @@ test('the data key is rotated with the recovery passphrase as the proof', async 
 
   await panel(page).getByRole('button', { name: 'Rotate data key' }).click();
   await submitSecret(page, RECOVERY, false);
-  await expect(panel(page)).toContainText('Data key rotated');
+  await expectSuccess(page, 'Data key rotated');
   await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
   expect(created()).not.toBe(before);
 });
@@ -1667,7 +1694,7 @@ test('a revealed or externally read entry shows its use without a manual refresh
 
   const SECRET = 'vault-e2e-secret-7Qp';
   const add = async (name: string) => {
-    await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+    await pressAdd(page);
     const form = page.locator('.jp-Dialog');
     await form.getByLabel('Name', { exact: true }).fill(name);
     await form.getByLabel('Username').fill('me');
@@ -1949,6 +1976,100 @@ test('the Vault unlocked toast leaves no centre row, by its close button or its 
   ).toHaveCount(0);
 });
 
+/**
+ * Count, from now on, the page's toasts whose text holds `text`, each once by its
+ * notification id: a toast closes after 3 s, so two raised seconds apart are never on
+ * screen together. Run in the page.
+ */
+function countToasts(text: string): void {
+  const seen = new Set<string>();
+  (window as any).passkeyToastIds = seen;
+  new MutationObserver(() =>
+    document.querySelectorAll('.Toastify__toast').forEach(toast => {
+      if (toast.textContent?.includes(text)) {
+        seen.add(toast.id);
+      }
+    })
+  ).observe(document, { childList: true, subtree: true });
+}
+
+function toastCount(tab: any): Promise<number> {
+  return tab.evaluate(() => (window as any).passkeyToastIds.size);
+}
+
+/**
+ * A second tab of the same lab in the page's browser context, counting the toasts that
+ * hold `text` from its start, once its notifications stream is connected: a
+ * notification posted to the ingest reaches an open tab through that stream.
+ */
+async function secondTab(page: any, text: string): Promise<any> {
+  const tab = await page.context().newPage();
+  await tab.addInitScript(countToasts, text);
+  const stream = tab.waitForEvent('websocket', (socket: any) =>
+    socket.url().includes('jupyterlab-notifications-extension/stream')
+  );
+  await tab.goto(`${BASE_URL}/lab`);
+  await stream;
+  await tab
+    .locator(`.lm-TabBar-tab[data-id="${PANEL_ID}"]`)
+    .waitFor({ timeout: 30000 });
+  return tab;
+}
+
+test('one unlock shows one Vault unlocked toast in each of two tabs', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await panel(page).getByRole('button', { name: 'Lock the vault' }).click();
+  await expect(state(page)).toHaveText('Locked');
+  const tab = await secondTab(page, 'Vault unlocked');
+  const other = tab.locator(`#${PANEL_ID}`);
+  if (!(await other.isVisible())) {
+    await tab.locator(`.lm-TabBar-tab[data-id="${PANEL_ID}"]`).click();
+  }
+  const otherState = other.locator('.jp-PasskeyVaultPanel-stateText');
+  await expect(otherState).toHaveText('Locked', { timeout: 20000 });
+  await page.evaluate(countToasts, 'Vault unlocked');
+
+  await panel(page)
+    .getByRole('button', { name: 'Use recovery passphrase' })
+    .click();
+  await submitSecret(page, RECOVERY, false);
+  await expect(state(page)).toContainText('Unlocked');
+  // The second tab reads the change at its Refresh, not up to 15 s later at its poll.
+  await other.getByRole('button', { name: 'Refresh' }).click();
+  await expect(otherState).toContainText('Unlocked');
+  await expect.poll(() => toastCount(page)).toBeGreaterThan(0);
+  await expect.poll(() => toastCount(tab)).toBeGreaterThan(0);
+  // A toast posted by the other tab comes through the stream well inside this wait.
+  await page.waitForTimeout(2000);
+  // Each tab raises its own from the edge it reads, and shows no other tab's.
+  expect(await toastCount(page)).toBe(1);
+  expect(await toastCount(tab)).toBe(1);
+  await tab.close();
+});
+
+test('a panel success shows only in the tab that did it', async ({ page }) => {
+  await openVault(page);
+  await createVault(page);
+  const tab = await secondTab(page, 'Recovery passphrase changed');
+  await page.evaluate(countToasts, 'Recovery passphrase changed');
+
+  await openCog(page);
+  await panel(page)
+    .getByRole('button', { name: 'Change recovery passphrase' })
+    .click();
+  await submitSecret(page, 'a brand new recovery passphrase', true);
+  await expectSuccess(page, 'Recovery passphrase changed');
+  // A toast posted to the ingest reaches the other tab through the stream well inside
+  // this wait.
+  await page.waitForTimeout(2000);
+  expect(await toastCount(page)).toBe(1);
+  expect(await toastCount(tab)).toBe(0);
+  await tab.close();
+});
+
 /** Count the page's passkey requests from here on: `create` and `get`. */
 async function countPasskeyCalls(page: any): Promise<() => Promise<any>> {
   await page.evaluate(() => {
@@ -2219,4 +2340,649 @@ test('a passkey with no PRF declined in the cog view is an amber notification th
   await expect(toast).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
+});
+
+// --------------------------------------------------------------------------- //
+// cookie entries and rename
+// --------------------------------------------------------------------------- //
+
+/** A cookie value no page and no CLI output may show. */
+const COOKIE_MARKER = 'fake-sid-7Qp';
+
+/** A Copy as cURL of one request carrying two cookies of shop.example.com. */
+const CURL = `curl 'https://shop.example.com/cart' -H 'Cookie: sid=${COOKIE_MARKER}; theme=fake-theme-2Hs'`;
+
+/** A header value no page may show. */
+const HEADER_MARKER = 'fake-hdr-9Zk';
+
+/** A Copy as cURL with two cookies, two headers the entry keeps and two of the browser's own. */
+const CURL_HEADERS = `curl 'https://app.example.com/api/items' -H 'accept: application/json' -H 'authorization: Bearer ${HEADER_MARKER}' -b 'sid=${COOKIE_MARKER}; tok=fake-tok-2Hs' -H 'user-agent: Mozilla/5.0' -H 'x-csrf-token: ${HEADER_MARKER}-csrf'`;
+
+/** A Copy as cURL with one header the entry keeps and no cookie. */
+const CURL_NO_COOKIE = `curl 'https://api.example.com/v1/me' -H 'accept: application/json' -H 'Authorization: Bearer ${HEADER_MARKER}'`;
+
+/** One cookies.txt line: domain, subdomains, path, secure, expiry (0: session), name, value. */
+const jarLine = (domain: string, expires: number, name: string) =>
+  [
+    domain,
+    'FALSE',
+    '/',
+    'FALSE',
+    String(expires),
+    name,
+    `fake-${name}-4Hs`
+  ].join('\t');
+
+/** 2100-01-01 and 2001-09-09, in Unix seconds. */
+const FUTURE = 4102444800;
+const PAST = 1000000000;
+
+/** The entries as GET vault/entries answers them: the type, and per cookie never a value. */
+function listed(page: any): Promise<any[]> {
+  return page.evaluate(() =>
+    fetch('/jupyterlab-passkey-extension/vault/entries')
+      .then(r => r.json())
+      .then(d => d.entries)
+  );
+}
+
+/** Add an entry through POST vault/entries, then read the panel again. */
+async function addByRest(page: any, name: string, fields: unknown) {
+  expect(await post(page, 'entries', { name, fields })).toBe(204);
+  await panel(page).getByRole('button', { name: 'Refresh' }).click();
+  await expect(
+    panel(page).locator('.jp-PasskeyVaultPanel-rowLine', { hasText: name })
+  ).toHaveCount(1);
+}
+
+function entryRow(page: any, name: string) {
+  return panel(page).locator('.jp-PasskeyVaultPanel-rowLine', {
+    hasText: name
+  });
+}
+
+test('Add asks the kind of entry: Password and Cookies with one line each, and Cancel', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await panel(page).getByRole('button', { name: 'Add an entry' }).click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText('Add entry');
+  const choices = dialog.locator('.jp-PasskeyVaultForm-choice');
+  await expect(choices).toHaveCount(2);
+  await expect(choices.nth(0)).toHaveAccessibleName('Password');
+  await expect(choices.nth(0)).toContainText(
+    'A username and a password for a site.'
+  );
+  await expect(choices.nth(1)).toHaveAccessibleName('Cookies');
+  await expect(choices.nth(1)).toContainText(
+    'Cookies and request headers of a browser session, pasted.'
+  );
+  // Cancel is the dialog's only other button.
+  await expect(dialog.locator('.jp-Dialog-footer button')).toHaveText([
+    'Cancel'
+  ]);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+
+  // Password opens the password form, Cookies the paste field.
+  await pressAdd(page, 'login');
+  await expect(dialog.getByLabel('Password', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await pressAdd(page, 'cookies');
+  await expect(dialog.getByLabel('Cookies', { exact: true })).toBeVisible();
+  await expect(dialog.locator('input[type="password"]')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+});
+
+test('the cookie form reads the paste before Save, shows no value, and saves the entry', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await pressAdd(page, 'cookies');
+  const dialog = page.locator('.jp-Dialog');
+  expect(
+    await dialog.locator('.jp-PasskeyVaultForm-label').allInnerTexts()
+  ).toEqual(['Name', 'Username', 'URL', 'Cookies', 'Category', 'Notes']);
+  const save = dialog.getByRole('button', { name: 'Save' });
+  const paste = dialog.getByLabel('Cookies', { exact: true });
+  await dialog.getByLabel('Name', { exact: true }).fill('shop/session');
+  await expect(save).toBeDisabled();
+
+  // A Cookie header has no domain without the URL: the reason, and Save stays off.
+  await paste.fill(`sid=${COOKIE_MARKER}`);
+  await expect(dialog).toContainText(
+    "No cookie was read: Cookie header line 1: no domain - give the site's url in the URL field"
+  );
+  await expect(save).toBeDisabled();
+  // The URL gives it the domain: the paste is read again.
+  await dialog.getByLabel('URL').fill('https://shop.example.com');
+  await expect(dialog).toContainText(
+    '1 cookie read, from shop.example.com: sid'
+  );
+  await expect(save).toBeEnabled();
+
+  // Cookies that have all expired: the line says so, and Save stays off.
+  await paste.fill(jarLine('shop.example.com', PAST, 'old'));
+  await expect(dialog).toContainText(
+    '1 cookie read, all expired - copy the cookies again from the browser'
+  );
+  await expect(save).toBeDisabled();
+  // A copied request with a header to keep and no cookie: Save is on.
+  await paste.fill(CURL_NO_COOKIE);
+  await expect(dialog).toContainText('0 cookies read; 1 header: Authorization');
+  await expect(save).toBeEnabled();
+  expect(await dialog.innerHTML()).not.toContain(HEADER_MARKER);
+
+  await paste.fill(CURL);
+  await expect(dialog).toContainText(
+    '2 cookies read, from shop.example.com: sid, theme'
+  );
+  await expect(save).toBeEnabled();
+  // The paste is the field's value only: no text or attribute of the dialog holds it.
+  expect(await dialog.innerHTML()).not.toContain(COOKIE_MARKER);
+  await save.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+  await expect(entryRow(page, 'shop/session')).toHaveCount(1);
+
+  const shop = (await listed(page)).find(e => e.name === 'shop/session');
+  expect(shop.type).toBe('cookies');
+  expect(shop.url).toBe('https://shop.example.com');
+  expect(shop.cookies.map((c: any) => c.name)).toEqual(['sid', 'theme']);
+  expect(JSON.stringify(shop)).not.toContain(COOKIE_MARKER);
+});
+
+test("a cookie entry's row has the cookie icon, and an expired jar the expired badge", async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await addByRest(page, 'site/login', { password: 'vault-e2e-secret-9Lm' });
+  await addByRest(page, 'shop/live', {
+    type: 'cookies',
+    cookies: [
+      jarLine('shop.example.com', FUTURE, 'sid'),
+      jarLine('shop.example.com', PAST, 'old')
+    ].join('\n')
+  });
+  // The server refuses a jar whose every cookie has expired: this one expires after
+  // it is stored.
+  await addByRest(page, 'shop/expired', {
+    type: 'cookies',
+    cookies: jarLine(
+      'old.example.com',
+      Math.floor(Date.now() / 1000) + 5,
+      'sid'
+    )
+  });
+
+  const ICON = '.jp-PasskeyVaultPanel-rowIcon';
+  const BADGE = '.jp-PasskeyVault-expired';
+  await expect(entryRow(page, 'shop/live').locator(ICON)).toHaveCount(1);
+  await expect(entryRow(page, 'shop/expired').locator(ICON)).toHaveCount(1);
+  await expect(entryRow(page, 'site/login').locator(ICON)).toHaveCount(0);
+  // One unexpired cookie is left in the live jar: no badge.
+  await expect(entryRow(page, 'shop/live').locator(BADGE)).toHaveCount(0);
+  await expect(entryRow(page, 'site/login').locator(BADGE)).toHaveCount(0);
+  // A list read draws the rows again, and the badge once the cookie has expired.
+  await expect(async () => {
+    await panel(page).getByRole('button', { name: 'Refresh' }).click();
+    await expect(entryRow(page, 'shop/expired').locator(BADGE)).toHaveText(
+      'expired',
+      { timeout: 1000 }
+    );
+  }).toPass({ timeout: 30000 });
+  await expect(entryRow(page, 'shop/expired').locator(BADGE)).toHaveCSS(
+    'text-transform',
+    'uppercase'
+  );
+
+  // The icon sits in the status dot's column: every name starts on the 18px text
+  // column, and every row keeps its 24px.
+  const nameX = async (name: string) =>
+    (await entryRow(page, name)
+      .locator('.jp-PasskeyVaultPanel-rowName')
+      .boundingBox())!.x;
+  const panelX = (await panel(page).boundingBox())!.x;
+  for (const name of ['site/login', 'shop/live', 'shop/expired']) {
+    expect(Math.round((await nameX(name)) - panelX)).toBe(18);
+    expect((await entryRow(page, name).boundingBox())!.height).toBe(24);
+  }
+  const icon = (await entryRow(page, 'shop/live').locator(ICON).boundingBox())!;
+  expect(icon.x - panelX).toBeGreaterThanOrEqual(4);
+  expect(icon.x + icon.width - panelX).toBeLessThanOrEqual(18);
+});
+
+test('the expired tag and the cookie table header keep a 4.5:1 contrast in the Light and the Dark theme', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  // Two cookies past their expiry and one that expires after the jar is stored: the
+  // row then has the tag, and so have an odd and an even row of the table.
+  await addByRest(page, 'shop/expired', {
+    type: 'cookies',
+    cookies: [
+      jarLine('old.example.com', PAST, 'first'),
+      jarLine('old.example.com', PAST, 'second'),
+      jarLine('old.example.com', Math.floor(Date.now() / 1000) + 5, 'third')
+    ].join('\n')
+  });
+  const refresh = panel(page).getByRole('button', { name: 'Refresh' });
+  const row = entryRow(page, 'shop/expired');
+  const tag = row.locator('.jp-PasskeyVault-expired');
+  await expect(async () => {
+    await refresh.click();
+    await expect(tag).toHaveCount(1, { timeout: 1000 });
+  }).toPass({ timeout: 30000 });
+
+  /** The WCAG contrast ratio of a node's text colour on what is painted behind it. */
+  const contrast = (node: Element): number => {
+    // One canvas pixel: white, then every background from the page down to the node,
+    // then the text colour. The canvas resolves any CSS colour and blends its alpha.
+    const context = document.createElement('canvas').getContext('2d')!;
+    const luminance = (colour: string): number => {
+      context.fillStyle = colour;
+      context.fillRect(0, 0, 1, 1);
+      const [r, g, b] = Array.from(context.getImageData(0, 0, 1, 1).data)
+        .slice(0, 3)
+        .map(value => {
+          const c = value / 255;
+          return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+        });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const chain: Element[] = [];
+    for (let n: Element | null = node; n; n = n.parentElement) {
+      chain.unshift(n);
+    }
+    let behind = luminance('#fff');
+    for (const n of chain) {
+      behind = luminance(getComputedStyle(n).backgroundColor);
+    }
+    const text = luminance(getComputedStyle(node).color);
+    return (Math.max(text, behind) + 0.05) / (Math.min(text, behind) + 0.05);
+  };
+
+  for (const theme of ['JupyterLab Light', 'JupyterLab Dark']) {
+    await page.theme.setTheme(theme);
+    await expect(page.locator('body')).toHaveAttribute(
+      'data-jp-theme-name',
+      theme
+    );
+    // The pointer and the focus are off the row; no read replaces it meanwhile.
+    await refresh.hover();
+    await refresh.focus();
+    expect(
+      await tag.evaluate(contrast),
+      `${theme}, the tag on a row at rest`
+    ).toBeGreaterThanOrEqual(4.5);
+    await row.focus();
+    expect(
+      await tag.evaluate(contrast),
+      `${theme}, the tag on the row in focus`
+    ).toBeGreaterThanOrEqual(4.5);
+    await row.hover();
+    expect(
+      await tag.evaluate(contrast),
+      `${theme}, the tag on a hovered row`
+    ).toBeGreaterThanOrEqual(4.5);
+
+    await row.click();
+    const dialog = page.locator('.jp-Dialog');
+    const tags = dialog.locator('table .jp-PasskeyVault-expired');
+    await expect(tags).toHaveCount(3);
+    for (const index of [0, 1]) {
+      expect(
+        await tags.nth(index).evaluate(contrast),
+        `${theme}, the tag in table row ${index + 1}`
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+    expect(
+      await dialog.locator('table th').first().evaluate(contrast),
+      `${theme}, the table header`
+    ).toBeGreaterThanOrEqual(4.5);
+    await dialog.getByRole('button', { name: 'Close' }).click();
+    await expect(dialog).toHaveCount(0);
+  }
+});
+
+test('a cookie entry opens with a table of domain, name and expiry, no value and no eye', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await addByRest(page, 'shop/session', {
+    type: 'cookies',
+    url: 'https://shop.example.com',
+    cookies: [
+      jarLine('shop.example.com', 0, 'sid'),
+      jarLine('example.com', FUTURE, 'theme'),
+      jarLine('example.com', PAST, 'old')
+    ].join('\n')
+  });
+  await entryRow(page, 'shop/session').click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText('shop/session');
+  await expect(dialog.locator('table th')).toHaveText([
+    'Domain',
+    'Name',
+    'Expires'
+  ]);
+  const rows = dialog.locator('table tbody tr');
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0).locator('td')).toHaveText([
+    'shop.example.com',
+    'sid',
+    'session'
+  ]);
+  await expect(rows.nth(1).locator('td')).toHaveText([
+    'example.com',
+    'theme',
+    '2100-01-01 00:00 UTC'
+  ]);
+  await expect(rows.nth(2).locator('td')).toHaveText([
+    'example.com',
+    'old',
+    '2001-09-09 01:46 UTC expired'
+  ]);
+  await expect(rows.nth(2).locator('.jp-PasskeyVault-expired')).toHaveCount(1);
+  await expect(rows.nth(1).locator('.jp-PasskeyVault-expired')).toHaveCount(0);
+  // The panel's 24px rows.
+  expect((await rows.nth(0).boundingBox())!.height).toBe(24);
+  // No eye, no password field, no value.
+  await expect(dialog.locator('.jp-PasskeyVaultForm-eye')).toHaveCount(0);
+  await expect(
+    dialog.getByRole('button', { name: 'Show password' })
+  ).toHaveCount(0);
+  await expect(dialog.locator('input[type="password"]')).toHaveCount(0);
+  expect(await dialog.innerHTML()).not.toContain('fake-');
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+});
+
+test('the cookie form names the kept headers beside the cookies, never a value, and saves a copy with a header and no cookie', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await pressAdd(page, 'cookies');
+  const dialog = page.locator('.jp-Dialog');
+  const save = dialog.getByRole('button', { name: 'Save' });
+  const paste = dialog.getByLabel('Cookies', { exact: true });
+  await dialog.getByLabel('Name', { exact: true }).fill('api/token');
+
+  // The count and the names of the headers kept, after the cookie summary; the
+  // browser's own headers are not among them.
+  await paste.fill(CURL_HEADERS);
+  await expect(dialog).toContainText(
+    '2 cookies read, from app.example.com: sid, tok; 2 headers: authorization, x-csrf-token'
+  );
+  await expect(save).toBeEnabled();
+  // The paste is the field's value only: no text or attribute of the dialog holds it.
+  expect(await dialog.innerHTML()).not.toContain(HEADER_MARKER);
+  expect(await dialog.innerHTML()).not.toContain(COOKIE_MARKER);
+
+  // A header and no cookie: Save is on, and the entry is stored with no cookie.
+  await paste.fill(CURL_NO_COOKIE);
+  await expect(dialog).toContainText('0 cookies read; 1 header: Authorization');
+  await expect(save).toBeEnabled();
+  expect(await dialog.innerHTML()).not.toContain(HEADER_MARKER);
+  await save.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+  await expect(entryRow(page, 'api/token')).toHaveCount(1);
+
+  const token = (await listed(page)).find(e => e.name === 'api/token');
+  expect(token.type).toBe('cookies');
+  // The URL field was empty: the entry has the origin of the copied request.
+  expect(token.url).toBe('https://api.example.com/');
+  expect(token.cookies).toEqual([]);
+  expect(token.headers).toEqual(['Authorization']);
+  expect(JSON.stringify(token)).not.toContain(HEADER_MARKER);
+  expect(await inPage(page, HEADER_MARKER)).toBe(false);
+});
+
+test('a cookie entry opens with the kept header names under the cookie table, no value and no eye; one with no cookie has no cookie table and no expired badge', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await addByRest(page, 'app/session', {
+    type: 'cookies',
+    cookies: CURL_HEADERS
+  });
+  await addByRest(page, 'api/token', {
+    type: 'cookies',
+    cookies: CURL_NO_COOKIE
+  });
+  const dialog = page.locator('.jp-Dialog');
+  const tables = dialog.locator('table');
+  const headers = dialog.getByRole('table', { name: 'Headers' });
+  const noValue = async () => {
+    await expect(dialog.locator('.jp-PasskeyVaultForm-eye')).toHaveCount(0);
+    await expect(
+      dialog.getByRole('button', { name: 'Show password' })
+    ).toHaveCount(0);
+    await expect(dialog.locator('input[type="password"]')).toHaveCount(0);
+    expect(await dialog.innerHTML()).not.toContain('fake-');
+    expect(await inPage(page, HEADER_MARKER)).toBe(false);
+  };
+
+  await entryRow(page, 'app/session').click();
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText('app/session');
+  expect(
+    await dialog.locator('.jp-PasskeyVaultForm-label').allInnerTexts()
+  ).toEqual([
+    'Name',
+    'Username',
+    'URL',
+    'Cookies',
+    'Headers',
+    'Category',
+    'Notes'
+  ]);
+  // The header table is the second one, under the cookie table.
+  await expect(tables).toHaveCount(2);
+  await expect(tables.nth(0)).toHaveAttribute('aria-label', 'Cookies');
+  await expect(tables.nth(1)).toHaveAttribute('aria-label', 'Headers');
+  await expect(headers.locator('th')).toHaveText(['Name']);
+  await expect(headers.locator('tbody td')).toHaveText([
+    'authorization',
+    'x-csrf-token'
+  ]);
+  // The cookie table's look: the panel's 24px rows and the text colour of its cells.
+  const headerCell = headers.locator('tbody td').nth(0);
+  const cookieCell = tables.nth(0).locator('tbody td').nth(0);
+  expect((await headers.locator('tbody tr').nth(0).boundingBox())!.height).toBe(
+    24
+  );
+  for (const property of ['color', 'font-size', 'padding-left']) {
+    const value = await cookieCell.evaluate(
+      (node: Element, p: string) => getComputedStyle(node).getPropertyValue(p),
+      property
+    );
+    await expect(headerCell).toHaveCSS(property, value);
+  }
+  await noValue();
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // No cookie: the cookie icon of the type, no expired badge, and no cookie table.
+  const row = entryRow(page, 'api/token');
+  await expect(row.locator('.jp-PasskeyVaultPanel-rowIcon')).toHaveCount(1);
+  await expect(row.locator('.jp-PasskeyVault-expired')).toHaveCount(0);
+  await expect(row).toHaveAttribute(
+    'aria-label',
+    /^api\/token, cookies, (last|never) used/
+  );
+  await row.click();
+  await expect(dialog.locator('.jp-Dialog-header')).toHaveText('api/token');
+  expect(
+    await dialog.locator('.jp-PasskeyVaultForm-label').allInnerTexts()
+  ).toEqual(['Name', 'Username', 'URL', 'Headers', 'Category', 'Notes']);
+  await expect(tables).toHaveCount(1);
+  await expect(headers.locator('tbody td')).toHaveText(['Authorization']);
+  await expect(dialog.locator('.jp-PasskeyVault-expired')).toHaveCount(0);
+  await noValue();
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+});
+
+test('Edit of a cookie entry keeps the jar with an empty paste, and a paste that reads replaces it', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await addByRest(page, 'shop/session', {
+    type: 'cookies',
+    url: 'https://shop.example.com',
+    cookies: [
+      jarLine('shop.example.com', FUTURE, 'sid'),
+      jarLine('shop.example.com', FUTURE, 'theme')
+    ].join('\n')
+  });
+  const dialog = page.locator('.jp-Dialog');
+  const edit = async () => {
+    await entryRow(page, 'shop/session').click();
+    await dialog.getByRole('button', { name: 'Edit' }).click();
+    await expect(dialog.locator('.jp-Dialog-header')).toHaveText('Edit entry');
+  };
+  const save = dialog.getByRole('button', { name: 'Save' });
+
+  // The URL only: the two cookies stay.
+  await edit();
+  await expect(dialog).toContainText('Leave empty to keep the 2 cookies');
+  await expect(save).toBeEnabled();
+  await dialog.getByLabel('URL').fill('https://shop.example.com/v2');
+  await save.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+  let shop = (await listed(page)).find(e => e.name === 'shop/session');
+  expect(shop.url).toBe('https://shop.example.com/v2');
+  expect(shop.cookies.map((c: any) => c.name)).toEqual(['sid', 'theme']);
+
+  // A paste that reads replaces the whole jar.
+  await edit();
+  await dialog
+    .getByLabel('Cookies', { exact: true })
+    .fill(
+      `curl 'https://shop.example.com/' -H 'Cookie: only=${COOKIE_MARKER}'`
+    );
+  await expect(dialog).toContainText(
+    '1 cookie read, from shop.example.com: only. Save replaces the current cookies'
+  );
+  await save.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+  shop = (await listed(page)).find(e => e.name === 'shop/session');
+  expect(shop.cookies.map((c: any) => c.name)).toEqual(['only']);
+});
+
+test('Edit renames an entry, and a name in use is refused under the field', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  const SECRET = 'vault-e2e-secret-3Rn';
+  await addByRest(page, 'site/one', { username: 'me', password: SECRET });
+  await addByRest(page, 'site/two', { password: 'vault-e2e-other-8Qw' });
+  await entryRow(page, 'site/one').click();
+  const dialog = page.locator('.jp-Dialog');
+  await dialog.getByRole('button', { name: 'Edit' }).click();
+  const name = dialog.getByLabel('Name', { exact: true });
+  const save = dialog.getByRole('button', { name: 'Save' });
+  await expect(name).toBeEditable();
+
+  await name.fill('site/two');
+  // The help line of the Name field, matched inside the field.
+  const help = dialog
+    .locator('.jp-PasskeyVaultForm-field', {
+      has: page.getByLabel('Name', { exact: true })
+    })
+    .locator('.jp-PasskeyVaultForm-help');
+  await expect(help).toHaveText('An entry named site/two already exists');
+  await expect(save).toBeDisabled();
+
+  await name.fill('site/renamed');
+  await expect(help).toHaveText('');
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(panel(page)).not.toHaveAttribute('aria-busy', 'true');
+  await expect(entryRow(page, 'site/renamed')).toHaveCount(1);
+  await expect(entryRow(page, 'site/one')).toHaveCount(0);
+  // Every other field is kept: the username, and the password the CLI reads.
+  const renamed = (await listed(page)).find(e => e.name === 'site/renamed');
+  expect(renamed.username).toBe('me');
+  const got = await vaultCli('get', 'site/renamed');
+  expect(got.code, got.stderr).toBe(0);
+  expect(got.stdout.trim()).toBe(SECRET);
+});
+
+test('vault add --cookies --in-browser asks one paste field: Submit adds the entry, Cancel exits 1', async ({
+  page
+}) => {
+  await openVault(page);
+  await createVault(page);
+  await dismissToasts(page);
+  // The CLI's notification; its button opens the paste dialog.
+  const toast = page.locator('.jp-toast-button', { hasText: 'Enter secret' });
+  const dialog = page.locator('.jp-Dialog');
+  const paste = dialog.locator('textarea.jp-PassphraseDialog-paste');
+
+  const added = vaultCli(
+    'add',
+    'shop/cli',
+    '--cookies',
+    '--in-browser',
+    '--json',
+    '--timeout',
+    '30'
+  );
+  // The notification comes on a WebSocket push, or on the 30 s poll when that is missed.
+  await toast.first().click({ timeout: 45000 });
+  // The click dismisses the notification.
+  await expect(toast).toHaveCount(0, { timeout: 15000 });
+  await expect(dialog).toContainText('Cookies for shop/cli');
+  // One multi-line field, not masked, where typing starts.
+  await expect(paste).toBeFocused();
+  await expect(dialog.locator('input:visible')).toHaveCount(0);
+  const submit = dialog.getByRole('button', { name: 'Submit' });
+  await expect(submit).toBeDisabled();
+  await paste.fill(CURL);
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  const result = await added;
+  expect(result.code, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout).result).toEqual({
+    added: 'shop/cli',
+    count: 2,
+    domains: ['shop.example.com'],
+    names: ['sid', 'theme'],
+    expired: 0,
+    headers: []
+  });
+  expect(result.stdout + result.stderr).not.toContain(COOKIE_MARKER);
+  await expect(entryRow(page, 'shop/cli')).toHaveCount(1, { timeout: 20000 });
+
+  const cancelled = vaultCli(
+    'add',
+    'shop/cancelled',
+    '--cookies',
+    '--in-browser',
+    '--timeout',
+    '30'
+  );
+  await toast.first().click({ timeout: 45000 });
+  await expect(paste).toBeVisible();
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  const refused = await cancelled;
+  expect(refused.code).toBe(1);
+  expect(refused.stderr).toContain('cancelled');
+  expect((await listed(page)).map(e => e.name)).not.toContain('shop/cancelled');
 });

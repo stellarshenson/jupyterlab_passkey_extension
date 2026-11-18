@@ -79,10 +79,9 @@ jest.mock('../vault/api', () => ({
 import schema from '../../schema/vault.json';
 import { NoAnswer, VaultError } from '../vault/api';
 import { setupVault } from '../vault/dialogs';
-import { REFRESH_MS } from '../vault/panel';
+import { raiseSuccessToast, REFRESH_MS } from '../vault/panel';
 import {
   dismissStale,
-  raiseUnlockedToast,
   REGISTER_COMMAND,
   SETUP_COMMAND,
   vaultPlugin
@@ -254,6 +253,18 @@ beforeEach(() => {
   mockMakeRequest.mockReset();
   mockMakeRequest.mockResolvedValue({ ok: true, status: 200 });
 });
+
+/**
+ * The success toasts raised, oldest first: each in this tab only, closing after 3 s;
+ * none posted to the notifications ingest, which shows a post in every open tab.
+ */
+function toasts(): string[] {
+  expect(mockMakeRequest).not.toHaveBeenCalled();
+  return mockEmit.mock.calls.map(([message, type, options]) => {
+    expect([type, options]).toEqual(['success', { autoClose: 3000 }]);
+    return message;
+  });
+}
 
 afterEach(() => {
   jest.clearAllMocks();
@@ -844,6 +855,49 @@ describe('a vault notification nothing waits for', () => {
     expect(mockDismiss).toHaveBeenCalledWith(n.id);
   });
 
+  // The server's clock at a status read, in Unix seconds.
+  const SERVER_NOW = 1_800_000_000;
+
+  it('drops an unlock notification shown late whose wait ended on the server clock', () => {
+    // After a wake the tab shows a notification raised before the sleep: createdAt is now.
+    const n = notice({
+      command: UNLOCK,
+      seconds: 120,
+      raised: SERVER_NOW - 121
+    });
+    expect(dismissStale({ ...vaultStatus(), now: SERVER_NOW })).toBe(false);
+    expect(mockDismiss).toHaveBeenCalledWith(n.id);
+  });
+
+  it('keeps an unlock notification open on the server clock with the browser clock ahead', () => {
+    jest.setSystemTime(SERVER_NOW * 1000 + 10 * 60_000);
+    notice({ command: UNLOCK, seconds: 120, raised: SERVER_NOW - 30 });
+    expect(dismissStale({ ...vaultStatus(), now: SERVER_NOW })).toBe(true);
+    expect(mockDismiss).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unlock notification with a raise time on a read with no status', () => {
+    notice({ command: UNLOCK, seconds: 120, raised: SERVER_NOW - 30 });
+    jest.setSystemTime(Date.now() + 10 * 60_000);
+    expect(dismissStale(null)).toBe(true);
+    expect(mockDismiss).not.toHaveBeenCalled();
+  });
+
+  it('drops an unlock notification with no raise time on a call with no status at its wait end', () => {
+    const n = notice({ command: UNLOCK, seconds: 120 });
+    jest.setSystemTime(Date.now() + 120_000);
+    expect(dismissStale(null)).toBe(false);
+    expect(mockDismiss).toHaveBeenCalledWith(n.id);
+  });
+
+  it('measures a notification with no raise time from when this tab showed it', () => {
+    const n = notice({ command: UNLOCK, seconds: 120 });
+    expect(dismissStale({ ...vaultStatus(), now: SERVER_NOW })).toBe(true);
+    jest.setSystemTime(Date.now() + 120_000);
+    expect(dismissStale({ ...vaultStatus(), now: SERVER_NOW })).toBe(false);
+    expect(mockDismiss).toHaveBeenCalledWith(n.id);
+  });
+
   it('leaves every other notification alone', () => {
     const others = [
       notice(undefined),
@@ -1352,8 +1406,26 @@ describe('the set-up a command raises', () => {
       expect(mockApi.init).not.toHaveBeenCalled();
       expect(mockApi.addPasskey).not.toHaveBeenCalled();
       expect(posted()).toEqual([]);
+      expect(mockMakeRequest).not.toHaveBeenCalled();
     }
   );
+
+  it("raises one success notification, 'Vault created', and no 'Vault unlocked'", async () => {
+    const starting = activate();
+    mockApi.status.mockResolvedValue(NEW_VAULT());
+    const commands = await starting;
+    await mockPanel.refresh();
+    mockApi.entries = jest.fn().mockResolvedValue([]);
+    // vault/init leaves the new vault unlocked.
+    mockApi.init.mockImplementation(async () => {
+      mockApi.status.mockResolvedValue(open());
+    });
+    choosing('later');
+    await commands.get(SETUP_COMMAND).execute({ nonce: 's11' });
+    expect(mockApi.init).toHaveBeenCalledWith('recovery words');
+    expect(toasts()).toEqual(['Vault created']);
+    expect(posted()).toEqual([]);
+  });
 
   it('posts a cancelled passphrase step to the command, naming the step', async () => {
     const commands = await activate();
@@ -1396,57 +1468,112 @@ it('opens the Settings Editor at the vault settings, searched by the schema titl
 });
 
 describe('one success notification per unlock', () => {
-  it('posts once on the locked -> unlocked edge, and not on a repeated read', async () => {
+  it('raises one in this tab on the locked -> unlocked edge, and not on a repeated read', async () => {
     await activate();
     await mockPanel.refresh();
-    expect(mockMakeRequest).not.toHaveBeenCalled();
+    expect(toasts()).toEqual([]);
     mockApi.status.mockResolvedValue(open());
     await mockPanel.refresh();
-    expect(mockMakeRequest).toHaveBeenCalledTimes(1);
-    expect(mockEmit).not.toHaveBeenCalled();
+    expect(toasts()).toEqual(['Vault unlocked']);
     // The timer's read shares the last value: no second toast.
     await mockPanel.poll();
-    expect(mockMakeRequest).toHaveBeenCalledTimes(1);
+    expect(toasts()).toEqual(['Vault unlocked']);
   });
 
-  it('posts the toast to the notifications ingest, transient, for 3 seconds', async () => {
-    await raiseUnlockedToast(
-      { baseUrl: 'http://host/' } as any,
-      'Vault unlocked'
-    );
-    expect(mockMakeRequest).toHaveBeenCalledTimes(1);
-    const [url, init] = mockMakeRequest.mock.calls[0];
-    expect(url).toBe('http://host/jupyterlab-notifications-extension/ingest');
-    expect(init.method).toBe('POST');
-    // Exactly the five fields the ingest reads, so the row leaves with its toast.
-    expect(JSON.parse(init.body)).toEqual({
-      message: 'Vault unlocked',
-      type: 'success',
-      autoClose: 3000,
-      immediate: true,
-      transient: true
-    });
-    expect(mockEmit).not.toHaveBeenCalled();
+  it('raises none when a new vault opens: Create raises its own Vault created', async () => {
+    const starting = activate();
+    mockApi.status.mockResolvedValue(NEW_VAULT());
+    await starting;
+    await mockPanel.refresh();
+    mockApi.status.mockResolvedValue(open());
+    await mockPanel.refresh();
+    expect(toasts()).toEqual([]);
   });
 
-  it('falls back to a local 3 s success toast when the ingest route is missing', async () => {
-    mockMakeRequest.mockResolvedValue({ ok: false, status: 404 });
-    await expect(
-      raiseUnlockedToast({ baseUrl: 'http://host/' } as any, 'Vault unlocked')
-    ).resolves.toBeUndefined();
-    expect(mockEmit).toHaveBeenCalledWith('Vault unlocked', 'success', {
-      autoClose: 3000
-    });
+  it.each([
+    ['a passkey', (p: any) => p._unlockPasskey()],
+    [
+      'the unlock password and a code',
+      (p: any) => p._unlockPassword(vaultStatus())
+    ],
+    [
+      'Password and passkey',
+      (p: any) =>
+        p._unlockPair({
+          type: 'password-passkey',
+          cred_id: 'CQ',
+          rp_id: location.hostname
+        })
+    ],
+    ['the recovery passphrase', (p: any) => p._unlockRecovery()]
+  ])(
+    'raises only Vault unlocked when the panel unlocks with %s',
+    async (_, unlock) => {
+      await activate();
+      await mockPanel.refresh();
+      const opens = jest.fn(async () => {
+        mockApi.status.mockResolvedValue(open());
+        return open();
+      });
+      Object.assign(mockApi, {
+        entries: jest.fn().mockResolvedValue([]),
+        unlockPasskey: opens,
+        unlockPassword: opens,
+        unlockPair: opens,
+        unlockRecovery: opens
+      });
+      mockAskSecret.mockResolvedValue({ accepted: true, value: 'words' });
+      // Signs for Password and passkey, and gives a PRF for a passkey unlock.
+      Object.defineProperty(navigator, 'credentials', {
+        value: {
+          get: jest.fn().mockResolvedValue({
+            rawId: new Uint8Array([9]).buffer,
+            response: {
+              clientDataJSON: new Uint8Array([1]).buffer,
+              authenticatorData: new Uint8Array([2]).buffer,
+              signature: new Uint8Array([3]).buffer
+            },
+            getClientExtensionResults: () => ({
+              prf: { results: { first: new Uint8Array([1]).buffer } }
+            })
+          })
+        },
+        configurable: true
+      });
+      await unlock(mockPanel);
+      expect(opens).toHaveBeenCalledTimes(1);
+      expect(toasts()).toEqual(['Vault unlocked']);
+    }
+  );
+
+  it('removes the centre row once its toast closes, by its autoClose or by the user', async () => {
+    mockEmit.mockReturnValueOnce('n-1');
+    raiseSuccessToast('Vault unlocked');
+    expect(toasts()).toEqual(['Vault unlocked']);
+    // The toast's element carries the notification's id; JupyterLab adds it later.
+    const toast = document.createElement('div');
+    toast.id = 'n-1';
+    document.body.append(toast);
+    await Promise.resolve();
+    expect(mockDismiss).not.toHaveBeenCalled();
+    toast.remove();
+    await Promise.resolve();
+    expect(mockDismiss).toHaveBeenCalledWith('n-1');
+    // Done with it: a later change of the page dismisses nothing more.
+    document.body.append(document.createElement('span'));
+    await Promise.resolve();
+    expect(mockDismiss).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to the same local toast when the post cannot reach the server', async () => {
-    mockMakeRequest.mockRejectedValue(new Error('network down'));
-    await expect(
-      raiseUnlockedToast({ baseUrl: 'http://host/' } as any, 'Vault unlocked')
-    ).resolves.toBeUndefined();
-    expect(mockEmit).toHaveBeenCalledWith('Vault unlocked', 'success', {
-      autoClose: 3000
-    });
+  it('removes the row of a toast the open notification centre kept from showing', async () => {
+    mockEmit.mockReturnValueOnce('n-2');
+    raiseSuccessToast('Vault unlocked');
+    const centre = document.createElement('div');
+    centre.className = 'jp-Notification-Center';
+    document.body.append(centre);
+    await Promise.resolve();
+    expect(mockDismiss).toHaveBeenCalledWith('n-2');
+    centre.remove();
   });
 
   it('posts none when the first read is already unlocked', async () => {

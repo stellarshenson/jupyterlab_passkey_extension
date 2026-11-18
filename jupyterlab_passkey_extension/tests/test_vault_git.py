@@ -7,10 +7,12 @@ real vault file. The last test runs the helper as git runs it, over a real HTTP 
 
 import base64
 import http.server
+import importlib.metadata
 import io
 import json
 import os
 import pathlib
+import re
 import shlex
 import subprocess
 import sys
@@ -160,6 +162,21 @@ def fill(monkeypatch, capsys, attrs, operation="get"):
 # --------------------------------------------------------------------------- #
 # the protocol
 # --------------------------------------------------------------------------- #
+
+
+def test_a_cookie_entry_never_answers_even_for_its_host(ready, git_config, monkeypatch, capsys):
+    cookie_entry = {"type": "cookies", "url": "https://github.com", "username": "me",
+                    "cookies": "user_session=fake-session-MUST-NOT-LEAK"}
+    ready.add("site/github", cookie_entry)
+    code, out, err = fill(monkeypatch, capsys, {"protocol": "https", "host": "github.com"})
+    assert (code, out) == (1, "") and "site/github" not in err
+    ready.delete("site/github")
+    add(monkeypatch, capsys, "github/api", "https://github.com", password="pw-one")
+    # Changed last, the cookie entry would be the one a match answers with.
+    monkeypatch.setattr(service.store, "_now", lambda: "2099-01-01T00:00:00Z")
+    ready.add("site/github", cookie_entry)
+    code, out, err = fill(monkeypatch, capsys, {"protocol": "https", "host": "github.com"})
+    assert (code, out, err) == (0, "username=me\npassword=pw-one\n", "")
 
 
 def test_get_answers_the_entry_for_the_host(ready, git_config, monkeypatch, capsys):
@@ -642,6 +659,31 @@ def test_migrate_imports_two_accounts_on_one_host(ready, git_config, tmp_path, m
     assert ready.read("git/bob@github.com") == "pw-B"
 
 
+@pytest.mark.parametrize("name, copied, added", [
+    # The copy's origin is the cookie entry's url: its host and username match the line.
+    ("web/github", "https://github.com/settings/profile", 1),
+    # The line's name: skipped as a name the vault holds, the cookie entry kept.
+    ("git/alice@github.com", "https://app.example.com/", 0),
+])
+def test_migrate_never_matches_reads_or_overwrites_a_cookie_entry(ready, git_config, tmp_path,
+                                                                  monkeypatch, capsys, name,
+                                                                  copied, added):
+    assert run_vault(monkeypatch, "vault", "add", name, "--cookies", "-u", "alice",
+                     stdin=f"curl '{copied}' -H 'Cookie: user_session=fake-session-MUST-NOT-LEAK'") == 0
+    before = [e for e in ready._entries() if e["name"] == name]
+    source = tmp_path / "credentials"
+    source.write_text("https://alice:pw-A@github.com\n")
+    _store(git_config, source)
+    assert run_vault(monkeypatch, "vault", "git", "migrate", "--no-install") == 0
+    err = capsys.readouterr().err
+    assert f"added {added} " in err
+    # The helper never answers with a cookie entry, so github.com holds one git entry.
+    assert "github.com has" not in err
+    assert [e for e in ready._entries() if e["name"] == name] == before
+    if added:
+        assert ready.read("git/alice@github.com") == "pw-A"
+
+
 def test_migrate_accepts_the_equals_file_spelling(ready, git_config, tmp_path, monkeypatch,
                                                   capsys):
     source = tmp_path / "credentials"
@@ -905,6 +947,61 @@ def test_the_helper_answers_git_credential_fill(ready, git_config, vault_http, t
     done = _git_fill(_git_env(tmp_path, vault_http))
     assert done.returncode == 0, done.stderr
     assert "username=me" in done.stdout and "password=pw-one" in done.stdout
+
+
+@pytest.mark.parametrize("names", [("jupyter_server", "tornado"), ("argon2",), ("_cffi_backend",)],
+                         ids=lambda names: names[0])
+def test_the_helper_answers_while_the_server_packages_are_reinstalled(names, ready, git_config,
+                                                                       vault_http, tmp_path,
+                                                                       monkeypatch, capsys):
+    """`make install` force-reinstalls jupyter_server's dependency tree in the shared
+    environment, argon2-cffi and cffi included, and an import of a package fails while its
+    files are away; the helper needs none of them."""
+    add(monkeypatch, capsys, "github/api", "https://github.com", password="pw-one")
+    git_config.write_text("[credential]\n\thelper = jupyterlab-passkey\n")
+    away = tmp_path / "away"
+    for name in names:
+        (away / name).mkdir(parents=True)
+        (away / name / "__init__.py").write_text(f"raise ModuleNotFoundError('{name} is away')\n")
+    env = _git_env(tmp_path, vault_http)
+    env["PYTHONPATH"] = os.pathsep.join((str(away), env["PYTHONPATH"]))
+    done = _git_fill(env)
+    assert "Traceback" not in done.stderr
+    answered(done, "me", "pw-one")
+
+
+def _requires(dist):
+    """The installed distributions `dist` requires, recursively, extras excluded."""
+    seen, todo = set(), [dist]
+    while todo:
+        name = re.sub(r"[-_.]+", "-", todo.pop()).lower()
+        if name in seen:
+            continue
+        try:
+            requires = importlib.metadata.requires(name) or []
+        except importlib.metadata.PackageNotFoundError:
+            continue  # a requirement whose marker leaves it out on this platform
+        seen.add(name)
+        todo += [re.match(r"[\w.-]+", r)[0] for r in requires if not re.search(r"\bextra\s*==", r)]
+    return seen
+
+
+def test_the_helper_imports_no_package_of_the_server_dependencies(tmp_path, monkeypatch):
+    """Every package of jupyter_server's dependency tree is away during a `make install`
+    elsewhere, so the helper's import loads none of them."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    closure = _requires("jupyter_server")
+    modules = {module for module, dists in importlib.metadata.packages_distributions().items()
+               if any(re.sub(r"[-_.]+", "-", dist).lower() in closure for dist in dists)}
+    assert {"tornado", "argon2", "_cffi_backend"} <= modules
+    code = ("import sys; before = set(sys.modules); import jupyterlab_passkey_extension.vault.gitcred; "
+            "print(*{m.partition('.')[0] for m in set(sys.modules) - before})")
+    root = pathlib.Path(__file__).resolve().parents[2]
+    done = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True,
+                          timeout=60, check=True)
+    loaded = set(done.stdout.split())
+    assert "jupyterlab_passkey_extension" in loaded
+    assert loaded & modules == set()
 
 
 def test_install_after_an_empty_helper_reaches_git(ready, git_config, vault_http, tmp_path,

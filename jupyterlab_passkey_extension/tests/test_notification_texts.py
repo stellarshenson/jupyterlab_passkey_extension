@@ -27,19 +27,21 @@ VCLIENT = "jupyterlab_passkey_extension/vault/client.py"
 COPY_TS = "src/copy.ts"
 SHOW_TS = "src/show.ts"
 PLUGIN_TS = "src/vault/plugin.ts"
+PANEL_TS = "src/vault/panel.ts"
 
 # The exact number of notification call sites in the product tree: 8 Python calls
-# (cli.py 4, vault/cli.py 2, vault/client.py 2) and 4 page calls. The unlock toast is
-# raised through the notifications ingest; its local Notification.emit is the fallback
-# and the one page site the scan sees for it. Each site appears once in SITES. New
-# notification: add its site and its row(s) here and raise this number; the inventory
-# test names the `file:line` that has no row.
+# (cli.py 4, vault/cli.py 1, vault/client.py 3) and 4 page calls. A success toast - the
+# unlock, a panel action's success, a vault set up from its notification - is raised
+# in its own tab by raiseSuccessToast, whose Notification.emit is the one page site the
+# scan sees for all of them. Each site appears
+# once in SITES. New notification: add its site and its row(s) here and raise this
+# number; the inventory test names the `file:line` that has no row.
 EXPECTED_CALL_SITES = 12
 
 # The number of rendered texts. A ternary branch or a helper caller contributes a
 # row of its own, so a dropped row is a text no longer checked. New notification:
 # add its row and raise this number with EXPECTED_CALL_SITES.
-EXPECTED_ROWS = 28
+EXPECTED_ROWS = 39
 
 # A visibly fake caller, so no assertion depends on the developer's directory.
 FAKE_CALLER = "example-project"
@@ -47,7 +49,7 @@ FAKE_CALLER = "example-project"
 # Substitutions a notification text may take. A label, an entry name or a display
 # prompt is user data that is meant to be shown; a secret value, a code or a
 # passphrase is not, and a new substitution outside this set fails the text test.
-ALLOWED_SUBSTITUTIONS = {"a.label", "a.name", "prompt", "label"}
+ALLOWED_SUBSTITUTIONS = {"a.label", "a.name", "name", "prompt", "label"}
 
 
 @dataclass(frozen=True)
@@ -137,17 +139,42 @@ def _cli_row(
     )
 
 
-def _read_secret_row(prompt: str, text: str, obj: str, caller_line: int) -> Row:
+def _panel_row(text: str, verb: str, obj: str, line: int, caller_line: int,
+               caller: str) -> Row:
+    """A success text of the vault panel. `_act` raises the text its caller passes as
+    `done`, after the action's read, through raiseSuccessToast as the unlock toast is:
+    success, a 3 s autoClose and no action."""
+    return Row(
+        text=text,
+        label="",
+        type="success",
+        auto_close=3000,
+        action=False,
+        entry_name=False,
+        verb=verb,
+        obj=obj,
+        origin=(f"literal passed as done toward _act, which passes it to "
+                f"raiseSuccessToast; the call is at line {caller_line}"),
+        message=Source(PANEL_TS, line, f"'{text}'"),
+        label_from=None,
+        caller=Source(PANEL_TS, caller_line, caller),
+    )
+
+
+def _read_secret_row(prompt: str, text: str, obj: str, caller_line: int,
+                     written: str | None = None) -> Row:
     """One text of the in-browser secret dialog. The helper's f-string lowercases
     the caller's prompt; the caller fragment carries both the call and the prompt
-    literal, so a reworded prompt fails instead of silently keeping the sample."""
+    literal, so a reworded prompt fails instead of silently keeping the sample.
+    `written` is the prompt as the caller writes it when that is an f-string, and
+    `prompt` its sample."""
     return _cli_row(
         text,
         "Enter secret",
-        message=Source(VCLI, 66, 'f"Enter {prompt[0].lower()}{prompt[1:]}"'),
-        label_from=Source(VCLI, 65, '"Enter secret"'),
-        caller=Source(VCLI, caller_line, f'_read_secret(a, "{prompt}"'),
-        origin=(f"helper f-string at line 66; prompt supplied at line {caller_line}; "
+        message=Source(VCLI, 71, 'f"Enter {prompt[0].lower()}{prompt[1:]}"'),
+        label_from=Source(VCLI, 70, '"Enter secret"'),
+        caller=Source(VCLI, caller_line, f'_read_secret(a, {written or chr(34) + prompt + chr(34)}'),
+        origin=(f"helper f-string at line 71; prompt supplied at line {caller_line}; "
                 f"sample {prompt}"),
         verb="Enter",
         obj=obj,
@@ -182,33 +209,33 @@ SITES: tuple[Site, ...] = (
             ),
             _cli_row(
                 "Add a passkey to the vault", "Add passkey",
-                message=Source(VCLI, 447, '"Add a passkey to the vault"'),
-                label_from=Source(VCLI, 446, '"Add passkey"'),
-                caller=Source(VCLI, 446, "browser_step("),
+                message=Source(VCLI, 564, '"Add a passkey to the vault"'),
+                label_from=Source(VCLI, 563, '"Add passkey"'),
+                caller=Source(VCLI, 563, "browser_step("),
                 origin="literal in _add_passkey, passed through browser_step to _run",
                 verb="Add", obj="passkey",
             ),
             _cli_row(
                 "Unlock the vault with your passkey", "Unlock vault",
-                message=Source(VCLIENT, 274, '"Unlock the vault with your passkey"'),
-                label_from=Source(VCLIENT, 277, '"Unlock vault"'),
-                caller=Source(VCLIENT, 277, "self._one_notification("),
+                message=Source(VCLIENT, 350, '"Unlock the vault with your passkey"'),
+                label_from=Source(VCLIENT, 353, '"Unlock vault"'),
+                caller=Source(VCLIENT, 353, "self._one_notification("),
                 origin="literal in the passkey branch of Vault.unlock",
                 verb="Unlock", obj="vault",
             ),
             _cli_row(
                 "Choose how to unlock the vault", "Unlock vault",
-                message=Source(VCLIENT, 276, '"Choose how to unlock the vault"'),
-                label_from=Source(VCLIENT, 277, '"Unlock vault"'),
-                caller=Source(VCLIENT, 277, "self._one_notification("),
+                message=Source(VCLIENT, 352, '"Choose how to unlock the vault"'),
+                label_from=Source(VCLIENT, 353, '"Unlock vault"'),
+                caller=Source(VCLIENT, 353, "self._one_notification("),
                 origin="literal in the no-passkey branch of Vault.unlock",
                 verb="Choose", obj="vault",
             ),
             _cli_row(
                 "Create the vault", "Set up vault",
-                message=Source(VCLIENT, 365, '"Create the vault"'),
-                label_from=Source(VCLIENT, 364, '"Set up vault"'),
-                caller=Source(VCLIENT, 364, "self._one_notification("),
+                message=Source(VCLIENT, 463, '"Create the vault"'),
+                label_from=Source(VCLIENT, 462, '"Set up vault"'),
+                caller=Source(VCLIENT, 462, "self._one_notification("),
                 origin="literal in Vault._setup",
                 verb="Create", obj="vault",
             ),
@@ -265,94 +292,98 @@ SITES: tuple[Site, ...] = (
             ),
         ),
     ),
-    # _read_secret raises the in-browser dialog for every secret prompt. Its nine
+    # _read_secret raises the in-browser dialog for every secret prompt. Its ten
     # callers supply the prompt that becomes the message.
     Site(
-        key=f"{VCLI}:65",
+        key=f"{VCLI}:70",
         kind="cli",
         helper="_read_secret",
         rows=(
-            _read_secret_row("Password", "Enter password", "password", 95),
+            _read_secret_row("Password", "Enter password", "password", 100),
+            _read_secret_row("Cookies for example-entry", "Enter cookies for example-entry",
+                             "cookies", 108, written='f"Cookies for {a.name}"'),
             _read_secret_row("Recovery passphrase", "Enter recovery passphrase",
-                             "passphrase", 142),
+                             "passphrase", 180),
             _read_secret_row("Recovery passphrase", "Enter recovery passphrase",
-                             "passphrase", 166),
+                             "passphrase", 204),
             _read_secret_row("Unlock password", "Enter unlock password",
-                             "password", 177),
+                             "password", 215),
             _read_secret_row("Code of the authenticator app",
-                             "Enter code of the authenticator app", "code", 179),
+                             "Enter code of the authenticator app", "code", 217),
             _read_secret_row("pass-cli master password", "Enter pass-cli master password",
-                             "password", 391),
+                             "password", 508),
             _read_secret_row("Current recovery passphrase",
-                             "Enter current recovery passphrase", "passphrase", 485),
+                             "Enter current recovery passphrase", "passphrase", 602),
             _read_secret_row("New recovery passphrase", "Enter new recovery passphrase",
-                             "passphrase", 486),
+                             "passphrase", 603),
             _read_secret_row("Recovery passphrase", "Enter recovery passphrase",
-                             "passphrase", 507),
+                             "passphrase", 624),
         ),
     ),
+    # Vault._stage raises the copy and show notifications of `vault copy`, `vault show`
+    # and the Python Vault's copy and show; those two methods supply the message.
     Site(
-        key=f"{VCLI}:304",
+        key=f"{VCLIENT}:561",
         kind="cli",
-        helper="_stage_and_trigger",
+        helper="_stage",
         rows=(
             _cli_row(
                 "Copy **example-entry**", "Copy to clipboard",
-                message=Source(VCLI, 315, 'f"Copy **{a.name}**"'),
-                label_from=Source(VCLI, 314, '"Copy to clipboard"'),
-                caller=Source(VCLI, 314, "_stage_and_trigger("),
-                origin="literal in cmd_copy, passed to _stage_and_trigger; a.name is "
-                       "the entry name; sample example-entry",
+                message=Source(VCLIENT, 570, 'f"Copy **{name}**"'),
+                label_from=Source(VCLIENT, 570, '"Copy to clipboard"'),
+                caller=Source(VCLIENT, 570, "self._stage("),
+                origin="literal in Vault.copy, passed to Vault._stage; name is the entry "
+                       "name; sample example-entry",
                 verb="Copy", obj="example-entry", entry_name=True,
-                samples=(("a.name", "example-entry"),),
+                samples=(("name", "example-entry"),),
             ),
             _cli_row(
                 "Show **example-entry**", "Show",
-                message=Source(VCLI, 322, 'f"Show **{a.name}**"'),
-                label_from=Source(VCLI, 321, '"Show"'),
-                caller=Source(VCLI, 321, "_stage_and_trigger("),
-                origin="literal in cmd_show, passed to _stage_and_trigger; a.name is "
-                       "the entry name; sample example-entry",
+                message=Source(VCLIENT, 574, 'f"Show **{name}**"'),
+                label_from=Source(VCLIENT, 574, '"Show"'),
+                caller=Source(VCLIENT, 574, "self._stage("),
+                origin="literal in Vault.show, passed to Vault._stage; name is the entry "
+                       "name; sample example-entry",
                 verb="Show", obj="example-entry", entry_name=True,
-                samples=(("a.name", "example-entry"),),
+                samples=(("name", "example-entry"),),
             ),
         ),
     ),
     # _one_notification raises the vault unlock/set-up notification through
     # browser_step; its callers supply the message.
     Site(
-        key=f"{VCLIENT}:277",
+        key=f"{VCLIENT}:353",
         kind="cli",
         helper="_one_notification",
         rows=(
             _cli_row(
                 "Unlock the vault with your passkey", "Unlock vault",
-                message=Source(VCLIENT, 274, '"Unlock the vault with your passkey"'),
-                label_from=Source(VCLIENT, 277, '"Unlock vault"'),
-                caller=Source(VCLIENT, 277, "self._one_notification("),
+                message=Source(VCLIENT, 350, '"Unlock the vault with your passkey"'),
+                label_from=Source(VCLIENT, 353, '"Unlock vault"'),
+                caller=Source(VCLIENT, 353, "self._one_notification("),
                 origin="literal in the passkey branch of Vault.unlock",
                 verb="Unlock", obj="vault",
             ),
             _cli_row(
                 "Choose how to unlock the vault", "Unlock vault",
-                message=Source(VCLIENT, 276, '"Choose how to unlock the vault"'),
-                label_from=Source(VCLIENT, 277, '"Unlock vault"'),
-                caller=Source(VCLIENT, 277, "self._one_notification("),
+                message=Source(VCLIENT, 352, '"Choose how to unlock the vault"'),
+                label_from=Source(VCLIENT, 353, '"Unlock vault"'),
+                caller=Source(VCLIENT, 353, "self._one_notification("),
                 origin="literal in the no-passkey branch of Vault.unlock",
                 verb="Choose", obj="vault",
             ),
         ),
     ),
     Site(
-        key=f"{VCLIENT}:364",
+        key=f"{VCLIENT}:462",
         kind="cli",
         helper="_one_notification",
         rows=(
             _cli_row(
                 "Create the vault", "Set up vault",
-                message=Source(VCLIENT, 365, '"Create the vault"'),
-                label_from=Source(VCLIENT, 364, '"Set up vault"'),
-                caller=Source(VCLIENT, 364, "self._one_notification("),
+                message=Source(VCLIENT, 463, '"Create the vault"'),
+                label_from=Source(VCLIENT, 462, '"Set up vault"'),
+                caller=Source(VCLIENT, 462, "self._one_notification("),
                 origin="literal in Vault._setup",
                 verb="Create", obj="vault",
             ),
@@ -405,8 +436,10 @@ SITES: tuple[Site, ...] = (
             ),
         ),
     ),
+    # raiseSuccessToast raises every success toast in its own tab; its callers supply
+    # the text.
     Site(
-        key=f"{PLUGIN_TS}:128",
+        key=f"{PANEL_TS}:295",
         kind="page",
         helper="",
         rows=(
@@ -414,12 +447,36 @@ SITES: tuple[Site, ...] = (
                 text="Vault unlocked",
                 label="", type="success", auto_close=3000, action=False,
                 entry_name=False, verb="unlocked", obj="Vault",
-                origin="translated literal passed to the notifications ingest; the "
-                       "local Notification.emit is the fallback",
-                message=Source(PLUGIN_TS, 207, "trans.__('Vault unlocked')"),
+                origin="translated literal passed to raiseSuccessToast, which raises it "
+                       "with Notification.emit in this tab",
+                message=Source(PLUGIN_TS, 174, "trans.__('Vault unlocked')"),
                 label_from=None,
-                caller=Source(PLUGIN_TS, 205, "raiseUnlockedToast("),
+                caller=Source(PLUGIN_TS, 174, "raiseSuccessToast("),
             ),
+            Row(
+                text="Vault created",
+                label="", type="success", auto_close=3000, action=False,
+                entry_name=False, verb="created", obj="Vault",
+                origin="translated literal of the set-up notification's step, passed "
+                       "to raiseSuccessToast once setupVault made a vault",
+                message=Source(PLUGIN_TS, 364, "trans.__('Vault created')"),
+                label_from=None,
+                caller=Source(PLUGIN_TS, 364, "raiseSuccessToast("),
+            ),
+            _panel_row("Vault created", "created", "Vault", 708, 678, "this._act("),
+            _panel_row("Password and passkey added", "added", "passkey", 794, 776,
+                       "this._act("),
+            _panel_row("Passkey added", "added", "Passkey", 795, 776, "this._act("),
+            _panel_row("Password and authenticator app added", "added",
+                       "authenticator app", 822, 808, "this._act("),
+            _panel_row("Recovery passphrase changed", "changed", "passphrase", 852, 828,
+                       "this._act("),
+            _panel_row("Data key rotated", "rotated", "key", 879, 863, "this._act("),
+            _panel_row("Passkey removed", "removed", "Passkey", 1889, 1886, "remove("),
+            _panel_row("Password and authenticator app removed", "removed",
+                       "authenticator app", 1911, 1908, "remove("),
+            _panel_row("Password and passkey removed", "removed", "passkey", 1932, 1929,
+                       "remove("),
         ),
     ),
 )
@@ -759,7 +816,7 @@ _IMPERATIVE = {"register", "approve", "enter", "copy", "show", "unlock", "set", 
 _HELPER_ENTRY_POINTS = {
     "_run": ("_run", "browser_step", "_one_notification"),
     "_read_secret": ("_read_secret",),
-    "_stage_and_trigger": ("_stage_and_trigger",),
+    "_stage": ("_stage",),
     "_one_notification": ("_one_notification",),
 }
 
@@ -879,6 +936,11 @@ def test_page_notifications_match_their_type_auto_close_and_action():
             if row.auto_close is False:
                 assert re.search(r"autoClose:\s*false", block), (
                     f"{site.key}: autoClose false is not in the options")
+            elif row.auto_close == 3000:
+                # The success toast names the exported constant; the Jest suite
+                # holds SUCCESS_TOAST_MS at 3000.
+                assert re.search(r"autoClose:\s*(?:3000|SUCCESS_TOAST_MS)", block), (
+                    f"{site.key}: autoClose 3000 is not in the options")
             else:
                 assert re.search(rf"autoClose:\s*{row.auto_close}", block), (
                     f"{site.key}: autoClose {row.auto_close} is not in the options")
@@ -893,9 +955,24 @@ def test_page_notifications_match_their_type_auto_close_and_action():
 
 
 def test_the_success_toast_carries_no_label_and_closes_in_three_seconds():
-    site = next(site for site in SITES if site.key == f"{PLUGIN_TS}:128")
+    site = next(site for site in SITES if site.key == f"{PANEL_TS}:295")
     row = site.rows[0]
     assert (row.type, row.auto_close, row.label, row.action) == (
         "success", 3000, "", False)
     block = _emit_block(site)
     assert "actions:" not in block and "label:" not in block
+
+
+def test_every_cookie_refusal_naming_url_carries_the_phrase_the_panel_rewrites():
+    # src/vault/dialogs.ts _unread shows the server's refusal with this phrase replaced
+    # by the form's field. A refusal worded another way would show the CLI's option.
+    dialogs = (ROOT / "src/vault/dialogs.ts").read_text(encoding="utf-8")
+    [phrase] = re.findall(r"\.replace\(\s*'([^']*--url[^']*)'", dialogs)
+    tree = ast.parse((ROOT / "jupyterlab_passkey_extension/vault/cookies.py").read_text(encoding="utf-8"))
+    refusals = [
+        "".join(part.value for part in ast.walk(call.args[0])
+                if isinstance(part, ast.Constant) and isinstance(part.value, str))
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call) and getattr(call.func, "id", "") == "VaultError" and call.args]
+    named = [text for text in refusals if "--url" in text]
+    assert named and [text for text in named if phrase not in text] == []

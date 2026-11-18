@@ -71,7 +71,12 @@ def server(vault_env, monkeypatch):
             raise client.VaultClientError(str(e), "entry-not-found")
         except service.Conflict as e:
             raise client.VaultClientError(str(e), "conflict")
+        except service.Expired as e:
+            raise client.VaultClientError(str(e), "expired")
         except VaultError as e:
+            # As client.request: a missing vault is `invalid` on the wire, no-vault here.
+            if client._missing_vault(e):
+                raise client.NoVault(str(e), "no-vault")
             raise client.VaultClientError(str(e), "invalid")
 
     def browser_step(command, args, label, message, timeout, poll=None):
@@ -314,7 +319,13 @@ def test_status_names_a_password_or_an_app_an_earlier_build_left_alone():
     assert vcli._say_mfa({"slots": [], "authenticator": app}) == "app only, added 2026-10-02T10:00:00Z"
 
 
-def test_status_prints_state_holder_and_capabilities(ready, monkeypatch, capsys):
+def test_status_prints_state_holder_and_capabilities(ready, monkeypatch, capsys, vault_env):
+    # The test's own unlock duration, from the config file: the vault unlocks again under it.
+    config = vault_env / "state" / "jupyterlab-passkey" / "vault-config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"unlock_minutes": 1}))
+    ready.lock()
+    ready.unlock_recovery(PASS)
     run(monkeypatch, "vault", "status")
     out = capsys.readouterr().out
     assert "state: unlocked, 0m 59s left" in out or "state: unlocked, 1m 0s left" in out
@@ -434,19 +445,20 @@ class ReadVault:
         self.calls.append(("list",))
         return []
 
-    def get(self, name, field="password"):
+    def _read(self, name, field=None):
         self.calls.append(("get", name, field))
         return "value"
 
-    def _unlocked(self, call):
+    def _stage(self, name, field=None):
         self.calls.append(("stage",))
-        return call()
+
+    copy = show = _stage
 
 
 def _read_ns(**values):
     base = dict(recovery=False, password=False, in_browser=False, timeout=1.0,
                 category=None, json=False, name="github/api", field="password",
-                env=["TOKEN=github/api"], command=["true"])
+                format=None, url=None, env=["TOKEN=github/api"], argv=["true"])
     base.update(values)
     return argparse.Namespace(**base)
 
@@ -456,8 +468,14 @@ READ_COMMANDS = [
     (vcli.cmd_get, ("get", "github/api", "password")),
     (vcli.cmd_copy, ("stage",)),
     (vcli.cmd_show, ("stage",)),
-    (vcli.cmd_exec, ("get", "github/api", "password")),
+    (vcli.cmd_exec, ("get", "github/api", None)),
 ]
+
+
+def _signals():
+    # cmd_exec sets the signals of the command it becomes; left in the test process, the
+    # default SIGPIPE kills the whole run at a later write to a closed socket (exit 141).
+    return [signal.getsignal(sig) for sig in (signal.SIGPIPE, signal.SIGXFSZ, signal.SIGINT, signal.SIGHUP)]
 
 
 @pytest.mark.parametrize("command, read", READ_COMMANDS, ids=lambda value: getattr(value, "__name__", ""))
@@ -469,7 +487,10 @@ def test_a_read_command_unlocks_with_the_recovery_passphrase_first(monkeypatch, 
     monkeypatch.setattr(vcli, "request", lambda *a, **k: {"nonce": "n" * 20})
     monkeypatch.setattr(vcli._cli, "_trigger", lambda *a, **k: None)
     monkeypatch.setattr(vcli.os, "execvpe", lambda *a: None)
+    monkeypatch.setattr(vcli.signal, "signal", lambda sig, handler: None)
+    before = _signals()
     command(_read_ns(recovery=True), vault)
+    assert _signals() == before
     assert asked == [("Recovery passphrase", False)]
     assert vault.calls == [("status",), ("unlock", PASS, None, None), read]
 
@@ -481,7 +502,10 @@ def test_an_unlocked_vault_ignores_the_method(monkeypatch, command, read):
     monkeypatch.setattr(vcli, "request", lambda *a, **k: {"nonce": "n" * 20})
     monkeypatch.setattr(vcli._cli, "_trigger", lambda *a, **k: None)
     monkeypatch.setattr(vcli.os, "execvpe", lambda *a: None)
+    monkeypatch.setattr(vcli.signal, "signal", lambda sig, handler: None)
+    before = _signals()
     command(_read_ns(recovery=True), vault)
+    assert _signals() == before
     assert ("unlock", PASS, None, None) not in vault.calls
     assert [call[0] for call in vault.calls] == ["status", read[0]]
 
@@ -580,7 +604,7 @@ def test_no_option_takes_a_secret_as_its_value():
     subparsers = [a for a in vault._actions if isinstance(a, argparse._SubParsersAction)][0]
     for name, parser in subparsers.choices.items():
         for action in parser._actions:
-            if action.dest in ("password", "recovery", "secret", "passphrase"):
+            if action.dest in ("password", "recovery", "secret", "passphrase", "cookies"):
                 assert action.nargs == 0, f"`vault {name}` takes a {action.dest} value on argv"
 
 
@@ -1536,6 +1560,22 @@ def test_exec_json_keeps_the_childs_exit_status(ready, monkeypatch, capsys):
     assert run(monkeypatch, *argv) == 3
     obj = _one(capsys)
     assert obj["result"]["exit"] == 3
+
+
+def test_the_headers_of_a_login_entry_are_refused_by_get_and_exec_with_code_invalid(ready, monkeypatch, capsys):
+    # `headers` after the colon and --format headers are for a cookie entry.
+    seen = _fake_exec(monkeypatch)
+    for argv in (["get", "github/api", "--format", "headers"],
+                 ["exec", "--env", "H=github/api:headers", "--", "true"]):
+        assert run(monkeypatch, "vault", argv[0], "--json", *argv[1:]) == 1
+        assert _one(capsys) == {"ok": False, "command": f"vault {argv[0]}", "code": "invalid",
+                                "error": "'github/api' is a login entry; it has no headers"}
+    # No command ran: _fake_exec records an exec as three values, a signal as two.
+    assert all(len(call) == 2 for call in seen)
+    # --env VAR=NAME and NAME:FIELD read a login entry as before.
+    with pytest.raises(SystemExit):
+        run(monkeypatch, "vault", "exec", "--env", "TOKEN=github/api", "--env", "WHO=github/api:username", "--", "true")
+    assert (seen[-1][2]["TOKEN"], seen[-1][2]["WHO"]) == (SECRET, "me")
 
 
 def test_import_json_counts_what_it_did(ready, monkeypatch, capsys):

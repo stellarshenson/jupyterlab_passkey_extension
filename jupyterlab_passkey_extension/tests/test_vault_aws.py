@@ -98,6 +98,16 @@ def test_a_missing_entry_exits_one_naming_the_entry_and_the_add(server, capsys):
     assert "vault add aws/absent -u" in err
 
 
+def test_a_cookie_entry_exits_one_naming_the_type(server, capsys):
+    ready_vault(server)
+    server.add("aws/console", {"type": "cookies", "url": "https://console.aws.amazon.com",
+                               "username": KEY_ID, "cookies": "aws-creds=fake-MUST-NOT-LEAK"})
+    assert awscred.main(["console"]) == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "aws/console is a cookies entry" in err and "MUST-NOT-LEAK" not in err
+
+
 @pytest.mark.parametrize("fields, field", [
     ({"username": ""}, "username"),
     ({"password": ""}, "password"),

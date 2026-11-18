@@ -12,6 +12,8 @@ const mockEditEntry = jest.fn();
 const mockViewEntry = jest.fn();
 const mockConfirmDelete = jest.fn();
 const mockChoose = jest.fn();
+// Add asks the kind of entry first; a password unless a test says otherwise.
+const mockChooseType = jest.fn(async (): Promise<string | null> => 'login');
 const mockLaunch = jest.fn();
 // Each notification gets its own id, as JupyterLab's do.
 const mockWarning: jest.Mock = jest.fn(
@@ -21,6 +23,7 @@ const mockError: jest.Mock = jest.fn(
   () => `error-${mockError.mock.calls.length}`
 );
 const mockDismiss = jest.fn();
+const mockEmit = jest.fn();
 jest.mock('../passphrase', () => ({
   askSecret: (...a: any[]) => mockAskSecret(...a),
   launchWithEscape: (...a: any[]) => mockLaunch(...a)
@@ -32,7 +35,8 @@ jest.mock('../vault/dialogs', () => {
     editEntry: (...a: any[]) => mockEditEntry(...a),
     viewEntry: (...a: any[]) => mockViewEntry(...a),
     confirmDelete: (...a: any[]) => mockConfirmDelete(...a),
-    chooseUnlockMethod: (...a: any[]) => mockChoose(...a)
+    chooseUnlockMethod: (...a: any[]) => mockChoose(...a),
+    chooseEntryType: () => mockChooseType()
   };
 });
 jest.mock('@jupyterlab/apputils', () => ({
@@ -56,7 +60,8 @@ jest.mock('@jupyterlab/apputils', () => ({
   Notification: {
     warning: (...a: any[]) => mockWarning(...a),
     error: (...a: any[]) => mockError(...a),
-    dismiss: (...a: any[]) => mockDismiss(...a)
+    dismiss: (...a: any[]) => mockDismiss(...a),
+    emit: (...a: any[]) => mockEmit(...a)
   }
 }));
 
@@ -131,6 +136,7 @@ import {
   entryTooltip,
   formatMinutes,
   formatRemaining,
+  raiseSuccessToast,
   REFRESH_MS,
   VaultPanel
 } from '../vault/panel';
@@ -524,9 +530,31 @@ function toasts(): [string, string][] {
     });
 }
 
+/** The notifications ingest, answering every post: a success toast posts nothing. */
+let mockIngest: jest.SpyInstance;
+beforeEach(() => {
+  mockIngest = jest
+    .spyOn(ServerConnection, 'makeRequest')
+    .mockResolvedValue({ ok: true } as any);
+});
+
 /** Forget the notifications raised so far, for a test that makes a second panel. */
 function clearToasts(): void {
-  [mockWarning, mockError, mockDismiss].forEach(m => m.mockClear());
+  [mockWarning, mockError, mockDismiss, mockEmit, mockIngest].forEach(m =>
+    m.mockClear()
+  );
+}
+
+/**
+ * The success notifications raised, oldest first: each in this tab only, closing after
+ * 3 s; none posted to the notifications ingest, which shows a post in every open tab.
+ */
+function successes(): string[] {
+  expect(mockIngest).not.toHaveBeenCalled();
+  return mockEmit.mock.calls.map(([message, type, options]) => {
+    expect([type, options]).toEqual(['success', { autoClose: 3000 }]);
+    return message;
+  });
 }
 
 /** A passkey that answers with credential AAEC and PRF CQkJ (both base64url). */
@@ -548,6 +576,21 @@ afterEach(() => {
   document.body.innerHTML = '';
   window.localStorage.clear();
   jest.clearAllMocks();
+});
+
+describe('raiseSuccessToast', () => {
+  it('removes the row of a toast the page never showed, once its time is up', async () => {
+    jest.useFakeTimers();
+    mockEmit.mockReturnValueOnce('toast-hidden');
+    raiseSuccessToast('Vault unlocked');
+    // Neither the toast nor an open centre is in the page: the observer waits.
+    expect(document.getElementById('toast-hidden')).toBeNull();
+    expect(document.querySelector('.jp-Notification-Center')).toBeNull();
+    expect(mockDismiss).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(4000);
+    expect(mockDismiss).toHaveBeenCalledWith('toast-hidden');
+    jest.useRealTimers();
+  });
 });
 
 // --------------------------------------------------------------------------- //
@@ -996,7 +1039,8 @@ describe('VaultPanel', () => {
     expect(api.addPasskey.mock.calls[0][1]).toEqual({
       current: 'recovery words'
     });
-    expect(lines(panel)).toEqual([['info', 'Vault created']]);
+    expect(lines(panel)).toEqual([]);
+    expect(successes()).toEqual(['Vault created']);
   });
 
   it('adds the password and authenticator app at creation, with the passphrase as the proof', async () => {
@@ -1029,7 +1073,8 @@ describe('VaultPanel', () => {
       '123456',
       { current: 'recovery words' }
     );
-    expect(lines(panel)).toEqual([['info', 'Vault created']]);
+    expect(lines(panel)).toEqual([]);
+    expect(successes()).toEqual(['Vault created']);
     mockAskSecret.mockReset();
   });
 
@@ -1064,7 +1109,8 @@ describe('VaultPanel', () => {
       expect(create).not.toHaveBeenCalled();
       expect(api.addPasskey).not.toHaveBeenCalled();
       expect(api.addMfa).not.toHaveBeenCalled();
-      expect(lines(panel)).toEqual([['info', 'Vault created']]);
+      expect(lines(panel)).toEqual([]);
+      expect(successes()).toEqual(['Vault created']);
       mockAskSecret.mockReset();
     }
   );
@@ -1122,7 +1168,8 @@ describe('VaultPanel', () => {
       expect(api.init).toHaveBeenCalledTimes(1);
       // The passphrase stays the proof: the second round asks no prompt for it.
       expect(mockAskSecret).toHaveBeenCalledTimes(1);
-      expect(lines(panel)).toEqual([['info', 'Vault created']]);
+      expect(lines(panel)).toEqual([]);
+      expect(successes()).toEqual(['Vault created']);
     });
 
     it('opens the choice again when the passkey prompt is dismissed', async () => {
@@ -1143,7 +1190,8 @@ describe('VaultPanel', () => {
         null,
         'The passkey request was cancelled or not allowed.'
       ]);
-      expect(lines(panel)).toEqual([['info', 'Vault created']]);
+      expect(lines(panel)).toEqual([]);
+      expect(successes()).toEqual(['Vault created']);
     });
 
     it('offers Password and passkey for a passkey with no PRF, names it unused when declined, and the other method works from there', async () => {
@@ -1321,24 +1369,35 @@ describe('VaultPanel', () => {
       'Password and authenticator app',
       'Later'
     ]);
-    expect(text(panel)).toContain('Vault created');
+    expect(lines(panel)).toEqual([]);
+    expect(successes()).toEqual(['Vault created']);
   });
 
-  it('keeps the success line beside a read that fails after the action', async () => {
-    mockViewEntry.mockResolvedValue('delete');
-    mockConfirmDelete.mockResolvedValue(true);
+  it('raises the success notification beside a read that fails after the action', async () => {
     const api = fakeApi();
     const panel = await panelWith(api);
-    api.status.mockRejectedValue(new NoAnswer());
     (
-      panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine') as HTMLElement
+      panel.node.querySelector(
+        'button[title="Vault settings and security"]'
+      ) as HTMLElement
     ).click();
+    api.status.mockRejectedValue(new NoAnswer());
+    const remove = () =>
+      panel.node.querySelector(
+        '[data-focus-key="passkey:AAEC"]'
+      ) as HTMLButtonElement;
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
+    remove().click();
+    now.mockReturnValue(1000 + ARM_DELAY_MS);
+    remove().click();
+    now.mockRestore();
     await flush();
     await flush();
+    expect(api.removePasskey).toHaveBeenCalledWith('AAEC');
     expect(lines(panel)).toEqual([
-      ['info', 'Deleted nas/ugos'],
       ['error', 'cannot reach the Jupyter server']
     ]);
+    expect(successes()).toEqual(['Passkey removed']);
   });
 
   it('shows why a passkey without a PRF cannot unlock, not a lost answer', async () => {
@@ -1919,7 +1978,8 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(api.addPasskey).toHaveBeenCalled();
-    expect(lines(panel)).toEqual([['info', 'Vault created']]);
+    expect(lines(panel)).toEqual([]);
+    expect(successes()).toEqual(['Vault created']);
     mockAskSecret.mockReset();
   });
 
@@ -2310,11 +2370,13 @@ describe('VaultPanel', () => {
       reveal: expect.any(Function),
       typed: ['passphrase']
     });
+    // The names of the other entries are taken: the name field renames.
     expect(mockEditEntry).toHaveBeenCalledWith(
       expect.any(Function),
       ENTRIES[2],
-      [],
-      ['infra', 'infra', 'home']
+      ['github/api', 'gitlab/api'],
+      ['infra', 'infra', 'home'],
+      undefined
     );
     expect(api.edit).toHaveBeenCalledWith('nas/ugos', { username: 'k2' });
   });
@@ -2562,7 +2624,9 @@ describe('VaultPanel', () => {
     await flush();
     await flush();
     expect(api.remove).toHaveBeenCalledWith('nas/ugos');
-    expect(text(panel)).toContain('Deleted nas/ugos');
+    // The row goes: no line and no notification report the delete.
+    expect(lines(panel)).toEqual([]);
+    expect(successes()).toEqual([]);
   });
 
   it('runs one action at a time', async () => {
@@ -2596,6 +2660,7 @@ describe('VaultPanel', () => {
     await flush();
     expect(api.init).not.toHaveBeenCalled();
     expect(text(panel)).not.toContain('Vault created');
+    expect(successes()).toEqual([]);
   });
 
   it('keeps focus in the panel when the focused entry is deleted', async () => {
@@ -2619,6 +2684,45 @@ describe('VaultPanel', () => {
     expect(document.activeElement).toBe(
       panel.node.querySelector('button[title="Refresh"]')
     );
+    panel.dispose();
+  });
+
+  it('puts focus on the renamed row after a rename from the Edit form', async () => {
+    mockViewEntry.mockResolvedValue('edit');
+    let name = 'nas/ugos';
+    const api = fakeApi({
+      rename: jest.fn(async (_from: string, to: string) => {
+        name = to;
+      }),
+      entries: jest.fn(async () =>
+        ENTRIES.map(e => (e.name === 'nas/ugos' ? { ...e, name } : e))
+      )
+    });
+    const panel = await panelWith(api);
+    const row = (of: string) =>
+      panel.node.querySelector(`[data-focus-key="row:${of}"]`) as HTMLElement;
+    const open = async (of: string) => {
+      row(of).click();
+      await flush();
+      await flush();
+      await flush();
+    };
+    mockEditEntry.mockResolvedValueOnce({ name: 'nas/renamed' });
+    await open('nas/ugos');
+    expect(api.rename).toHaveBeenCalledWith('nas/ugos', 'nas/renamed');
+    expect(row('nas/renamed')).not.toBeNull();
+    expect(document.activeElement).toBe(row('nas/renamed'));
+    // A focus that was elsewhere at the rename stays where it was.
+    const refresh = panel.node.querySelector(
+      'button[title="Refresh"]'
+    ) as HTMLElement;
+    mockEditEntry.mockImplementationOnce(async () => {
+      refresh.focus();
+      return { name: 'nas/again' };
+    });
+    await open('nas/renamed');
+    expect(row('nas/again')).not.toBeNull();
+    expect(document.activeElement).toBe(refresh);
     panel.dispose();
   });
 
@@ -2682,7 +2786,7 @@ describe('VaultPanel', () => {
     expect(document.activeElement).toBe(bands(panel)[1]);
   });
 
-  it('re-lays out the harmonica when a banner line expires and frees the list', async () => {
+  it('re-lays out the harmonica when a banner line goes and frees the list', async () => {
     jest.useFakeTimers();
     try {
       const panel = new VaultPanel({
@@ -2698,20 +2802,22 @@ describe('VaultPanel', () => {
         '.jp-PasskeyVaultPanel-list'
       ) as HTMLElement;
       // A line stands in the banner, which takes 26 px of the list.
-      (panel as any)._message = { text: 'Data key rotated', at: Date.now() };
+      (panel as any)._message = {
+        text: 'First confirm with a passkey you already have'
+      };
       Object.defineProperty(list, 'clientHeight', {
         value: 174,
         configurable: true
       });
       (panel as any)._renderBanner();
       expect(viewports(panel)[0].style.height).toBe('130px');
-      // The poll drops the expired line: the list grows back to 200 px, and the
+      // The proof is in and the line goes: the list grows back to 200 px, and the
       // open category takes the new free space instead of keeping the stale height.
       Object.defineProperty(list, 'clientHeight', {
         value: 200,
         configurable: true
       });
-      await jest.advanceTimersByTimeAsync(REFRESH_MS);
+      panel.clearLine();
       expect(lines(panel)).toEqual([]);
       expect(viewports(panel)[0].style.height).toBe('156px');
       panel.dispose();
@@ -2740,7 +2846,9 @@ describe('VaultPanel', () => {
       wheel(panel, 100);
       // Mid-fold a banner line takes 26 px of the list.
       await jest.advanceTimersByTimeAsync(100);
-      (panel as any)._message = { text: 'Data key rotated', at: Date.now() };
+      (panel as any)._message = {
+        text: 'First confirm with a passkey you already have'
+      };
       Object.defineProperty(list, 'clientHeight', {
         value: 174,
         configurable: true
@@ -3428,7 +3536,8 @@ describe('VaultPanel', () => {
         cred_id: 'AAEC',
         prf: 'CQkJ'
       });
-      expect(text(panel)).toContain('Passkey added');
+      expect(lines(panel)).toEqual([]);
+      expect(successes()).toEqual(['Passkey added']);
     });
 
     it('registers with the recovery passphrase on a hostname with no passkey, asked before the browser creates one', async () => {
@@ -4193,7 +4302,30 @@ describe('VaultPanel', () => {
         prf: 'CQkJ'
       });
       expect(lineAtAsk).toBeUndefined();
-      expect(text(panel)).toContain('Recovery passphrase changed');
+      expect(lines(panel)).toEqual([]);
+      expect(successes()).toEqual(['Recovery passphrase changed']);
+      mockAskSecret.mockReset();
+    });
+
+    it("removes a success notification's centre row once its toast closes", async () => {
+      fakePasskey();
+      mockAskSecret.mockResolvedValue({ accepted: true, value: 'new words' });
+      mockEmit.mockReturnValueOnce('success-1');
+      const panel = await openCog(fakeApi());
+      button(panel, 'Change').click();
+      await flush();
+      await flush();
+      expect(successes()).toEqual(['Recovery passphrase changed']);
+      // JupyterLab shows the toast as an element with the notification's id, and keeps
+      // the row in the centre once the toast closes.
+      const toast = document.createElement('div');
+      toast.id = 'success-1';
+      document.body.append(toast);
+      await flush();
+      expect(mockDismiss).not.toHaveBeenCalled();
+      toast.remove();
+      await flush();
+      expect(mockDismiss).toHaveBeenCalledWith('success-1');
       mockAskSecret.mockReset();
     });
 
@@ -4209,6 +4341,7 @@ describe('VaultPanel', () => {
       await flush();
       expect(api.replaceRecovery).not.toHaveBeenCalled();
       expect(text(panel)).not.toContain('Recovery passphrase changed');
+      expect(successes()).toEqual([]);
       mockAskSecret.mockReset();
     });
 
@@ -4290,6 +4423,7 @@ describe('VaultPanel', () => {
       await flush();
       expect(api.replaceRecovery).not.toHaveBeenCalled();
       expect(text(panel)).not.toContain('Recovery passphrase changed');
+      expect(successes()).toEqual([]);
     });
 
     it('shows the values in effect read-only, the data key, and opens the Settings Editor', async () => {
@@ -4401,7 +4535,8 @@ describe('VaultPanel', () => {
       await flush();
       expect(mockAskSecret).not.toHaveBeenCalled();
       expect(api.rotate).toHaveBeenCalledWith({ cred_id: 'AAEC', prf: 'CQkJ' });
-      expect(text(panel)).toContain('Data key rotated');
+      expect(lines(panel)).toEqual([]);
+      expect(successes()).toEqual(['Data key rotated']);
       expect(text(panel)).toContain('Created2026-10-21 09:00 UTC');
     });
 
@@ -4495,33 +4630,28 @@ describe('VaultPanel', () => {
     });
   });
 
-  it('keeps a success line one full refresh period, and leaves an unchanged banner alone', async () => {
+  it('leaves an unchanged banner alone', async () => {
     jest.useFakeTimers();
     try {
-      mockViewEntry.mockResolvedValue('delete');
-      mockConfirmDelete.mockResolvedValue(true);
+      const api = fakeApi();
       const panel = new VaultPanel({
-        api: fakeApi(),
+        api,
         openSettings: jest.fn(),
         host: HOST
       });
       Widget.attach(panel, document.body);
       MessageLoop.sendMessage(panel, Widget.Msg.AfterShow);
-      await jest.advanceTimersByTimeAsync(REFRESH_MS - 5000);
-      (
-        panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine') as HTMLElement
-      ).click();
       await jest.advanceTimersByTimeAsync(0);
+      api.status.mockRejectedValue(new NoAnswer());
+      await jest.advanceTimersByTimeAsync(REFRESH_MS);
       const line = panel.node.querySelector('.jp-PasskeyVaultPanel-message');
-      expect(line?.textContent).toContain('Deleted nas/ugos');
-      // The tick 5 s later: the line stays, and is the same node, so a screen
+      expect(line?.textContent).toBe('cannot reach the Jupyter server');
+      // The next read fails the same way: the line is the same node, so a screen
       // reader does not announce it again.
-      await jest.advanceTimersByTimeAsync(5000);
+      await jest.advanceTimersByTimeAsync(REFRESH_MS);
       expect(panel.node.querySelector('.jp-PasskeyVaultPanel-message')).toBe(
         line
       );
-      await jest.advanceTimersByTimeAsync(REFRESH_MS);
-      expect(text(panel)).not.toContain('Deleted nas/ugos');
       panel.dispose();
     } finally {
       jest.useRealTimers();
@@ -4559,49 +4689,6 @@ describe('VaultPanel', () => {
       expect(api.status.mock.calls.length).toBe(reads);
       answer(false);
       await jest.advanceTimersByTimeAsync(0);
-      panel.dispose();
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  it("keeps the outcome line when a tick lands during the action's final read", async () => {
-    jest.useFakeTimers();
-    try {
-      mockViewEntry.mockResolvedValue('delete');
-      // The confirm comes 20 ms before the tick, and each status read takes 50 ms.
-      mockConfirmDelete.mockImplementation(
-        () => new Promise(resolve => setTimeout(() => resolve(true), 20))
-      );
-      const api: any = fakeApi();
-      api.status = jest.fn().mockImplementation(
-        () =>
-          new Promise(resolve =>
-            setTimeout(
-              () =>
-                resolve(
-                  status({
-                    revision: api.remove.mock.calls.length ? 'after' : 'before'
-                  })
-                ),
-              50
-            )
-          )
-      );
-      const panel = new VaultPanel({
-        api,
-        openSettings: jest.fn(),
-        host: HOST
-      });
-      Widget.attach(panel, document.body);
-      MessageLoop.sendMessage(panel, Widget.Msg.AfterShow);
-      await jest.advanceTimersByTimeAsync(100);
-      await jest.advanceTimersByTimeAsync(REFRESH_MS - 100 - 40);
-      (
-        panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine') as HTMLElement
-      ).click();
-      await jest.advanceTimersByTimeAsync(200);
-      expect(text(panel)).toContain('Deleted nas/ugos');
       panel.dispose();
     } finally {
       jest.useRealTimers();
@@ -4769,35 +4856,6 @@ describe('VaultPanel', () => {
     }
   });
 
-  it('drops a line about a state that changed elsewhere', async () => {
-    jest.useFakeTimers();
-    try {
-      const api = fakeApi({
-        status: jest
-          .fn()
-          .mockResolvedValueOnce(status({ unlocked: false, remaining: null }))
-          .mockResolvedValue(status())
-      });
-      const panel = new VaultPanel({
-        api,
-        openSettings: jest.fn(),
-        host: HOST
-      });
-      Widget.attach(panel, document.body);
-      MessageLoop.sendMessage(panel, Widget.Msg.AfterShow);
-      await jest.advanceTimersByTimeAsync(0);
-      (panel as any)._message = { text: 'Data key rotated', at: Date.now() };
-      (panel as any)._render();
-      // Unlocked from the CLI: a read sees it, and the old line goes before it expires.
-      await panel.refresh();
-      expect(text(panel)).toContain('Unlocked');
-      expect(lines(panel)).toEqual([]);
-      panel.dispose();
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
   it('re-reads the entries when another client changes them', async () => {
     jest.useFakeTimers();
     try {
@@ -4827,24 +4885,6 @@ describe('VaultPanel', () => {
     } finally {
       jest.useRealTimers();
     }
-  });
-
-  it('announces a repeated outcome again, with a new banner line', async () => {
-    mockViewEntry.mockResolvedValue('delete');
-    mockConfirmDelete.mockResolvedValue(true);
-    const panel = await panelWith(fakeApi());
-    const row = () =>
-      panel.node.querySelector('.jp-PasskeyVaultPanel-rowLine') as HTMLElement;
-    row().click();
-    await flush();
-    await flush();
-    const first = panel.node.querySelector('.jp-PasskeyVaultPanel-message');
-    row().click();
-    await flush();
-    await flush();
-    const second = panel.node.querySelector('.jp-PasskeyVaultPanel-message');
-    expect(second?.textContent).toBe(first?.textContent);
-    expect(second).not.toBe(first);
   });
 
   it('lets the countdown run out while the server does not answer', async () => {
@@ -5069,7 +5109,8 @@ describe('EntryForm', () => {
 
   it('requires a name and leaves an empty password out of an edit', () => {
     const form = new EntryForm(async () => 'x', ENTRIES[0]);
-    expect(form.name.readOnly).toBe(true);
+    // Edit can change the name, which renames the entry.
+    expect(form.name.readOnly).toBe(false);
     expect(form.getValue()).not.toHaveProperty('password');
     const empty = new EntryForm(async () => 'x');
     expect(
@@ -5441,7 +5482,8 @@ describe('the password and authenticator app', () => {
     expect(typed).toBeLessThan(proven);
     expect(proven).toBeLessThan(scanned);
     expect(mockLaunch.mock.calls[0][0].options.title).toBe(ADD);
-    expect(text(panel)).toContain('Password and authenticator app added');
+    expect(lines(panel)).toEqual([]);
+    expect(successes()).toEqual(['Password and authenticator app added']);
     // The re-read shows the method, to the minute, and a second one cannot be chosen.
     expect(text(panel)).toContain(
       'Password and authenticator appAdded 2026-10-02 10:00 UTC'
@@ -5461,7 +5503,12 @@ describe('the password and authenticator app', () => {
     now.mockRestore();
     await flush();
     expect(api.removeMfa).toHaveBeenCalledTimes(1);
-    expect(text(panel)).toContain('Password and authenticator app removed');
+    expect(lines(panel)).toEqual([]);
+    // One notification for each action.
+    expect(successes()).toEqual([
+      'Password and authenticator app added',
+      'Password and authenticator app removed'
+    ]);
   });
 
   it('shows the longest not-confirmed line whole in a notification', async () => {
@@ -7093,7 +7140,8 @@ describe('Password and passkey', () => {
         await flush();
       }
       expect(api.addPair).toHaveBeenCalledTimes(1);
-      expect(lines(panel)).toEqual([['info', 'Password and passkey added']]);
+      expect(lines(panel)).toEqual([]);
+      expect(successes()).toEqual(['Password and passkey added']);
       expect(toasts()).toEqual([]);
       // A passkey with a PRF.
       fakePasskey();
@@ -7112,7 +7160,11 @@ describe('Password and passkey', () => {
         await flush();
       }
       expect(api.addPasskey).toHaveBeenCalledTimes(1);
-      expect(lines(panel)).toEqual([['info', 'Passkey added']]);
+      expect(lines(panel)).toEqual([]);
+      expect(successes()).toEqual([
+        'Password and passkey added',
+        'Passkey added'
+      ]);
     });
 
     it.each<[string, VaultError, string]>([
@@ -7182,7 +7234,8 @@ describe('Password and passkey', () => {
       now.mockRestore();
       await flush();
       expect(api.removePasskey).toHaveBeenCalledWith('CQ');
-      expect(text(panel)).toContain('Password and passkey removed');
+      expect(lines(panel)).toEqual([]);
+      expect(successes()).toEqual(['Password and passkey removed']);
       // At another address the row says where it was added.
       api.status.mockResolvedValue(
         status({

@@ -65,6 +65,8 @@ LONGER = {
         "names the tab and what it waits for",
     "no vault yet - waiting for the set-up notification in your JupyterLab tab":
         "names the tab and what it waits for; it says JupyterLab, not the caller's tab",
+    ": no cookie matches the domain, path and scheme of the url - its cookies are for ":
+        "names the three things the url is matched on, then lists the entry's domains",
 }
 
 

@@ -235,7 +235,16 @@ def test_trigger_names_a_wait_with_no_end_as_null(posted):
     cli._trigger("passkey:vault-unlock", {"nonce": "n" * 20}, "Unlock vault", "msg",
                  seconds=float("inf"))
 
-    assert posted[0]["payload"]["data"] == {"command": "passkey:vault-unlock", "seconds": None}
+    data = posted[0]["payload"]["data"]
+    assert data == {"command": "passkey:vault-unlock", "seconds": None, "raised": data["raised"]}
+
+
+def test_trigger_names_its_raise_time_on_this_host_clock(posted):
+    # A tab measures the wait from it on the server's clock (`dismissStale` in plugin.ts).
+    before = time.time()
+    cli._trigger("passkey:vault-unlock", {"nonce": "n" * 20}, "Unlock vault", "msg", seconds=120)
+
+    assert before <= posted[0]["payload"]["data"]["raised"] <= time.time()
 
 
 def test_trigger_omits_auth_header_when_no_token(posted, monkeypatch):

@@ -1,0 +1,4 @@
+curl 'https://api.example.com/v1/me' \
+  -H 'accept: application/json' \
+  -H 'Authorization: Bearer hdr.fake-only==' \
+  -H 'user-agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'

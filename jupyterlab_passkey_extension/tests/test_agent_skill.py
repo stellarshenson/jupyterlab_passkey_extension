@@ -7,6 +7,7 @@ when the installed copy is older than the repository copy, and when the skill is
 renamed on one side only.
 """
 import pathlib
+import re
 import sys
 
 import pytest
@@ -48,3 +49,53 @@ def test_agent_skill_is_short_and_points_at_help():
     assert len(text.splitlines()) < 30
     assert f"name: {SKILL_NAME}\n" in text
     assert "jupyterlab-passkey --help" in text
+
+
+@needs_checkout
+def test_agent_skill_description_names_cookies_and_keeps_its_triggers():
+    # ACC-COOKIE-360: the cookie triggers join the ones the description had.
+    description = next(line for line in _REPOSITORY_COPY.read_text().splitlines()
+                       if line.startswith("description: "))
+    for trigger in ("cookies", "cookies.txt", "logged-in session", "curl", "wget", "yt-dlp",
+                    "requests", "credential or token", "passphrase typed in the browser",
+                    "git credential helper", "AWS credentials", "credential_process",
+                    # ACC-COOKIE-395: the words a request for a logged-in API call uses.
+                    "request headers", "Authorization header", "bearer token"):
+        assert trigger in description, trigger
+
+
+@needs_checkout
+def test_agent_skill_states_the_three_cookie_rules():
+    # The user pastes the cookies, a tool reads them through exec, and `expired` asks the
+    # user for a fresh copy.
+    text = _REPOSITORY_COPY.read_text()
+    assert "`vault add NAME --cookies --in-browser`" in text
+    assert "`vault exec --env C=NAME " in text
+    assert re.search(r"`expired`: [^\n]*ask user for a fresh copy", text)
+
+
+@needs_checkout
+def test_agent_skill_states_the_headers_read():
+    # ACC-COOKIE-395: cookies and request headers reach curl on standard input, and
+    # `requests` as a dict; a header has no expiry.
+    text = _REPOSITORY_COPY.read_text()
+    assert "`vault get NAME --format headers | curl -H @- URL`" in text
+    assert "`Vault().headers(NAME)`" in text
+    assert "header has no expiry" in text
+
+
+@needs_checkout
+def test_agent_skill_states_what_a_refused_read_does_in_the_pipe():
+    # ACC-COOKIE-398: curl still sends the request; under exec the command does not run.
+    line = next(line for line in _REPOSITORY_COPY.read_text().splitlines()
+                if "`vault get NAME --format headers | curl -H @- URL`" in line)
+    assert "refused read: reason on stderr, curl still sends the request, without the headers" in line
+    assert "under `vault exec --env H=NAME:headers` command does not run" in line
+
+
+@needs_checkout
+def test_agent_skill_names_the_vault_entry_methods():
+    # ACC-VDOCS-375: add, edit, rename and delete beside get, on the Python line.
+    line = next(line for line in _REPOSITORY_COPY.read_text().splitlines() if "import Vault" in line)
+    for method in ("get", "add", "edit", "rename", "delete"):
+        assert f"`{method}`" in line, method

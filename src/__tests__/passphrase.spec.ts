@@ -584,3 +584,89 @@ describe('runPassphrase with one entry by default', () => {
     expect(body.first.autocomplete).toBe('new-password');
   });
 });
+
+describe('the multi-line paste field', () => {
+  // A cURL copy as the browser gives it: line breaks, a leading space, a trailing newline.
+  const PASTE =
+    " curl 'https://shop.example.com/' \\\n  -H 'Cookie: sid=fake-7Qp'\n";
+  const ARGS = {
+    nonce: NONCE,
+    prompt: 'Cookies for shop',
+    twice: false,
+    multiline: true
+  };
+
+  it('asks one unmasked multi-line field and relays the text exactly as pasted', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      fillOnce(opts.body, PASTE);
+      return { button: { accept: true } };
+    });
+
+    await expect(runPassphrase(ARGS, serverSettings)).resolves.toBe(true);
+
+    const body = dialogOptions().body;
+    expect(body.first.tagName).toBe('TEXTAREA');
+    expect(body.second.hidden).toBe(true);
+    expect(body.node.querySelectorAll('input:not([hidden])')).toHaveLength(0);
+    // Never sent to a spelling service or kept by the browser.
+    expect(body.first.spellcheck).toBe(false);
+    expect(body.first.autocomplete).toBe('off');
+    expect(body.node.textContent).toContain('Cookies for shop');
+    // Typing starts in the paste field.
+    expect(body.node.querySelector(dialogOptions().focusNodeSelector)).toBe(
+      body.first
+    );
+    expect(mockRequestAPI.mock.calls[0][0]).toBe('passphrase');
+    expect(JSON.parse(mockRequestAPI.mock.calls[0][2]!.body as string)).toEqual(
+      { nonce: NONCE, passphrase: PASTE }
+    );
+  });
+
+  it('keeps Submit disabled until the field holds text', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      expect(opts.body.first.validity.valid).toBe(false);
+      fillOnce(opts.body, PASTE);
+      expect(opts.body.first.validity.valid).toBe(true);
+      return { button: { accept: false } };
+    });
+    await runPassphrase(ARGS, serverSettings);
+    expect(mockLaunch).toHaveBeenCalledTimes(1);
+  });
+
+  it('posts the cancel marker on Cancel, and no text', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      fillOnce(opts.body, PASTE);
+      return { button: { accept: false } };
+    });
+    await expect(runPassphrase(ARGS, serverSettings)).resolves.toBe(false);
+    expect(JSON.parse(mockRequestAPI.mock.calls[0][2]!.body as string)).toEqual(
+      { nonce: NONCE, cancelled: true }
+    );
+  });
+
+  it('types a line break on Enter instead of pressing Submit', async () => {
+    mockLaunch.mockImplementation(async (opts: any) => {
+      const { Widget } = jest.requireActual('@lumino/widgets');
+      Widget.attach(opts.body, document.body);
+      const reachedDialog = jest.fn();
+      opts.body.node.addEventListener('keydown', reachedDialog, true);
+      opts.body.first.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+      );
+      expect(reachedDialog).not.toHaveBeenCalled();
+      opts.body.dispose();
+      return { button: { accept: false } };
+    });
+    await runPassphrase(ARGS, serverSettings);
+    expect(mockLaunch).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the paste once even when twice is set too', async () => {
+    mockLaunch.mockImplementation(async () => ({ button: { accept: false } }));
+    await runPassphrase({ ...ARGS, twice: true }, serverSettings);
+    const body = dialogOptions().body;
+    expect(body.first.tagName).toBe('TEXTAREA');
+    expect(body.second.hidden).toBe(true);
+    expect(dialogOptions().title).toBe('Secret');
+  });
+});

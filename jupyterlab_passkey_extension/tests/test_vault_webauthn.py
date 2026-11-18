@@ -876,6 +876,10 @@ async def test_an_expired_challenge_is_refused(jp_fetch, vault_env, monkeypatch)
         def monotonic(self):
             return self.now
 
+        # Vault status reads the clock too, for a tab to measure a notification's wait.
+        def time(self):
+            return self.now
+
     stopped = Stopped()
     monkeypatch.setattr(vault_service, "time", stopped)
     c = await challenge(jp_fetch)

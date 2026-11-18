@@ -13,7 +13,12 @@ export interface IPassphraseArgs {
   prompt?: string;
   /** true asks the value in two fields that must agree; the calling agent decides. */
   twice?: boolean;
+  /** true asks one multi-line paste field, never masked; it outranks `twice`. */
+  multiline?: boolean;
 }
+
+/** One field, two that must agree, or one multi-line paste field. */
+export type SecretFields = 1 | 2 | 'paste';
 
 /** Whether the two fields agree yet, and what to tell the user about it. */
 type MatchState = 'pending' | 'match' | 'mismatch' | 'short';
@@ -34,7 +39,7 @@ type MatchState = 'pending' | 'match' | 'mismatch' | 'short';
  * so the dialog never changes height as the user types.
  */
 class PassphraseBody extends Widget {
-  readonly first: HTMLInputElement;
+  readonly first: HTMLInputElement | HTMLTextAreaElement;
   readonly second: HTMLInputElement;
   private readonly _status: HTMLDivElement;
   private readonly _announce: HTMLDivElement;
@@ -48,7 +53,7 @@ class PassphraseBody extends Widget {
    */
   constructor(
     prompt: string,
-    fields: 1 | 2,
+    fields: SecretFields,
     private readonly _password?: { minLength: number },
     note?: string
   ) {
@@ -61,9 +66,10 @@ class PassphraseBody extends Widget {
 
     this._noun = _password ? 'Password' : 'Passphrase';
     this._confirming = fields === 2;
-    this.first = PassphraseBody._input(
-      this._confirming ? this._noun : 'Secret'
-    );
+    this.first =
+      fields === 'paste'
+        ? PassphraseBody._paste()
+        : PassphraseBody._input(this._confirming ? this._noun : 'Secret');
     this.second = PassphraseBody._input(`Confirm ${this._noun.toLowerCase()}`);
 
     // Two elements for one message, because the two jobs have opposite needs.
@@ -132,11 +138,12 @@ class PassphraseBody extends Widget {
   }
 
   /** The field Dialog's validity gate hangs off; see the constructor. */
-  private get _gate(): HTMLInputElement {
+  private get _gate(): HTMLInputElement | HTMLTextAreaElement {
     return this._confirming ? this.second : this.first;
   }
 
   onAfterAttach(): void {
+    document.addEventListener('keydown', this._keepEnter, true);
     // Dialog reads validity from a document-level `input` listener in the CAPTURE
     // phase. The per-field listeners above are on the bubble phase, so on their
     // own they update validity AFTER Dialog has already read it, leaving the gate
@@ -157,7 +164,23 @@ class PassphraseBody extends Widget {
 
   onBeforeDetach(): void {
     document.removeEventListener('input', this._revalidate, true);
+    document.removeEventListener('keydown', this._keepEnter, true);
   }
+
+  /**
+   * Dialog presses its default button, Submit, on Enter in any field; in the paste
+   * field Enter types a line break. Stopped in document capture, before Dialog's own
+   * listener on its node.
+   */
+  private readonly _keepEnter = (event: KeyboardEvent): void => {
+    if (
+      event.key === 'Enter' &&
+      event.target === this.first &&
+      this.first instanceof HTMLTextAreaElement
+    ) {
+      event.stopPropagation();
+    }
+  };
 
   /** Bound so add/removeEventListener agree on the identity. */
   private readonly _revalidate = (event: Event): void => {
@@ -222,6 +245,20 @@ class PassphraseBody extends Widget {
       state === 'pending' ? '' : this._status.textContent;
   }
 
+  /**
+   * The paste field: pasted text such as a copied request, which is not masked, has
+   * line breaks, and is never kept by the browser or sent to a spelling service.
+   */
+  private static _paste(): HTMLTextAreaElement {
+    const paste = document.createElement('textarea');
+    paste.placeholder = trans.__('Paste here');
+    paste.className =
+      'jp-mod-styled jp-PassphraseDialog-input jp-PassphraseDialog-paste';
+    paste.autocomplete = 'off';
+    paste.spellcheck = false;
+    return paste;
+  }
+
   private static _input(placeholder: string): HTMLInputElement {
     const input = document.createElement('input');
     input.type = 'password';
@@ -249,10 +286,10 @@ export async function runPassphrase(
   args: IPassphraseArgs,
   serverSettings: ServerConnection.ISettings
 ): Promise<boolean> {
-  const twice = args.twice === true;
+  const twice = args.twice === true && args.multiline !== true;
   const { accepted, value: passphrase } = await askSecret(
     args.prompt ?? (twice ? 'Enter the passphrase twice' : 'Enter the secret'),
-    twice ? 2 : 1
+    args.multiline === true ? 'paste' : twice ? 2 : 1
   );
 
   if (!accepted) {
@@ -321,8 +358,9 @@ export async function launchWithEscape<T>(
  * `fields` is required, because the caller decides by the kind of secret and no
  * control leaves it to the user: 2 for a recovery passphrase or a new unlock
  * password, whose two fields must agree; 1 for an entry value, an unlock and a
- * proof. `accepted` is false when the user cancelled; `value` is null when the
- * dialog was accepted without a confirmed value, which the Submit gate should
+ * proof; `paste` for pasted text such as cookies, kept exactly as pasted.
+ * `accepted` is false when the user cancelled; `value` is null when the dialog was
+ * accepted without a confirmed value, which the Submit gate should
  * prevent. The vault panel asks for its recovery passphrase through this, and
  * with `password` for a new unlock password, which must have its minimum length
  * before Submit works. `note` shows a line under the fields, for a dialog opened
@@ -330,7 +368,7 @@ export async function launchWithEscape<T>(
  */
 export async function askSecret(
   prompt: string,
-  fields: 1 | 2,
+  fields: SecretFields,
   title?: string,
   password?: { minLength: number },
   note?: string
@@ -341,7 +379,7 @@ export async function askSecret(
   // instance can be passed to launchWithEscape.
   const dialog = new Dialog({
     title:
-      title ?? (fields === 1 ? trans.__('Secret') : trans.__('Passphrase')),
+      title ?? (fields === 2 ? trans.__('Passphrase') : trans.__('Secret')),
     body,
     // hasClose:true would add a close button AND dismiss on any click outside the
     // dialog - and a passphrase prompt that vanishes on a stray click leaves the
@@ -349,8 +387,8 @@ export async function askSecret(
     // a cancel.
     hasClose: false,
     // Dialog focuses its default button after the body attaches; this names the
-    // passphrase field instead, so typing starts there.
-    focusNodeSelector: 'input',
+    // passphrase or paste field instead, so typing starts there.
+    focusNodeSelector: '.jp-PassphraseDialog-input',
     buttons: [
       Dialog.cancelButton(),
       Dialog.okButton({ label: trans.__('Submit'), accept: true })

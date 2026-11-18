@@ -19,19 +19,19 @@ The four vault policy keys are organisation-controlled: the server administrator
 
 ```json
 {
-  "unlock_minutes": 1,
+  "unlock_minutes": 15,
   "password_min_length": 12,
   "reveal_seconds": 60,
   "rotate_days": 365
 }
 ```
 
-| Setting               | Default | Range     | Effect                                                                                                                      |
-| --------------------- | ------- | --------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `unlock_minutes`      | 1       | 1 to 1440 | minutes the server holds the key after an unlock; the 1-minute default is stricter than the NIST SP 800-63B AAL2 idle limit |
-| `password_min_length` | 12      | 8 to 128  | fewest characters of an unlock password                                                                                     |
-| `reveal_seconds`      | 60      | 0 to 3600 | seconds a tab skips the proof after an unlock or a proof in that tab; 0 asks at every reveal                                |
-| `rotate_days`         | 365     | 0 to 3650 | days a data key serves before an unlock rotates it; 0 turns automatic rotation off                                          |
+| Setting               | Default | Range     | Effect                                                                                                                             |
+| --------------------- | ------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `unlock_minutes`      | 15      | 1 to 1440 | minutes the server holds the key after an unlock; the 15-minute default is under the NIST SP 800-63B AAL2 idle limit of 30 minutes |
+| `password_min_length` | 12      | 8 to 128  | fewest characters of an unlock password                                                                                            |
+| `reveal_seconds`      | 60      | 0 to 3600 | seconds a tab skips the proof after an unlock or a proof in that tab; 0 asks at every reveal                                       |
+| `rotate_days`         | 365     | 0 to 3650 | days a data key serves before an unlock rotates it; 0 turns automatic rotation off                                                 |
 
 Only the `sidebar` setting remains in the Settings Editor.
 
@@ -71,6 +71,7 @@ token = Vault().get("github/api")  # unlocks with the passkey (a notification) i
 - **No secret options** - no option holds a secret
 - **One-call unlock** - on a locked vault, `get`, `copy`, `show`, `exec` and `list` take `--recovery --in-browser` or `--password --in-browser`, so the agent supplies the method and the user types the secret; an unlocked vault ignores the flags and asks nothing
 - **Import** - `import FILE` or `import --pass-cli` adds entries
+- **Cookie entries** - a cookie entry holds a site's web authorization, its cookies and the request headers of the copied request; `jupyterlab-passkey vault get NAME --format headers | curl -H @- URL` gives both to curl, and `Vault().cookies(NAME)` and `Vault().headers(NAME)` give them to Python `requests`; a header has no expiry the vault can read; see [Cookie entries](cli-reference.md#cookie-entries)
 - **Git helper** - `vault git install` points git at `git-credential-jupyterlab-passkey`; `JUPYTERLAB_PASSKEY_GIT_IGNORE_VAULT=1` makes the helper answer no credential, so git uses its next helper or prompts (a testing aid, not a security control)
 - **Reference** - [cli-reference.md](cli-reference.md#vault) lists every subcommand
 
@@ -99,7 +100,7 @@ While the vault is unlocked the server holds its data key in a key holder - the 
 All endpoints are under the server base URL and require Jupyter authentication (`@tornado.web.authenticated` - a caller needs the Jupyter token or session).
 
 - **Relay endpoints** - `POST <base_url>/jupyterlab-passkey-extension/{result,passphrase,secret,render}` write or read one relay, and answer `204` or a JSON body
-- **Vault endpoint** - `GET`, `POST` and `PATCH <base_url>/jupyterlab-passkey-extension/vault/<action>` answer `423` while locked; every error body of the vault routes is `{"error": "<message>", "code": "<code>"}`, with `locked` (423), `denied` (403, a wrong passphrase, password or code), `entry-not-found` (404, a missing entry, the message naming it and `jupyterlab-passkey vault list --json`), `no-action` (404, unknown action), `conflict` (409), `invalid` (400, including a missing field and a body that is not a JSON object) and `server` (500). The CLI prints a failure as one stderr line and exits `1`; when the answer carries a code, the line ends with it in brackets, such as `wrong recovery passphrase [denied]`. With `--json`, stdout is one object instead - `{"ok": false, "command", "error", "code"}` on failure and `{"ok": true, "command", "result"}` on success - and stderr stays empty
+- **Vault endpoint** - `GET`, `POST` and `PATCH <base_url>/jupyterlab-passkey-extension/vault/<action>` answer `423` while locked; every error body of the vault routes is `{"error": "<message>", "code": "<code>"}`, with `locked` (423), `denied` (403, a wrong passphrase, password or code), `entry-not-found` (404, a missing entry, the message naming it and `jupyterlab-passkey vault list --json`), `no-action` (404, unknown action), `conflict` (409), `expired` (410, every cookie of a cookie entry has expired, or of the paste of a cookie write), `invalid` (400, including a missing field and a body that is not a JSON object) and `server` (500). The CLI prints a failure as one stderr line and exits `1`; when the answer carries a code, the line ends with it in brackets, such as `wrong recovery passphrase [denied]`. With `--json`, stdout is one object instead - `{"ok": false, "command", "error", "code"}` on failure and `{"ok": true, "command", "result"}` on success - and stderr stays empty
 - **Bad nonce** - answers `400` and creates no file, and the nonce matches `[A-Za-z0-9_-]{16,128}`
 - **POST for reads** - `secret` and `render` are `POST`s to keep the nonce out of the access log
 

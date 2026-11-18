@@ -157,6 +157,24 @@ def test_a_new_claim_ends_the_wait_on_the_unlock_before_it(vault, monkeypatch):
     assert time.monotonic() - start < 10
 
 
+def test_a_wait_that_shares_a_claim_over_a_failed_unlock_shares_its_raise(vault, monkeypatch):
+    # The claim keeps the failed unlock's line for the waits on that unlock. A wait that
+    # shared the claim itself takes its raise for the same request, not for that end,
+    # and goes on at the unlock.
+    why = "ceremony failed: the unlock was cancelled"
+    client._end_unlock("failed", client.FAILED_SECONDS, why, client.UNLOCK_COMMAND)
+    assert client._claim_unlock(30, client.UNLOCK_COMMAND, "a" * 16) is None
+    pending = client._claim_unlock(30, client.UNLOCK_COMMAND, "b" * 16)
+    assert (pending["claim"], pending["why"]) == ("a" * 16, why)
+    client._raise_claim("a" * 16, 30)
+    clock = _Clock()
+    # The press comes after the first round, which reads the raised claim.
+    clock.sleep = lambda _: vault.unlock_recovery(PASS)
+    monkeypatch.setattr(client, "time", clock)
+    assert client.Vault()._share_unlock(pending, 30, "unlocked", client.WAITING_UNLOCK,
+                                        client.LOCKED, client.UNLOCK_COMMAND, "b" * 16) is None
+
+
 def _claimed_by(pid):
     client._put_wait("pending", 600, "", client.UNLOCK_COMMAND)
     record = _record()
@@ -199,8 +217,8 @@ def test_a_wait_shares_the_claim_that_replaced_one_whose_process_stopped(vault, 
         claimed, shared = threading.Event(), threading.Event()
         real_claim, real_record = client._claim_unlock, client._wait_record
 
-        def claim(seconds, command):
-            record = real_claim(seconds, command)
+        def claim(*args):
+            record = real_claim(*args)
             claimed.set()
             return record
 
@@ -514,7 +532,8 @@ def test_a_relay_directory_that_refuses_the_end_of_an_unlock_is_one_line(vault, 
 
 def test_the_record_holds_no_secret(vault):
     assert client._claim_unlock(30, client.UNLOCK_COMMAND) is None
-    assert set(_record()) == {"at", "seconds", "state", "why", "pid", "command"}
+    assert set(_record()) == {"at", "seconds", "state", "why", "pid", "command", "claim",
+                              "window"}
     assert _record()["why"] == ""
     assert _record()["pid"] == os.getpid()
     assert _record()["command"] == client.UNLOCK_COMMAND
@@ -619,9 +638,9 @@ def _unlock_before_the_claim(monkeypatch, unlock):
     elsewhere, which removes no record yet, then this process's claim."""
     real = client._claim_unlock
 
-    def claim(seconds, command):
+    def claim(*args):
         unlock()
-        return real(seconds, command)
+        return real(*args)
 
     monkeypatch.setattr(client, "_claim_unlock", claim)
     return real
@@ -807,6 +826,27 @@ def test_a_process_waiting_on_another_set_up_waits_the_set_up_time(vault_env, mo
     assert vcli.REGISTER_TIMEOUT <= clock.now <= vcli.REGISTER_TIMEOUT + client.WAIT_POLL
 
 
+def test_a_raised_claim_of_a_stopped_process_holds_180_s_at_most(vault, monkeypatch):
+    # `vault unlock --timeout inf` raised its notification and stopped. Its notification
+    # may be closed by hand, so 181 s after the raise a later caller raises its own.
+    claim = "c" * 16
+    assert client._claim_unlock(float("inf"), client.UNLOCK_COMMAND, claim) is None
+    client._raise_claim(claim, float("inf"))
+    clock = _Clock()
+    clock.time = lambda: time.time() + 181
+    monkeypatch.setattr(client, "time", clock)
+    # Its process lives: the claim holds, as any wait's does.
+    assert client._wait_record()["claim"] == claim
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    record = _record()
+    record["pid"] = gone.pid
+    relay.write_relay("unlock-wait", relay.UNLOCK_WAIT, json.dumps(record))
+    raised = _steps(monkeypatch, lambda _: vault.unlock_recovery(PASS))
+    assert client.Vault(timeout=30).unlock()["unlocked"] is True
+    assert len(raised) == 1
+
+
 # --------------------------------------------------------------------------- #
 # real processes
 # --------------------------------------------------------------------------- #
@@ -817,6 +857,8 @@ class _Lab(_VaultHTTP):
 
     notifications = []
     locked_reads = []
+    # Every request's path in the order the server took them.
+    requests = []
     # Holds the status reads until every process has made one, for a start at once.
     gate = None
     # Held by a press, which the processes must see as one step.
@@ -828,6 +870,7 @@ class _Lab(_VaultHTTP):
         super()._answer(status, result)
 
     def _serve(self, method):
+        self.requests.append(self.path)
         if self.path.rstrip("/").endswith("/ingest"):
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             self.notifications.append(json.loads(raw))
@@ -851,6 +894,7 @@ def _serving(svc, tmp_path):
     _Lab.svc = svc
     _Lab.notifications = []
     _Lab.locked_reads = []
+    _Lab.requests = []
     httpd = _LabServer(("127.0.0.1", 0), _Lab)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -879,18 +923,26 @@ def no_vault(vault_env, tmp_path):
     _Lab.gate = None
 
 
-def _spawn(lab, seconds, count=PROCESSES, code=CHILD):
+# Ctrl-C at a terminal reaches a process whose SIGINT has the default action. A runner
+# started in the background (`pytest ... &` from a script) ignores SIGINT, its children
+# inherit that, and Python then raises no KeyboardInterrupt: a Ctrl-C test would stop nothing.
+SIGINT_DEFAULT = "import signal; signal.signal(signal.SIGINT, signal.default_int_handler)\n"
+
+
+def _spawn(lab, seconds, count=PROCESSES, code=CHILD, cwd=None):
     env, request = lab
     procs = []
     for _ in range(count):
         with open(request) as stdin:
             procs.append(subprocess.Popen(
-                [sys.executable, "-c", code, str(seconds)], env=env, stdin=stdin, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+                [sys.executable, "-c", SIGINT_DEFAULT + code, str(seconds)], env=env, cwd=cwd,
+                stdin=stdin, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE))
     return procs
 
 
 def _finish(procs):
+    # Read, never only wait: past the user's pipe quota a pipe holds 2 pages, and the
+    # traceback of a stopped process fills it, so a bare wait never returns.
     return [(p.communicate(timeout=60), p.returncode) for p in procs]
 
 
@@ -899,6 +951,14 @@ def _until(condition, seconds=30):
     while not condition():
         assert time.monotonic() < deadline, "the processes never reached this point"
         time.sleep(0.02)
+
+
+def _status_reads_since(start, count):
+    """Until `count` vault status reads came after the first `start` requests. A process
+    that raises a notification reads status in each round of its wait, after the POST;
+    the git helper reads it once before its locked read, and every unlock once before
+    its claim, so 3 reads of the helper, or 2 of `vault get`, come after its POST."""
+    _until(lambda: sum("/status" in path for path in _Lab.requests[start:]) >= count)
 
 
 def _press(vault, notification, body=None):
@@ -1034,37 +1094,107 @@ def test_a_relay_directory_that_refuses_reaches_a_process_as_one_line(vault, lab
     pytest.param(signal.SIGKILL, CHILD, id="a kill"),
     pytest.param(signal.SIGINT, GET, id="Ctrl-C"),
 ])
-def test_a_process_that_stops_leaves_no_claim(vault, lab, stop, code):
+def test_a_raised_notification_outlives_the_process_that_raised_it(vault, lab, stop, code, tmp_path):
+    # DEF-VAULT-115: the notification stays on screen after its process stops, a
+    # caller's timeout or Ctrl-C, so the next caller shares it and raises none, also
+    # from another project (ACC-UNLOCK-376).
     owner, = _spawn(lab, 60, 1, code)
     _until(lambda: _Lab.notifications)
+    _status_reads_since(len(_Lab.requests), 1)
     owner.send_signal(stop)
-    owner.wait()
-    if stop == signal.SIGINT:
-        # The interrupt runs the way out of the wait, which removes the claim.
-        assert not os.path.exists(os.path.join(relay.relay_dir(), relay.UNLOCK_WAIT))
-    # The claim held 70 s: the next process raises its own notification at once.
-    next_one, = _spawn(lab, 30, 1)
-    _until(lambda: len(_Lab.notifications) == 2, 15)
-    _press(vault, _Lab.notifications[1])
+    _finish([owner])
+    other = tmp_path / "another-project"
+    (other / ".git").mkdir(parents=True)
+    start = len(_Lab.requests)
+    next_one, = _spawn(lab, 30, 1, cwd=other)
+    _status_reads_since(start, 3)
+    assert len(_Lab.notifications) == 1
+    _press(vault, _Lab.notifications[0])
     ((out, err), status), = _finish([next_one])
     assert status == 0, err
+    assert "waiting for the notification" in err
+    assert len(_Lab.notifications) == 1
+
+
+def test_a_wait_on_a_stopped_raiser_ends_at_its_window_and_puts_that_on_record(vault, lab):
+    # ACC-GIT-265-UNLOCK with the raiser gone: nobody answers, so the process that shares
+    # the notification ends at its window end and records the unanswered end as the
+    # raiser would have; a later call fails at once.
+    wait = 6
+    owner, = _spawn(lab, wait, 1)
+    _until(lambda: _Lab.notifications)
+    _status_reads_since(len(_Lab.requests), 1)
+    owner.send_signal(signal.SIGINT)
+    _finish([owner])
+    ((out, err), code), = _finish(_spawn(lab, 20, 1))
+    assert (code, out) == (1, "")
+    assert "waiting for the notification" in err
+    assert f"nobody answered within {wait}s" in err
+    # The raiser's window, not this process's own 20 s.
+    assert float(err.rsplit("took ", 1)[1]) < 20
+    assert _record()["state"] == "unanswered"
+    ((out, err), code), = _finish(_spawn(lab, 20, 1))
+    assert (code, out) == (1, "")
+    assert f"nobody answered within {wait}s" in err
     assert "waiting for the notification" not in err
+    assert float(err.rsplit("took ", 1)[1]) < wait
+    assert len(_Lab.notifications) == 1
+
+
+# `vault get` held between writing its claim and raising its notification.
+CLAIMED = GET.replace("from jupyterlab_passkey_extension import cli\n", """\
+from jupyterlab_passkey_extension import cli
+import time
+from jupyterlab_passkey_extension.vault import client
+put = client._put_wait
+def _put_wait(*args):
+    put(*args)
+    time.sleep(60)
+client._put_wait = _put_wait
+""")
+
+
+def test_ctrl_c_between_the_claim_and_the_notification_leaves_no_claim(vault, lab):
+    owner, = _spawn(lab, 60, 1, CLAIMED)
+    claim = os.path.join(relay.relay_dir(), relay.UNLOCK_WAIT)
+    _until(lambda: os.path.exists(claim))
+    owner.send_signal(signal.SIGINT)
+    _finish([owner])
+    assert _Lab.notifications == []
+    assert not os.path.exists(claim)
 
 
 @pytest.mark.parametrize("stop", [signal.SIGKILL, signal.SIGINT], ids=["a kill", "Ctrl-C"])
-def test_a_stopped_first_process_ends_no_wait(vault, lab, stop):
+def test_a_claim_never_raised_holds_no_later_caller(vault, lab, stop):
+    # Only a raised notification outlives its process: a process stopped between its
+    # claim and its notification leaves the next caller nothing to wait on.
+    owner, = _spawn(lab, 60, 1, CLAIMED)
+    _until(lambda: os.path.exists(os.path.join(relay.relay_dir(), relay.UNLOCK_WAIT)))
+    owner.send_signal(stop)
+    _finish([owner])
+    next_one, = _spawn(lab, 30, 1)
+    _until(lambda: _Lab.notifications, 15)
+    _press(vault, _Lab.notifications[0])
+    ((out, err), status), = _finish([next_one])
+    assert status == 0, err
+    assert "waiting for the notification" not in err
+    assert len(_Lab.notifications) == 1
+
+
+@pytest.mark.parametrize("stop", [signal.SIGKILL, signal.SIGINT], ids=["a kill", "Ctrl-C"])
+def test_a_stopped_first_process_leaves_its_notification_to_the_waiters(vault, lab, stop):
     owner, = _spawn(lab, 60, 1, GET)
     _until(lambda: _Lab.notifications)
+    _status_reads_since(len(_Lab.requests), 1)
     waiters = _spawn(lab, 60, 3, GET)
     _until(lambda: len(_Lab.locked_reads) >= 4)
     owner.send_signal(stop)
-    owner.wait()
-    # One waiting process raises the notification in its place; the others share it.
-    _until(lambda: len(_Lab.notifications) == 2, 15)
-    time.sleep(1.5)
-    assert len(_Lab.notifications) == 2
+    _finish([owner])
+    # Two rounds of each waiting process: none raises a notification in its place.
+    _status_reads_since(len(_Lab.requests), 6)
+    assert len(_Lab.notifications) == 1
     assert all(p.poll() is None for p in waiters)
-    _press(vault, _Lab.notifications[1])
+    _press(vault, _Lab.notifications[0])
     for (out, err), code in _finish(waiters):
         assert code == 0, err
         assert out == f"{SECRET}\n"
@@ -1141,31 +1271,43 @@ def test_the_set_up_notification_names_its_command_and_its_wait(no_vault):
     assert code == 0, err
 
 
-def test_a_killed_set_up_process_leaves_no_claim(no_vault):
+@pytest.mark.parametrize("stop", [signal.SIGKILL, signal.SIGINT], ids=["a kill", "Ctrl-C"])
+def test_a_set_up_notification_outlives_the_process_that_raised_it(no_vault, stop):
     _Lab.gate = None
     owner, = _spawn(no_vault, 60, 1, SETTING_UP)
     _until(lambda: _Lab.notifications)
-    owner.send_signal(signal.SIGKILL)
-    owner.wait()
+    _status_reads_since(len(_Lab.requests), 1)
+    owner.send_signal(stop)
+    _finish([owner])
+    start = len(_Lab.requests)
     next_one, = _spawn(no_vault, 30, 1, SETTING_UP)
-    _until(lambda: len(_Lab.notifications) == 2, 15)
-    _press_set_up(_Lab.notifications[1])
+    # The helper reads status once before its claim.
+    _status_reads_since(start, 2)
+    assert len(_Lab.notifications) == 1
+    _press_set_up(_Lab.notifications[0])
     ((out, err), status), = _finish([next_one])
     assert status == 0, err
-    assert "waiting for the set-up notification" not in err
+    assert "waiting for the set-up notification" in err
+    assert out == f"username=me\npassword={SECRET}\n"
 
 
-def test_a_stopped_first_set_up_process_ends_no_wait(no_vault):
+@pytest.mark.parametrize("stop", [signal.SIGKILL, signal.SIGINT], ids=["a kill", "Ctrl-C"])
+def test_a_set_up_wait_under_way_shares_the_notification_of_a_raiser_that_stops(no_vault,
+                                                                                 stop):
     _Lab.gate = None
     owner, = _spawn(no_vault, 60, 1, SETTING_UP)
     _until(lambda: _Lab.notifications)
+    _status_reads_since(len(_Lab.requests), 1)
     waiter, = _spawn(no_vault, 60, 1, SETTING_UP)
-    time.sleep(2.5)
-    owner.send_signal(signal.SIGINT)
-    owner.wait()
-    _until(lambda: len(_Lab.notifications) == 2, 15)
+    # Its first line: it shares the claim, and waits.
+    assert "waiting for the set-up notification" in waiter.stderr.readline()
+    owner.send_signal(stop)
+    _finish([owner])
+    # Rounds of the waiting process alone: it raises no notification in its place.
+    _status_reads_since(len(_Lab.requests), 3)
+    assert len(_Lab.notifications) == 1
     assert waiter.poll() is None
-    _press_set_up(_Lab.notifications[1])
+    _press_set_up(_Lab.notifications[0])
     ((out, err), status), = _finish([waiter])
     assert status == 0, err
     assert out == f"username=me\npassword={SECRET}\n"

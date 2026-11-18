@@ -1,0 +1,3 @@
+curl.exe ^"https://app.example.com/api^" ^
+  -H ^"Accept: */*^" ^
+  -H ^"Cookie: a=1; b=x^\^"y; c=p^$q; d=50^%; e=plain^"

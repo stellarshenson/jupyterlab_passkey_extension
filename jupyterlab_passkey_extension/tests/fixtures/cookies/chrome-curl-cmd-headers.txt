@@ -1,0 +1,21 @@
+curl ^"https://app.example.com/api/items^" ^
+  -H ^"accept: application/json, text/plain, */*^" ^
+  -H ^"accept-language: en-GB,en;q=0.9^" ^
+  -H ^"authorization: Bearer hdr.fake-token==^" ^
+  -H ^"cache-control: no-cache^" ^
+  -H ^"content-type: application/json^" ^
+  -b ^"sid=s^%^3Aab.c^%^2F; tok=eyJhbGc==^" ^
+  -H ^"origin: https://app.example.com^" ^
+  -H ^"pragma: no-cache^" ^
+  -H ^"priority: u=1, i^" ^
+  -H ^"referer: https://app.example.com/dashboard^" ^
+  -H ^"sec-ch-ua: ^\^"Chromium^\^";v=^\^"130^\^", ^\^"Google Chrome^\^";v=^\^"130^\^", ^\^"Not?A_Brand^\^";v=^\^"99^\^"^" ^
+  -H ^"sec-ch-ua-mobile: ?0^" ^
+  -H ^"sec-ch-ua-platform: ^\^"Linux^\^"^" ^
+  -H ^"sec-fetch-dest: empty^" ^
+  -H ^"sec-fetch-mode: cors^" ^
+  -H ^"sec-fetch-site: same-origin^" ^
+  -H ^"user-agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36^" ^
+  -H ^"x-app-client: web 1.2^" ^
+  -H ^"x-csrf-token: c^\^"s^%^20r^\^\f=1^" ^
+  --data-raw ^"^{^\^"q^\^":1^}^"

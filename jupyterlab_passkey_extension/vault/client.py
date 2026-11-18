@@ -15,7 +15,8 @@ a process of the other operation raises its own. Each process checks vault statu
 because the unlock can come from anywhere: the panel, another tab, a terminal. The server
 removes the record on every unlock, the claim names the process that holds it, and that
 process removes its claim when its wait ends. A claim that goes with its process ends no
-wait: a waiting process claims and raises its own.
+wait: a waiting process claims and raises its own. A raised notification stays on screen
+when its process stops, so its claim stays shared until its window ends, 180 s at most.
 """
 
 import json
@@ -29,6 +30,7 @@ import urllib.request
 from .. import cli as _cli
 from .. import relay
 from . import store
+from .cookies import to_jar, to_netscape
 
 UNLOCK_COMMAND = "passkey:vault-unlock"
 REGISTER_COMMAND = "passkey:vault-register"
@@ -42,6 +44,9 @@ WAITING_SETUP = "no vault yet - waiting for the set-up notification in your Jupy
 UNANSWERED_SECONDS = 600
 # A failed unlock stays on record this long, so each wait reads it on a coming round.
 FAILED_SECONDS = 5
+# A raised claim whose process stopped holds this long after the raise at most, the
+# longest default wait (vault init and passkey add): its notification may be closed by hand.
+REGISTER_TIMEOUT = 180.0
 WAIT_POLL = 1
 
 
@@ -61,6 +66,19 @@ class VaultClientError(Exception):
 
 class VaultLocked(VaultClientError):
     pass
+
+
+class NoVault(VaultClientError):
+    """The server found no vault file. Its own code for that is `invalid`; this one is
+    `no-vault`, the CLI's --json code."""
+
+
+def _missing_vault(error):
+    """The path of a vault a command found missing, or None for any other error."""
+    head, sep, tail = str(error).partition(" - run `jupyterlab-passkey vault init`")
+    if sep and not tail and head.startswith("no vault at "):
+        return head[len("no vault at "):]
+    return None
 
 
 class NoClick(VaultClientError):
@@ -104,6 +122,8 @@ def request(method, action, body=None, params=None):
             # The server runs without the vault's routes, as after an install into a
             # running server - the panel says the same (src/vault/api.ts).
             message = "the vault is not loaded - restart the Jupyter server"
+        if code == "invalid" and _missing_vault(message):
+            raise NoVault(message, "no-vault")
         raise VaultClientError(message or f"the vault answered {e.code} {e.reason}", code)
     except OSError as e:
         _cli._forget_server()
@@ -161,7 +181,9 @@ def _alive(pid):
 def _wait_record():
     """The shared unlock's record while it holds, else None. Its state is `pending`, or
     how an unlock ended with the vault locked: `failed` or `unanswered`, with `why`. A
-    record that does not parse is none, and so is the claim of a process that is gone."""
+    record that does not parse is none, and so is the claim of a process that is gone,
+    unless it raised its notification: that one holds until its `window` ends, and
+    REGISTER_TIMEOUT at most."""
     try:
         with open(_wait_path()) as f:
             record = json.load(f)
@@ -176,23 +198,25 @@ def _wait_record():
         # Negative: the system clock was set back, and the time on record says nothing.
         live = 0 <= since < record["seconds"] and isinstance(record["why"], str)
         if live and record["state"] == "pending":
-            live = record["pid"] > 0 and _alive(record["pid"])
+            live = since < min(record.get("window") or 0, REGISTER_TIMEOUT) \
+                or (record["pid"] > 0 and _alive(record["pid"]))
     except (TypeError, KeyError, OverflowError):
         return None
     return record if live else None
 
 
-def _put_wait(state, seconds, why="", command=""):
+def _put_wait(state, seconds, why="", command="", claim=None, window=None):
     record = {"at": time.time(), "seconds": seconds, "state": state, "why": why,
-              "pid": os.getpid(), "command": command}
+              "pid": os.getpid(), "command": command, "claim": claim, "window": window}
     relay.write_relay("unlock-wait", relay.UNLOCK_WAIT, json.dumps(record))
 
 
-def _claim_unlock(seconds, command):
+def _claim_unlock(seconds, command, claim=None):
     """None for the process that raises the notification, else the pending unlock to
-    share. The claim names its process: one that is gone holds none, and the one that
-    raised the notification removes its claim when its wait ends (`_drop_claim`). A claim
-    over an end on record keeps its line, for the waits that have not read it yet."""
+    share. The claim names its process: one that is gone holds none until it raised its
+    notification (`_raise_claim`), and the wait that raised the notification, named by
+    `claim`, removes its claim when it ends (`_drop_claim`). A claim over an end on record
+    keeps its line, for the waits that have not read it yet."""
     try:
         with store._locked(_wait_path()):
             record = _wait_record()
@@ -200,20 +224,39 @@ def _claim_unlock(seconds, command):
                 return record
             # The trigger POST comes before the wait, and may take this long.
             why = (record or {}).get("why", "") if (record or {}).get("command") == command else ""
-            _put_wait("pending", seconds + _cli.TRIGGER_TIMEOUT, why, command)
+            _put_wait("pending", seconds + _cli.TRIGGER_TIMEOUT, why, command, claim)
     except OSError as e:
         _unusable(e)
     return None
 
 
-def _drop_claim():
-    """Remove this process's claim: its wait is over, however it ended, Ctrl-C included.
-    An end on record in its place, or the claim of another process, stays."""
+def _raise_claim(claim, seconds):
+    """The notification of the wait `claim` names is on screen from now for `seconds`:
+    its claim holds that long, also after this process stops (`_wait_record`)."""
     try:
         with store._locked(_wait_path()):
             record = _wait_record()
             if record is not None and record["state"] == "pending" \
-                    and record["pid"] == os.getpid():
+                    and record.get("claim") == claim:
+                # The margin the claim had: this process records its end after the window.
+                _put_wait("pending", seconds + _cli.TRIGGER_TIMEOUT, record["why"],
+                          record["command"], claim, seconds)
+    except (OSError, VaultClientError):
+        # Not marked, the claim goes with this process, as one not raised does.
+        pass
+
+
+def _drop_claim(claim, ended):
+    """Remove the claim of the wait `claim` names: that wait is over, however it ended,
+    Ctrl-C included. A wait that stops with no end (`ended` false) leaves the claim of a
+    raised notification, which stays on screen, for the next caller to share. An end on
+    record in its place, or any other claim, one of another wait of this process
+    included, stays."""
+    try:
+        with store._locked(_wait_path()):
+            record = _wait_record()
+            if record is not None and record["state"] == "pending" \
+                    and record.get("claim") == claim and (ended or not record.get("window")):
                 os.unlink(_wait_path())
     except (OSError, VaultClientError):
         # It runs on the way out, so it must not replace the error that ends the wait;
@@ -230,6 +273,14 @@ def _end_unlock(state, seconds, why, command):
         _unusable(e)
 
 
+def _unanswered(failure, seconds, command):
+    """Record that nobody answered the notification within `seconds`, for every other
+    process; the error that ends this wait."""
+    why = failure.replace(" - run", f" - nobody answered within {seconds:.0f}s - run")
+    _end_unlock("unanswered", UNANSWERED_SECONDS, why, command)
+    return VaultClientError(why, "locked")
+
+
 def _refuse_after_no_answer(command):
     """Fail at once after a notification nobody answered for this operation, so a batch
     does not wait on nobody process by process. The record is one per user, so only the
@@ -241,12 +292,37 @@ def _refuse_after_no_answer(command):
         raise VaultClientError(record["why"], "locked")
 
 
+def _entry_fields(password, generate, length, username, url, category, notes, cookies):
+    """The fields of an add or edit, as `POST` and `PATCH vault/entries` take them; a field
+    left None is not sent. A generated password is made by the server's generator."""
+    if generate and password is not None:
+        raise VaultClientError("give password or generate, not both", "usage")
+    if password == "" or cookies == "":
+        raise VaultClientError("nothing entered", "usage")
+    fields = {key: value for key, value in (("username", username), ("url", url),
+                                            ("category", category), ("notes", notes))
+              if value is not None}
+    if generate:
+        password = request("GET", "generate", params={} if length is None else {"length": str(length)})["value"]
+    if password is not None:
+        fields["password"] = password
+    if cookies is not None:
+        fields["cookies"] = cookies
+    return fields
+
+
 class Vault:
-    """The vault from Python code or a notebook.
+    """The vault from Python code or a notebook. Each method that needs an open vault
+    unlocks a locked one first; a refusal raises VaultClientError with the CLI's code.
 
         vault = Vault()
         vault.get("github/api")                    # the password
         vault.get("github/api", field="username")
+        vault.add("db/prod", generate=True, username="app")
+        vault.add("site/app", cookies=pasted, url="https://app.example.com")
+        requests.get(url, cookies=vault.cookies("site/app"), headers=vault.headers("site/app"))
+        vault.rename("db/prod", "db/primary")
+        vault.delete("db/primary")
     """
 
     def __init__(self, timeout=_cli.CLICK_TIMEOUT):
@@ -292,29 +368,42 @@ class Vault:
         """Raise the one notification of this user and wait until vault status reports
         `key`, or share the one another process raised. An end that does not come ends
         every other process's wait. The page posts only a failure."""
-        pending = _claim_unlock(seconds, command)
-        if pending is not None:
-            seconds = self._share_unlock(pending, seconds, key, waiting, failure, command)
-            if seconds is None:
-                return
-        try:
-            browser_step(command, args, label, message, seconds,
-                         poll=lambda: self._stop_when(key))
-        except _Opened:
-            pass
-        except NoClick:
-            # One last look, as `_wait` takes: a press in the final round is no failure.
-            if not self.status()[key]:
-                why = failure.replace(" - run", f" - nobody answered within {seconds:.0f}s - run")
-                _end_unlock("unanswered", UNANSWERED_SECONDS, why, command)
-                raise VaultClientError(why, "locked") from None
-        except VaultClientError as e:
-            _end_unlock("failed", FAILED_SECONDS, str(e), command)
-            raise
-        finally:
-            _drop_claim()
+        # From before the claim is written: Ctrl-C between the claim and the notification,
+        # this wait's first claim or one it takes while it shares, removes it too.
+        claim, raised, ended = secrets.token_hex(8), False, False
 
-    def _share_unlock(self, pending, seconds, key, waiting, failure, command):
+        def poll():
+            nonlocal raised
+            if not raised:
+                # The first round comes after the trigger POST landed: the notification
+                # is on screen.
+                raised = True
+                _raise_claim(claim, seconds)
+            self._stop_when(key)
+
+        try:
+            pending = _claim_unlock(seconds, command, claim)
+            if pending is not None:
+                seconds = self._share_unlock(pending, seconds, key, waiting, failure, command,
+                                             claim)
+                if seconds is None:
+                    return
+            try:
+                browser_step(command, args, label, message, seconds, poll=poll)
+            except _Opened:
+                pass
+            except NoClick:
+                # One last look, as `_wait` takes: a press in the final round is no failure.
+                if not self.status()[key]:
+                    raise _unanswered(failure, seconds, command) from None
+            except VaultClientError as e:
+                _end_unlock("failed", FAILED_SECONDS, str(e), command)
+                raise
+            ended = True
+        finally:
+            _drop_claim(claim, ended)
+
+    def _share_unlock(self, pending, seconds, key, waiting, failure, command, claim):
         """Wait until vault status reports `key`, for the notification another process
         of this operation asked for; None then. A pending notification of the other
         operation is not this one's: this process gets `seconds` and raises its own. An
@@ -322,7 +411,8 @@ class Vault:
         deadline with none. A claim that went with no end, because its process stopped,
         ends no wait: a claim of another process of this operation in its place is
         shared, or this process claims and gets the seconds left for its own
-        notification."""
+        notification. A raised notification is shared to its window end, its process
+        stopped or not; nobody answered it then, and that end goes on record."""
         if pending.get("command") != command:
             return seconds
         _cli._say(waiting)
@@ -334,6 +424,10 @@ class Vault:
             if record is not None and record.get("command") != command:
                 # Another operation's notification is no record for this wait.
                 record = None
+            if record is not None and record.get("window") \
+                    and record.get("claim") == pending.get("claim"):
+                # The claim shared, its notification raised since: the same request.
+                pending = record
             try:
                 reached = self.status()[key]
             except VaultClientError:
@@ -345,8 +439,12 @@ class Vault:
             if left <= 0:
                 raise VaultClientError((record or {}).get("why") or failure, "locked")
             if reached is not None and record != pending:
+                if record is None and pending.get("window") \
+                        and time.time() - pending["at"] >= pending["window"]:
+                    # The window ended with no end on record: its process stopped first.
+                    raise _unanswered(failure, pending["window"], command)
                 if record is None:
-                    record = _claim_unlock(left, command)
+                    record = _claim_unlock(left, command, claim)
                     if record is None or record.get("command") != command:
                         return left
                 if record["state"] != "pending" or record["why"]:
@@ -387,7 +485,90 @@ class Vault:
     def list(self):
         return self._unlocked(lambda: request("GET", "entries"))["entries"]
 
-    def get(self, name, field="password"):
+    def _read(self, name, field=None):
+        """A field as the server answers it: text, or the unexpired cookies of a cookie
+        entry as a list. With no field, a cookie entry's cookies, a login entry's password."""
         return self._unlocked(
             lambda: request("POST", "reveal", {"name": name, "field": field})
         )["value"]
+
+    def get(self, name, field=None):
+        """A field's value; with no field, a login entry's password or a cookie entry's
+        unexpired cookies as a cookies.txt."""
+        if field == "headers":
+            raise VaultClientError(
+                f"get does not read the headers - use `Vault().headers({name!r})`", "invalid")
+        value = self._read(name, field)
+        return to_netscape(value) if isinstance(value, list) else value
+
+    def cookies(self, name):
+        """A cookie entry's unexpired cookies as an http.cookiejar.CookieJar, for
+        `requests.get(url, cookies=jar)` or urllib's HTTPCookieProcessor. urllib keeps a
+        host-only cookie to its own host; requests copies the cookies into its own jar
+        and also sends a host-only cookie to subdomains."""
+        return to_jar(self._read(name, "cookies"))
+
+    def headers(self, name):
+        """The request headers a cookie entry keeps, name to value, for
+        `requests.get(url, headers=...)`; a name kept twice has its last value. The
+        Cookie header is not among them: `cookies` gives the cookies."""
+        return dict(self._read(name, "headers"))
+
+    def add(self, name, *, password=None, generate=False, length=None, username=None,
+            url=None, category=None, notes=None, cookies=None):
+        """Add a login entry with `password`, or `generate=True` for a generated one that
+        is not returned; or a cookie entry from pasted `cookies` text in any form the
+        vault reads."""
+        if password is None and not generate and cookies is None:
+            raise VaultClientError("nothing entered", "usage")
+        fields = _entry_fields(password, generate, length, username, url, category, notes, cookies)
+        if cookies is not None:
+            fields["type"] = "cookies"
+        self._unlocked(lambda: request("POST", "entries", {"name": name, "fields": fields}))
+
+    def edit(self, name, *, password=None, generate=False, length=None, username=None,
+             url=None, category=None, notes=None, cookies=None):
+        """Change the fields given; a field left None keeps its value. `password`,
+        `generate=True` or `cookies` replaces the secret: a password on a login entry,
+        the cookies and the headers on a cookie entry."""
+        fields = _entry_fields(password, generate, length, username, url, category, notes, cookies)
+        if not fields:
+            raise VaultClientError("nothing to change - give at least one field", "usage")
+        self._unlocked(lambda: request("PATCH", "entries", {"name": name, "fields": fields}))
+
+    def rename(self, name, new_name):
+        self._unlocked(lambda: request("POST", "rename", {"name": name, "new_name": new_name}))
+
+    def delete(self, name):
+        self._unlocked(lambda: request("POST", "delete", {"name": name}))
+
+    def import_entries(self, items):
+        """Add entries from a list of objects, as `vault import` reads them; returns
+        {"added": count, "skipped": [names that exist]}."""
+        return self._unlocked(lambda: request("POST", "import", {"entries": items}))
+
+    def generate(self, length=None, symbols=True):
+        """A random password, not stored; `length` None is the server's default."""
+        params = {"symbols": "1" if symbols else "0"}
+        if length is not None:
+            params["length"] = str(length)
+        return request("GET", "generate", params=params)["value"]
+
+    def _stage(self, name, field, kind, command, label, message):
+        nonce = self._unlocked(
+            lambda: request("POST", "stage", {"name": name, "field": field, "kind": kind}))["nonce"]
+        try:
+            _cli._trigger(command, {"nonce": nonce, "label": name}, label, message)
+        except BaseException:
+            # No button was raised, so nothing can ever collect this relay.
+            relay.unstage(nonce, kind)
+            raise
+
+    def copy(self, name, field=None):
+        """Raise a notification whose click puts the value on the browser clipboard: a
+        cookie entry's cookies.txt with no field. The value never enters this process."""
+        self._stage(name, field, "secret", _cli.COPY_COMMAND, "Copy to clipboard", f"Copy **{name}**")
+
+    def show(self, name, field=None):
+        """Raise a notification whose click shows the value as a distorted image."""
+        self._stage(name, field, "code", _cli.SHOW_COMMAND, "Show", f"Show **{name}**")

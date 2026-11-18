@@ -7,7 +7,6 @@ except ImportError:
     import warnings
     warnings.warn("Importing 'jupyterlab_passkey_extension' outside a proper installation.")
     __version__ = "dev"
-from .routes import setup_route_handlers
 
 
 def _jupyter_labextension_paths():
@@ -31,6 +30,10 @@ def _load_jupyter_server_extension(server_app):
     server_app: jupyterlab.labapp.LabApp
         JupyterLab application instance
     """
+    # Here, not at the top: the CLI and the git and AWS helpers import this package and
+    # need neither jupyter_server nor tornado, which a `make install` elsewhere reinstalls.
+    from .routes import setup_route_handlers
+
     setup_route_handlers(server_app.web_app)
     name = "jupyterlab_passkey_extension"
     server_app.log.info(f"Registered {name} server extension")

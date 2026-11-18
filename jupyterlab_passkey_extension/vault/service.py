@@ -13,12 +13,13 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import string
 import time
 from datetime import datetime, timezone
 
 from .. import relay
-from . import holders, store, totp, webauthn
+from . import cookies, holders, store, totp
 from .store import VaultError
 
 log = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ def _key_log(event, **fields):
              "".join(f" {name}={value}" for name, value in fields.items()))
 
 
-DEFAULT_UNLOCK_MINUTES = 1
+DEFAULT_UNLOCK_MINUTES = 15
 # The shortest unlock password the vault accepts: the setting, and what it may be set
 # to. A copied vault file can be attacked through this slot, so short is not offered.
 DEFAULT_PASSWORD_MIN_LENGTH = 12
@@ -53,6 +54,8 @@ MAX_UNLOCK_MINUTES = holders.MAX_TTL // 60
 GENERATE_LENGTH = 24
 FIELDS = ("username", "password", "url", "category", "notes")
 READABLE = ("password", "username", "url", "category", "notes", "name")
+# An entry's type; an entry with none, as every entry written before cookie entries, is login.
+TYPES = ("login", "cookies")
 MAX_NAME = 200
 # Wrong codes in a row before codes are refused until an unlock with a passkey or the
 # recovery passphrase: a code has six digits, so nothing else stands between a script
@@ -110,6 +113,10 @@ class Denied(VaultError):
     pass
 
 
+class Expired(VaultError):
+    pass
+
+
 def _config_path():
     return os.path.join(holders._state_dir(), "vault-config.json")
 
@@ -135,6 +142,8 @@ def _check_name(name):
 
 
 def _check_fields(fields):
+    if not isinstance(fields, dict):
+        raise VaultError("`fields` must be an object")
     clean = {}
     for key in FIELDS:
         if key in fields:
@@ -147,6 +156,28 @@ def _check_fields(fields):
                 raise VaultError(f"`{key}` must be text of at most {MAX_FIELD} characters")
             clean[key] = value
     return clean
+
+
+def _jar(text, url):
+    """The cookies read from pasted `text` as the entry stores them, the origin of the URL
+    a cURL or fetch copy carries, or None, and the headers that copy keeps; the cookies and
+    the headers each within the limit."""
+    jar, origin, headers = cookies.read(text, url)
+    for what, stored in (("cookies", jar), ("headers", headers)):
+        size = len(json.dumps(stored))
+        if size > MAX_FIELD:
+            raise VaultError(f"the {what} are {size} characters as stored, over the limit of "
+                             f"{MAX_FIELD}; nothing was written")
+    return jar, origin, headers
+
+
+def _live_jar(text, url):
+    """`_jar` for a write: a paste whose cookies have all expired is refused, because every
+    read of the entry would then fail."""
+    jar, origin, headers = _jar(text, url)
+    if jar and not cookies.unexpired(jar, time.time()):
+        raise Expired("every cookie in the paste has expired - copy the cookies again from the browser")
+    return jar, origin, headers
 
 
 def _check_date(n, key, value):
@@ -337,6 +368,8 @@ class VaultService:
                          "reveal_seconds": self.reveal_seconds(),
                          "rotate_days": self.rotate_days()},
             "path": _shown(path),
+            # A tab measures a notification's window from its raise on this clock.
+            "now": time.time(),
         }
         if result["initialized"]:
             doc = store.load(path)
@@ -445,6 +478,8 @@ class VaultService:
         """Refuse unless `assertion` is a signature of the passkey of Password and
         passkey over `challenge`. `dek` opens the passkey's public key. A refused check
         is not counted: a signature cannot be guessed and a challenge serves once."""
+        # Here, not at the top: fido2 imports cryptography, which loads cffi (DEF-VAULT-112).
+        from . import webauthn
         slot, key = store.pair_key(doc, dek)
         try:
             count = webauthn.verify(assertion, key, slot["cred_id"], slot["rp_id"],
@@ -515,10 +550,16 @@ class VaultService:
         return store.read_entries(store.load(path), self._dek())
 
     def list_entries(self):
-        return [
-            {k: e.get(k, "") for k in ("name", "username", "url", "category", "notes", "created", "updated", "used")}
-            for e in sorted(self._entries(), key=lambda e: e["name"].lower())
-        ]
+        listed = []
+        for e in sorted(self._entries(), key=lambda e: e["name"].lower()):
+            item = {k: e.get(k, "") for k in ("name", "username", "url", "category", "notes", "created", "updated", "used")}
+            item["type"] = e.get("type", "login")
+            if item["type"] == "cookies":
+                # Never a value: the list is shown and logged by clients.
+                item["cookies"] = [{k: c[k] for k in ("domain", "name", "expires")} for c in e["cookies"]]
+                item["headers"] = [name for name, _ in e.get("headers", [])]
+            listed.append(item)
+        return listed
 
     def _find(self, entries, name):
         for e in entries:
@@ -538,28 +579,80 @@ class VaultService:
             log.warning("could not record the entry's last use: %s", type(e).__name__)
 
     def add(self, name, fields):
-        name, fields = _check_name(name), _check_fields(fields)
+        name, clean = _check_name(name), _check_fields(fields)
+        kind = fields.get("type") or "login"
+        if kind not in TYPES:
+            raise VaultError("`type` must be login or cookies")
+        typed = {}
+        if kind == "cookies":
+            if clean.get("password"):
+                raise VaultError("a cookie entry has no password")
+            jar, origin, headers = _live_jar(fields.get("cookies"), clean.get("url"))
+            typed = {"type": kind, "cookies": jar, "headers": headers}
+            if origin and not clean.get("url"):
+                clean["url"] = origin
+        elif fields.get("cookies"):
+            raise VaultError("a login entry has no cookies - add them with type cookies")
 
         def change(entries):
             if any(e["name"] == name for e in entries):
                 raise Conflict(f"an entry named {name!r} already exists")
             now = store._now()
-            entries.append({"name": name, **{k: fields.get(k, "") for k in FIELDS},
+            entries.append({"name": name, **typed, **{k: clean.get(k, "") for k in FIELDS},
                             "created": now, "updated": now, "used": now})
 
         store.update_entries(store.vault_path(), self._dek(), change)
 
     def edit(self, name, fields):
-        name, fields = _check_name(name), _check_fields(fields)
+        name, clean = _check_name(name), _check_fields(fields)
 
         def change(entries):
             entry = self._find(entries, name)
-            entry.update(fields)
+            kind = entry.get("type", "login")
+            if fields.get("type") not in (None, kind):
+                raise VaultError(f"{name!r} is a {kind} entry; edit never changes the type")
+            if kind == "cookies":
+                if clean.get("password"):
+                    raise VaultError(f"{name!r} is a cookies entry; it has no password")
+                # An empty paste keeps the jar and the headers.
+                if fields.get("cookies"):
+                    entry["cookies"], origin, entry["headers"] = _live_jar(
+                        fields["cookies"], clean.get("url") or entry.get("url"))
+                    # The url the entry has once this edit's fields are applied.
+                    if origin and not clean.get("url", entry.get("url")):
+                        clean["url"] = origin
+            elif fields.get("cookies"):
+                raise VaultError(f"{name!r} is a login entry; it has no cookies")
+            entry.update(clean)
             now = store._now()
             entry["updated"] = now
             entry["used"] = now
 
         store.update_entries(store.vault_path(), self._dek(), change)
+
+    def rename(self, name, new_name):
+        """One write: the entry under its new name with every other field, or, when the
+        write fails, the file as it was."""
+        name, new_name = _check_name(name), _check_name(new_name)
+        if new_name == name:
+            raise VaultError(f"the new name {new_name!r} equals the name {name!r}; nothing to rename")
+
+        def change(entries):
+            entry = self._find(entries, name)
+            if any(e["name"] == new_name for e in entries):
+                raise Conflict(f"an entry named {new_name!r} already exists")
+            entry["name"] = new_name
+            entry["updated"] = store._now()
+
+        store.update_entries(store.vault_path(), self._dek(), change)
+
+    def parse_cookies(self, text, url=None):
+        """What pasted text reads as, for a preview: never a value; writes nothing."""
+        jar, _, headers = _jar(text, url)
+        return {"count": len(jar), "domains": sorted({c["domain"] for c in jar}),
+                "names": [c["name"] for c in jar],
+                "expired": len(jar) - len(cookies.unexpired(jar, time.time())),
+                "headers": [name for name, _ in headers]}
 
     def delete(self, name):
         name = _check_name(name)
@@ -569,11 +662,33 @@ class VaultService:
 
         store.update_entries(store.vault_path(), self._dek(), change)
 
-    def read(self, name, field="password"):
-        if field not in READABLE:
-            raise VaultError(f"field must be one of {', '.join(READABLE)}")
+    def read(self, name, field=None):
+        """The field's value; with no field, a cookie entry's unexpired cookies and a
+        login entry's password. `headers` is a cookie entry's kept request headers."""
+        if field not in (None, "cookies", "headers", *READABLE):
+            raise VaultError(f"field must be one of {', '.join(READABLE)}, cookies or headers")
         name = _check_name(name)
-        value = self._find(self._entries(), name).get(field, "")
+        entry = self._find(self._entries(), name)
+        kind = entry.get("type", "login")
+        field = field or ("cookies" if kind == "cookies" else "password")
+        if field == "password" and kind == "cookies":
+            raise VaultError(f"{name!r} is a cookies entry; it has no password - read it with no field to get its cookies")
+        if field not in ("cookies", "headers"):
+            value = entry.get(field, "")
+        elif kind != "cookies":
+            raise VaultError(f"{name!r} is a login entry; it has no {field}")
+        else:
+            value = cookies.unexpired(entry["cookies"], time.time())
+            # The session is stale, and the headers copied with it.
+            if entry["cookies"] and not value:
+                raise Expired(f"every cookie of {name!r} has expired - paste new ones with "
+                              f"`jupyterlab-passkey vault edit {shlex.quote(name)} --cookies`")
+            if field == "headers":
+                # An entry written before headers were kept has none.
+                value = entry.get("headers", [])
+            elif not value:
+                raise VaultError(f"{name!r} stores no cookie - read its headers with "
+                                 f"`jupyterlab-passkey vault get {shlex.quote(name)} --format headers`")
         self._mark_used(name)
         return value
 
@@ -667,11 +782,19 @@ class VaultService:
         """Put a value in a one-shot relay for the existing copy or show flow."""
         if kind not in ("secret", "code"):
             raise VaultError("kind must be secret or code")
+        if field == "headers":
+            raise VaultError("headers are not copied or shown - read them with "
+                             "`jupyterlab-passkey vault get NAME --format headers`")
         value = self.read(name, field)
+        if isinstance(value, list):
+            if kind == "code":
+                raise VaultError(f"{name!r} is a cookies entry - show draws a short value; copy "
+                                 f"its cookies.txt with `jupyterlab-passkey vault copy {shlex.quote(name)}`")
+            value = cookies.to_netscape(value)
         if not value:
-            raise VaultError(f"{name!r} has no {field}")
+            raise VaultError(f"{name!r} has no {field or 'password'}")
         if kind == "code" and len(value) > relay.MAX_CODE_CHARS:
-            raise VaultError(f"the {field} is too long to show as an image")
+            raise VaultError(f"the {field or 'password'} is too long to show as an image")
         nonce = secrets.token_urlsafe(24)
         relay.stage(nonce, kind, value)
         return nonce
@@ -783,6 +906,7 @@ class VaultService:
         the passkey's signature over the same challenge proves the page holds that key. Allowed only
         with a proof, as every unlock method is. The origin of the registration is
         stored, and every later check compares it exactly."""
+        from . import webauthn
         self._check_new_password(password)
         for key, value in (("cred_id", cred_id), ("rp_id", rp_id)):
             if not isinstance(value, str) or not value:
