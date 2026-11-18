@@ -1,5 +1,5 @@
-"""The cookie and rename examples of docs/cli-reference.md parse (ACC-COOKIE-356, ACC-VDOCS-374),
-and each document states the headers read (ACC-COOKIE-395).
+"""The cookie and rename examples of docs/cli-reference.md parse (ACC-WEBAUT-356, ACC-VDOCS-374),
+and each document states the headers read (ACC-WEBAUT-395).
 
 Every `jupyterlab-passkey` command line in a bash block of the Cookie entries section,
 and every `vault rename` example, goes through the CLI's own parser, so an example that
@@ -50,7 +50,7 @@ def test_every_cookie_and_rename_example_parses_with_the_cli_parser():
         except SystemExit:
             pytest.fail(f"the documented example `jupyterlab-passkey {shlex.join(words)}` does not parse")
 
-    # The examples ACC-COOKIE-356 and ACC-VDOCS-374 name.
+    # The examples ACC-WEBAUT-356 and ACC-VDOCS-374 name.
     assert any(a.command == "vault add" and a.cookies and a.in_browser for a in parsed)
     recipe = 'printf "Cookie: %s\\n" "$C" | curl -H @- https://app.example.com/api'
     assert any(a.command == "vault exec" and a.env == ["C=site/app"] and recipe in a.argv for a in parsed)
@@ -60,7 +60,7 @@ def test_every_cookie_and_rename_example_parses_with_the_cli_parser():
     # The cookies.txt a process substitution gives to wget.
     assert any(a.command == "vault get" and a.name == "site/app" and not a.format for a in parsed)
     assert any(a.command == "vault get" and a.format == "header" for a in parsed)
-    # ACC-COOKIE-395: the cookies and the kept headers on curl's standard input.
+    # ACC-WEBAUT-395: the cookies and the kept headers on curl's standard input.
     assert any(a.command == "vault get" and a.name == "site/app" and a.format == "headers" for a in parsed)
     assert ("jupyterlab-passkey vault get site/app --format headers | curl -H @- https://app.example.com/api"
             in examples)
@@ -71,7 +71,7 @@ def test_every_cookie_and_rename_example_parses_with_the_cli_parser():
 @pytest.mark.parametrize("path", ["docs/cli-reference.md", "docs/design-vault.md", "docs/usage.md", "README.md",
                                   ".agents/skills/jupyterlab-passkey-extension/SKILL.md"])
 def test_each_document_states_the_headers_read(path):
-    # ACC-COOKIE-395: what a cookie entry holds, the recipe, and the limit of a header.
+    # ACC-WEBAUT-395: what a cookie entry holds, the recipe, and the limit of a header.
     text = (ROOT / path).read_text()
     assert "--format headers" in text
     assert "request headers" in text
@@ -80,7 +80,7 @@ def test_each_document_states_the_headers_read(path):
 
 
 def test_the_reference_states_what_a_refused_read_does_beside_the_pipe_and_the_wget_recipe():
-    # ACC-COOKIE-398: curl and wget still send the request; under exec the command does not run.
+    # ACC-WEBAUT-398: curl and wget still send the request; under exec the command does not run.
     line = next((line for line in DOC.read_text().splitlines()
                  if "curl still sends the request, without the headers" in line), "")
     for said in ("`get` prints its reason on stderr", "`get NAME --format headers | curl -H @- URL`",

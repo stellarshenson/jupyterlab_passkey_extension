@@ -2,6 +2,8 @@
 
 Criteria for the passkey bridge: the relay that hands ceremony results, passphrases, copied secrets and shown codes between the Jupyter server and local clients (a kernel keyring `user` key when `keyctl` works, the `/dev/shm` `0600` file otherwise), the `show` command that displays a code as a distorted image, CLI commands that survive their terminal closing, and the password vault the Jupyter server keeps.
 
+- log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT", 67 item(s)
+
 ## Authors
 
 - `@kj` Konrad Jelen
@@ -2717,45 +2719,51 @@ The vault as git's credential helper: the protocol, the install and the unlock
   - log: 2026-11-03T21:57:46Z @kj amended text "an open vault answers git from any process, any number at once, with no notification or prompt. Once the vault opens by any route, unlock notifications leave every open tab within 15 s (REFRESH_MS) and a press asks nothing; until the tab's next read, one press can still ask" -> "an open vault answers git from any process, any number at once, with no notification or prompt. Once the vault opens by any route, unlock notifications leave every open tab within 15 s (REFRESH_MS); a press reads vault status first and asks nothing on an open vault; Safari may refuse the passkey request after that read"; reason: owner decision 41 replaces the window clause; one criterion covers git, the notifications, the press and the named Safari risk
   - log: 2026-11-03T21:57:47Z @kj edited evidence "pytest test_an_unlocked_vault_answers_with_no_notification_with_any_method, test_an_unlocked_vault_raises_no_notification, 940 passed, 2026-11-03; real git, key held, both servers: 8 of 8 answered, 0 notifications; jest describe 'a vault notification nothing waits for', 401 of 401; Galata 'an unlock notification leaves the tab once the vault is opened another way, and a press then asks nothing' passed in the full suite 54 of 54 at the ship gate, 2026-11-03" -> "pytest test_an_unlocked_vault_answers_with_no_notification_with_any_method, test_an_unlocked_vault_raises_no_notification, 940 passed, 2026-11-03; real git, key held, both servers: 8 of 8 answered, 0 notifications; jest describe 'a vault notification nothing waits for', 401 of 401; Galata 'an unlock notification leaves the tab once the vault is opened another way, and a press then asks nothing' passed in the full suite 54 of 54 at the ship gate, 2026-11-03; jest vault-plugin.spec.ts describe 'a press reads the vault state before it asks anything', 5 cases, and 'reads the vault once, then goes on to the passkey request on a locked vault'; jest 405 of 405, pytest 947 passed, 2026-11-03; Galata vault.spec.ts:1656 1 passed alone; the full suite follows at the final gates"; reason: the evidence keeps its dated tests and adds those of the press that reads first
 
-## Vault cookie entries `COOKIE`
+## Vault cookie entries `WEBAUT`
 
 A website session's cookies as their own entry type: pasted from a browser copy, handed to CLI tools and Python without printing them
 
 - log: 2026-11-15T21:42:26Z @kj category created
+- log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
 
-- [x] `ACC-COOKIE-316-TYPE` **Entry type** - HIGH; an entry has a `type`, `login` or `cookies`; an entry with no `type`, as every entry written before cookie entries, is `login`; add sets the type and edit never changes it
+- [x] `ACC-WEBAUT-316-TYPE` **Entry type** - HIGH; an entry has a `type`, `login` or `cookies`; an entry with no `type`, as every entry written before cookie entries, is `login`; add sets the type and edit never changes it
   - evidence: pytest an_entry_with_no_type_lists_as_login_and_add_sets_the_type (untyped entries list as login, file unchanged, edit never changes type), vault_add_makes_a_login_a_generated_and_a_cookie_entry; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: open a vault file written by 1.2.9, assert every entry lists as login; add a cookie entry, assert type cookies
   - test-tags: UNIT
   - mechanism: 2026-11-15T21:42:26Z @kj a missing `type` reads as login, so an old vault file needs no migration write
   - log: 2026-11-15T21:42:26Z @kj added
   - log: 2026-11-16T13:40:46Z @kj closed
-- [x] `ACC-COOKIE-317-STORED` **Cookies sealed with the entries** - CRITICAL; a cookie entry holds its cookies, each with name, value, domain, host-only, path, secure, HttpOnly and expiry (none for a session cookie), sealed under the data key with the other entries; no value is in the vault file as plaintext
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-317-STORED` **Cookies sealed with the entries** - CRITICAL; a cookie entry holds its cookies, each with name, value, domain, host-only, path, secure, HttpOnly and expiry (none for a session cookie), sealed under the data key with the other entries; no value is in the vault file as plaintext
   - evidence: pytest cookies_are_sealed_and_read_back_with_every_attribute (marker absent from the vault file, all eight attributes read back); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: add a cookie entry with a marker value, grep the vault file for the marker, read the entry back and assert every attribute
   - test-tags: UNIT
   - log: 2026-11-15T21:42:26Z @kj added
   - log: 2026-11-16T13:40:46Z @kj closed
-- [x] `ACC-COOKIE-318-VERBATIM` **Values kept byte for byte** - CRITICAL; a cookie value is stored and output exactly as given: a percent-encoded, base64 or quoted value is never decoded, re-encoded or trimmed
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-318-VERBATIM` **Values kept byte for byte** - CRITICAL; a cookie value is stored and output exactly as given: a percent-encoded, base64 or quoted value is never decoded, re-encoded or trimmed
   - evidence: pytest values_are_kept_byte_for_byte_through_every_form_and_output (10 forms; cookies.txt, header and jar outputs); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: values `s%3Aab.c%2F`, `eyJhbGc==` and `"a b"` through every input form and every output, assert byte equality
   - test-tags: UNIT
   - log: 2026-11-15T21:42:27Z @kj added
   - log: 2026-11-16T13:40:46Z @kj closed
-- [x] `ACC-COOKIE-319-LIMIT` **Jar size limit** - MEDIUM; a jar whose stored JSON is over 65536 characters is refused, naming the limit; nothing is written
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-319-LIMIT` **Jar size limit** - MEDIUM; a jar whose stored JSON is over 65536 characters is refused, naming the limit; nothing is written
   - evidence: pytest a_jar_over_the_limit_is_refused_and_nothing_is_written (70000 characters: 400 naming 65536, file unchanged, no entry); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: add a jar of 70000 characters, assert the refusal and no entry
   - test-tags: UNIT
   - log: 2026-11-15T21:42:27Z @kj added
   - log: 2026-11-16T13:40:47Z @kj closed
-- [x] `ACC-COOKIE-320-DETECT` **Form read, never chosen** - HIGH; the vault tells the form of pasted text itself; no option or field names the form; text in no accepted form is refused, naming the accepted forms, and nothing is written
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-320-DETECT` **Form read, never chosen** - HIGH; the vault tells the form of pasted text itself; no option or field names the form; text in no accepted form is refused, naming the accepted forms, and nothing is written
   - evidence: pytest every_form_is_told_apart_with_no_form_option, text_in_no_form_is_refused_naming_the_forms, a_rest_write_takes_the_type_and_the_pasted_text (bad text 400, entry list unchanged); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: parse every accepted form with no form option; parse `hello world`, assert the refusal names the forms
   - test-tags: UNIT
   - mechanism: 2026-11-15T21:42:27Z @kj one parser, `vault/cookies.py`, run by the server on write and by `cookies-parse`; clients format output from the stored list with http.cookiejar
   - log: 2026-11-15T21:42:27Z @kj added
   - log: 2026-11-16T13:40:47Z @kj closed
-- [x] `ACC-COOKIE-321-CURL-BASH` **Copy as cURL (bash)** - HIGH; a browser's Copy as cURL (bash) is read: the cookies of `-b`, `--cookie` or a `cookie:` header in any case, for the host of its URL; Chrome's `$'...'` quoting and backslash line ends are read; an entry with no url takes the copy's origin (`scheme://host[:port]/`) as its url
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-321-CURL-BASH` **Copy as cURL (bash)** - HIGH; a browser's Copy as cURL (bash) is read: the cookies of `-b`, `--cookie` or a `cookie:` header in any case, for the host of its URL; Chrome's `$'...'` quoting and backslash line ends are read; an entry with no url takes the copy's origin (`scheme://host[:port]/`) as its url
   - evidence: pytest chrome_copy_as_curl_bash_reads_b_with_its_ansi_c_quoting, firefox_copy_as_curl_reads_the_cookie_header, curl_reads_cookie_and_a_cookie_header_in_any_case_over_backslash_line_ends, a_curl_or_fetch_copy_on_an_entry_with_no_url_stores_the_copy_origin, the_stored_origin_keeps_the_port_and_drops_the_userinfo; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: Chrome copy with `-b` and a `$'...'` value, Firefox copy with `-H 'Cookie: ...'`; assert names, values and host; add with no url stores the origin, add with --url keeps it
   - test-tags: UNIT
@@ -2763,7 +2771,8 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T06:54:32Z @kj edited text "a browser's Copy as cURL (bash) is read: the cookies of `-b`, `--cookie` or a `cookie:` header in any case, for the host of its URL; Chrome's `$'...'` quoting and backslash line ends are read" -> "a browser's Copy as cURL (bash) is read: the cookies of `-b`, `--cookie` or a `cookie:` header in any case, for the host of its URL; Chrome's `$'...'` quoting and backslash line ends are read; an entry with no url takes the copy's origin (`scheme://host/`) as its url"; test "Chrome copy with `-b` and a `$'...'` value, Firefox copy with `-H 'Cookie: ...'`; assert names, values and host" -> "Chrome copy with `-b` and a `$'...'` value, Firefox copy with `-H 'Cookie: ...'`; assert names, values and host; add with no url stores the origin, add with --url keeps it"
   - log: 2026-11-16T07:38:15Z @kj edited text "a browser's Copy as cURL (bash) is read: the cookies of `-b`, `--cookie` or a `cookie:` header in any case, for the host of its URL; Chrome's `$'...'` quoting and backslash line ends are read; an entry with no url takes the copy's origin (`scheme://host/`) as its url" -> "a browser's Copy as cURL (bash) is read: the cookies of `-b`, `--cookie` or a `cookie:` header in any case, for the host of its URL; Chrome's `$'...'` quoting and backslash line ends are read; an entry with no url takes the copy's origin (`scheme://host[:port]/`) as its url"
   - log: 2026-11-16T13:40:47Z @kj closed
-- [x] `ACC-COOKIE-322-CURL-CMD` **Copy as cURL (cmd)** - MEDIUM; a browser's Copy as cURL (cmd), the Windows form, is read with its `^` escapes removed and gives the same cookies as the bash copy of the same request; Firefox's Copy as cURL (Windows) is read too, both the `curl.exe` form and the form of Firefox 138 and earlier
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-322-CURL-CMD` **Copy as cURL (cmd)** - MEDIUM; a browser's Copy as cURL (cmd), the Windows form, is read with its `^` escapes removed and gives the same cookies as the bash copy of the same request; Firefox's Copy as cURL (Windows) is read too, both the `curl.exe` form and the form of Firefox 138 and earlier
   - evidence: pytest cmd_and_bash_copies_of_one_chrome_request_give_equal_jars, firefox_copy_as_curl_windows_reads_as_the_cmd_form (two fixtures), firefox_138_copy_as_curl_windows_reads_every_value_byte_for_byte (two fixtures); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65
   - test: cmd and bash copies of one Chrome request, assert equal jars
   - test-tags: UNIT
@@ -2773,7 +2782,8 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T17:53:49Z @kj edited evidence "pytest cmd_and_bash_copies_of_one_chrome_request_give_equal_jars (cmd fixture with ^ escapes and CRLF equals the bash jar); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "pytest cmd_and_bash_copies_of_one_chrome_request_give_equal_jars, firefox_copy_as_curl_windows_reads_as_the_cmd_form (two fixtures); final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65"
   - log: 2026-11-17T08:11:26Z @kj amended text "a browser's Copy as cURL (cmd), the Windows form, is read with its `^` escapes removed and gives the same cookies as the bash copy of the same request; Firefox's Copy as cURL (Windows), which starts `curl.exe`, is read the same way" -> "a browser's Copy as cURL (cmd), the Windows form, is read with its `^` escapes removed and gives the same cookies as the bash copy of the same request; Firefox's Copy as cURL (Windows) is read too, both the `curl.exe` form and the form of Firefox 138 and earlier"
   - log: 2026-11-17T08:46:33Z @kj edited evidence "pytest cmd_and_bash_copies_of_one_chrome_request_give_equal_jars, firefox_copy_as_curl_windows_reads_as_the_cmd_form (two fixtures); final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65" -> "pytest cmd_and_bash_copies_of_one_chrome_request_give_equal_jars, firefox_copy_as_curl_windows_reads_as_the_cmd_form (two fixtures), firefox_138_copy_as_curl_windows_reads_every_value_byte_for_byte (two fixtures); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65"
-- [x] `ACC-COOKIE-323-FETCH` **Copy as fetch** - HIGH; a browser's Copy as fetch and Copy as fetch (Node.js) are read: the `cookie` header of the options, for the host of the URL; an entry with no url takes the copy's origin (`scheme://host[:port]/`) as its url
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-323-FETCH` **Copy as fetch** - HIGH; a browser's Copy as fetch and Copy as fetch (Node.js) are read: the `cookie` header of the options, for the host of the URL; an entry with no url takes the copy's origin (`scheme://host[:port]/`) as its url
   - evidence: pytest chrome_copy_as_fetch_node_reads_the_cookie_header, an_awaited_fetch_with_the_options_in_another_order_is_read, a_curl_or_fetch_copy_on_an_entry_with_no_url_stores_the_copy_origin, the_stored_origin_keeps_the_port_and_drops_the_userinfo[fetch]; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: Chrome Copy as fetch (Node.js) of a request with cookies, assert names, values and host; add with no url stores the origin
   - test-tags: UNIT
@@ -2781,7 +2791,8 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T06:54:27Z @kj edited text "a browser's Copy as fetch and Copy as fetch (Node.js) are read: the `cookie` header of the options, for the host of the URL" -> "a browser's Copy as fetch and Copy as fetch (Node.js) are read: the `cookie` header of the options, for the host of the URL; an entry with no url takes the copy's origin (`scheme://host/`) as its url"; test "Chrome Copy as fetch (Node.js) of a request with cookies, assert names, values and host" -> "Chrome Copy as fetch (Node.js) of a request with cookies, assert names, values and host; add with no url stores the origin"
   - log: 2026-11-16T07:38:15Z @kj edited text "a browser's Copy as fetch and Copy as fetch (Node.js) are read: the `cookie` header of the options, for the host of the URL; an entry with no url takes the copy's origin (`scheme://host/`) as its url" -> "a browser's Copy as fetch and Copy as fetch (Node.js) are read: the `cookie` header of the options, for the host of the URL; an entry with no url takes the copy's origin (`scheme://host[:port]/`) as its url"
   - log: 2026-11-16T13:40:48Z @kj closed
-- [x] `ACC-COOKIE-324-NO-COOKIE` **Edge: copied request with no cookie** - MEDIUM; a cURL or fetch copy that carries no cookie and no header to keep is refused, naming the copies that carry cookies, Copy as cURL and Copy as fetch (Node.js); nothing is written
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-324-NO-COOKIE` **Edge: copied request with no cookie** - MEDIUM; a cURL or fetch copy that carries no cookie and no header to keep is refused, naming the copies that carry cookies, Copy as cURL and Copy as fetch (Node.js); nothing is written
   - evidence: pytest a_copy_with_no_cookie_is_refused_naming_the_copies_that_carry_them (4 copies, whole sentence), a_copy_with_no_cookie_and_no_header_to_keep_is_refused_and_nothing_is_written, a_copy_with_no_cookie_is_refused_at_add_and_nothing_is_written[curl, fetch] (vault file bytes unchanged); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: Chrome Copy as fetch with `credentials: include` and no cookie header, assert the refusal text
   - test-tags: UNIT
@@ -2789,37 +2800,43 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T14:09:37Z @kj closed
   - log: 2026-11-17T14:25:31Z @kj amended text "a cURL or fetch copy that carries no cookie is refused, naming the copies that carry them, Copy as cURL and Copy as fetch (Node.js); nothing is written" -> "a cURL or fetch copy that carries no cookie and no header to keep is refused, naming the copies that carry cookies, Copy as cURL and Copy as fetch (Node.js); nothing is written"
   - log: 2026-11-17T19:16:17Z @kj edited evidence "pytest a_copy_with_no_cookie_is_refused_naming_the_copies_that_carry_them, a_copy_with_no_cookie_is_refused_at_add_and_nothing_is_written[curl, fetch] (vault file bytes unchanged); pytest 1276, Jest 470, Galata 64/64" -> "pytest a_copy_with_no_cookie_is_refused_naming_the_copies_that_carry_them (4 copies, whole sentence), a_copy_with_no_cookie_and_no_header_to_keep_is_refused_and_nothing_is_written, a_copy_with_no_cookie_is_refused_at_add_and_nothing_is_written[curl, fetch] (vault file bytes unchanged); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67"; reason: text amended for the headers change; the evidence names the tests of the amended text
-- [x] `ACC-COOKIE-325-HEADER` **Cookie header and name=value** - HIGH; a Cookie header (`a=1; b=2`, with or without `Cookie:`) or one `name=value` is read as session cookies for the host of the entry's url, path `/`, secure for an https url; each pair splits at its first `=`, so `t=eyJh==` keeps the value `eyJh==`
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-325-HEADER` **Cookie header and name=value** - HIGH; a Cookie header (`a=1; b=2`, with or without `Cookie:`) or one `name=value` is read as session cookies for the host of the entry's url, path `/`, secure for an https url; each pair splits at its first `=`, so `t=eyJh==` keeps the value `eyJh==`
   - evidence: pytest a_cookie_header_reads_as_session_cookies_of_the_url (host, path /, secure for https, t=eyJh== kept, name=value form); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: `Cookie: a=1; t=eyJh==` with url https://example.com/x, assert host, path, secure and both values
   - test-tags: UNIT
   - log: 2026-11-15T21:42:29Z @kj added
   - log: 2026-11-16T13:40:48Z @kj closed
-- [x] `ACC-COOKIE-326-NO-URL` **Edge: header with no url** - MEDIUM; a Cookie header or `name=value` with no url on the entry is refused, naming --url; nothing is written
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-326-NO-URL` **Edge: header with no url** - MEDIUM; a Cookie header or `name=value` with no url on the entry is refused, naming --url; nothing is written
   - evidence: pytest a_header_with_no_url_is_refused_naming_url, a_cookie_header_with_no_url_is_refused_and_nothing_is_written[add, edit] (vault file bytes unchanged); pytest 1276, Jest 470, Galata 64/64
   - test: add `a=1` with no url, assert the refusal
   - test-tags: UNIT
   - log: 2026-11-15T21:42:29Z @kj added
   - log: 2026-11-16T14:09:37Z @kj closed
-- [x] `ACC-COOKIE-327-SET-COOKIE` **Set-Cookie lines** - MEDIUM; one or more `Set-Cookie:` lines are read with Domain, Path, Expires, Max-Age, Secure and HttpOnly; a line with no Domain is host-only for the entry's url
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-327-SET-COOKIE` **Set-Cookie lines** - MEDIUM; one or more `Set-Cookie:` lines are read with Domain, Path, Expires, Max-Age, Secure and HttpOnly; a line with no Domain is host-only for the entry's url
   - evidence: pytest set_cookie_lines_read_their_attributes, a_set_cookie_line_reads_its_path_and_a_line_with_none_gets_the_root, a_set_cookie_line_with_no_domain_and_no_url_is_refused; pytest 1276, Jest 470, Galata 64/64
   - test: two Set-Cookie lines, one with Max-Age, one with Domain; assert expiry and domains
   - test-tags: UNIT
   - log: 2026-11-15T21:42:29Z @kj added
   - log: 2026-11-16T14:09:37Z @kj closed
-- [x] `ACC-COOKIE-328-NETSCAPE` **cookies.txt** - HIGH; a cookies.txt in the Netscape format, as curl, wget, yt-dlp and browser exporters write it, is read; `#HttpOnly_` lines are HttpOnly cookies, other comments are skipped
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-328-NETSCAPE` **cookies.txt** - HIGH; a cookies.txt in the Netscape format, as curl, wget, yt-dlp and browser exporters write it, is read; `#HttpOnly_` lines are HttpOnly cookies, other comments are skipped
   - evidence: pytest cookies_txt_reads_httponly_lines_and_skips_comments (LF and CRLF: two cookies, one HttpOnly, comments skipped); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: a file with a comment, a `#HttpOnly_` line and a plain line; assert two cookies, one HttpOnly
   - test-tags: UNIT
   - log: 2026-11-15T21:42:29Z @kj added
   - log: 2026-11-16T13:40:48Z @kj closed
-- [x] `ACC-COOKIE-329-JSON` **Cookie JSON** - HIGH; a JSON list of cookies as the Cookie-Editor and EditThisCookie browser extensions export it, and a Playwright storage state (`cookies`, expires -1 for a session cookie), are read
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-329-JSON` **Cookie JSON** - HIGH; a JSON list of cookies as the Cookie-Editor and EditThisCookie browser extensions export it, and a Playwright storage state (`cookies`, expires -1 for a session cookie), are read
   - evidence: pytest a_cookie_editor_export_is_read, an_editthiscookie_export_is_read (fixture editthiscookie.json), a_playwright_storage_state_is_read, every_form_is_told_apart_with_no_form_option; pytest 1276, Jest 470, Galata 64/64
   - test: one export of each, assert names, domains, expiry and flags
   - test-tags: UNIT
   - log: 2026-11-15T21:42:30Z @kj added
   - log: 2026-11-16T14:09:38Z @kj closed
-- [x] `ACC-COOKIE-330-CLI-ADD` **vault add --cookies** - HIGH; `vault add NAME --cookies` makes a cookie entry from stdin or, with --in-browser, a paste dialog, never from an option; it prints count, expired count, domains and cookie names, never a value; --json carries count, domains, names, expired; -u, --url, -c and --notes work as on a password entry
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-330-CLI-ADD` **vault add --cookies** - HIGH; `vault add NAME --cookies` makes a cookie entry from stdin or, with --in-browser, a paste dialog, never from an option; it prints count, expired count, domains and cookie names, never a value; --json carries count, domains, names, expired; -u, --url, -c and --notes work as on a password entry
   - evidence: pytest add_cookies_from_a_pipe_prints_the_summary_never_a_value, a_cookie_write_reports_the_keys_of_cookies_parse_with_the_expired_count, add_cookies_in_the_browser_asks_one_multi_line_paste_field; Galata 'vault add --cookies --in-browser asks one paste field'; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65
   - test: pipe a cURL copy with a marker value, assert the summary and no marker in stdout or stderr
   - test-tags: UNIT
@@ -2827,19 +2844,22 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T13:40:49Z @kj closed
   - log: 2026-11-16T17:53:29Z @kj amended text "`vault add NAME --cookies` makes a cookie entry from stdin or, with --in-browser, from a paste dialog, never from an option; it prints the count, the domains and the cookie names, never a value; -u, --url, -c and --notes work as on a password entry" -> "`vault add NAME --cookies` makes a cookie entry from stdin or, with --in-browser, a paste dialog, never from an option; it prints count, expired count, domains and cookie names, never a value; --json carries count, domains, names, expired; -u, --url, -c and --notes work as on a password entry"
   - log: 2026-11-16T17:53:47Z @kj edited evidence "pytest add_cookies_from_a_pipe_prints_the_summary_never_a_value (-u, --url, -c, --notes stored), add_cookies_in_the_browser_asks_one_multi_line_paste_field, no_option_takes_a_secret_as_its_value (cookies); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "pytest add_cookies_from_a_pipe_prints_the_summary_never_a_value, a_cookie_write_reports_the_keys_of_cookies_parse_with_the_expired_count, add_cookies_in_the_browser_asks_one_multi_line_paste_field; Galata 'vault add --cookies --in-browser asks one paste field'; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65"
-- [x] `ACC-COOKIE-331-IN-BROWSER` **Paste dialog for the CLI** - HIGH; `--cookies --in-browser` opens one JupyterLab dialog with a multi-line paste field; Submit sends the text to the waiting CLI, Cancel exits 1
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-331-IN-BROWSER` **Paste dialog for the CLI** - HIGH; `--cookies --in-browser` opens one JupyterLab dialog with a multi-line paste field; Submit sends the text to the waiting CLI, Cancel exits 1
   - evidence: Galata 'vault add --cookies --in-browser asks one paste field: Submit adds the entry, Cancel exits 1'; pytest add_cookies_in_the_browser_asks_one_multi_line_paste_field, a_cancelled_paste_dialog_exits_1_and_writes_nothing; 2 passphrase.spec.ts Jest titles; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: Galata: run add --cookies --in-browser, paste a cURL copy in the dialog, assert the CLI summary; again with Cancel, assert exit 1
   - test-tags: E2E
   - log: 2026-11-15T21:42:30Z @kj added
   - log: 2026-11-16T13:40:49Z @kj closed
-- [x] `ACC-COOKIE-332-CLI-TTY` **Edge: terminal on stdin** - LOW; `--cookies` with a terminal on stdin and no --in-browser is refused, naming a pipe and --in-browser
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-332-CLI-TTY` **Edge: terminal on stdin** - LOW; `--cookies` with a terminal on stdin and no --in-browser is refused, naming a pipe and --in-browser
   - evidence: pytest cookies_from_a_terminal_are_refused_naming_a_pipe_and_in_browser (real pty, add and edit, entries unchanged); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: run add --cookies under a pty, assert the refusal
   - test-tags: UNIT
   - log: 2026-11-15T21:42:31Z @kj added
   - log: 2026-11-16T13:40:49Z @kj closed
-- [x] `ACC-COOKIE-333-CLI-EDIT` **vault edit --cookies** - HIGH; `vault edit NAME --cookies` replaces the whole jar from the same sources and sets `updated`; a field not given keeps its value; a name with no entry is refused with code `entry-not-found` before a secret is asked
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-333-CLI-EDIT` **vault edit --cookies** - HIGH; `vault edit NAME --cookies` replaces the whole jar from the same sources and sets `updated`; a field not given keeps its value; a name with no entry is refused with code `entry-not-found` before a secret is asked
   - evidence: pytest edit_cookies_replaces_the_jar_keeps_the_url_and_sets_updated, edit_cookies_in_the_browser_asks_one_multi_line_paste_field_and_replaces_the_jar, edit_of_a_missing_entry_is_refused_before_a_secret_is_asked; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65
   - test: edit with a new cURL copy, assert the old cookies gone, url unchanged and `updated` newer
   - test-tags: UNIT
@@ -2847,7 +2867,8 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T14:09:38Z @kj closed
   - log: 2026-11-16T17:53:30Z @kj amended text "`vault edit NAME --cookies` replaces the whole jar from the same sources and sets `updated`; a field not given keeps its value" -> "`vault edit NAME --cookies` replaces the whole jar from the same sources and sets `updated`; a field not given keeps its value; a name with no entry is refused with code `entry-not-found` before a secret is asked"
   - log: 2026-11-16T17:53:48Z @kj edited evidence "pytest edit_cookies_replaces_the_jar_keeps_the_url_and_sets_updated, edit_cookies_in_the_browser_asks_one_multi_line_paste_field_and_replaces_the_jar; pytest 1276, Jest 470, Galata 64/64" -> "pytest edit_cookies_replaces_the_jar_keeps_the_url_and_sets_updated, edit_cookies_in_the_browser_asks_one_multi_line_paste_field_and_replaces_the_jar, edit_of_a_missing_entry_is_refused_before_a_secret_is_asked; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65"
-- [x] `ACC-COOKIE-334-TYPE-FIXED` **Edge: option of the other type** - MEDIUM; `--password` or `--generate` on a cookie entry, and `--cookies` on a login entry, are refused, naming the entry's type; nothing is written; reading the password field of a cookie entry through REST, the CLI or Vault is refused with code invalid
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-334-TYPE-FIXED` **Edge: option of the other type** - MEDIUM; `--password` or `--generate` on a cookie entry, and `--cookies` on a login entry, are refused, naming the entry's type; nothing is written; reading the password field of a cookie entry through REST, the CLI or Vault is refused with code invalid
   - evidence: pytest an_option_of_the_other_type_is_refused_naming_the_type, a_cookie_entry_takes_no_generated_password_at_add, reading_the_password_of_a_cookie_entry_is_code_invalid_in_every_client, an_entry_with_no_type_lists_as_login_and_add_sets_the_type; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: try each, assert the refusal and the entry unchanged; get --field password of a cookie entry, assert code invalid through --json and Vault
   - test-tags: UNIT
@@ -2855,7 +2876,8 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T05:39:45Z @kj amended text "`--password` or `--generate` on a cookie entry, and `--cookies` on a login entry, are refused, naming the entry's type; nothing is written" -> "`--password` or `--generate` on a cookie entry, and `--cookies` on a login entry, are refused, naming the entry's type; nothing is written; reading the password field of a cookie entry through REST, the CLI or Vault is refused with code invalid"
   - log: 2026-11-16T05:39:45Z @kj edited test "try each, assert the refusal and the entry unchanged" -> "try each, assert the refusal and the entry unchanged; get --field password of a cookie entry, assert code invalid through --json and Vault"
   - log: 2026-11-16T13:40:50Z @kj closed
-- [x] `ACC-COOKIE-335-GET` **vault get prints cookies.txt** - HIGH; `vault get NAME` on a cookie entry prints its unexpired cookies as a cookies.txt starting `# Netscape HTTP Cookie File`, every cookie as a plain line with no `#HttpOnly_` prefix, which curl -b, wget --load-cookies (wget 1.x too) and yt-dlp --cookies read
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-335-GET` **vault get prints cookies.txt** - HIGH; `vault get NAME` on a cookie entry prints its unexpired cookies as a cookies.txt starting `# Netscape HTTP Cookie File`, every cookie as a plain line with no `#HttpOnly_` prefix, which curl -b, wget --load-cookies (wget 1.x too) and yt-dlp --cookies read
   - evidence: pytest to_netscape_writes_every_cookie_as_a_plain_line, get_prints_a_cookies_txt_with_every_line_and_flag, wget_loads_the_cookies_txt_of_vault_get_through_a_process_substitution (real wget 1.21.4), expired_cookies_are_left_out_of_every_read; no test runs curl -b on the file since 2026-11-17; final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65
   - test: get to a file, assert every line and flag of the file
   - test-tags: UNIT
@@ -2866,7 +2888,8 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T17:53:30Z @kj amended text "`vault get NAME` on a cookie entry prints its unexpired cookies as a cookies.txt starting `# Netscape HTTP Cookie File`, HttpOnly cookies as `#HttpOnly_` lines, which curl -b reads" -> "`vault get NAME` on a cookie entry prints its unexpired cookies as a cookies.txt starting `# Netscape HTTP Cookie File`, every cookie as a plain line with no `#HttpOnly_` prefix, which curl -b, wget --load-cookies (wget 1.x too) and yt-dlp --cookies read"
   - log: 2026-11-16T17:53:48Z @kj edited evidence "pytest get_prints_a_cookies_txt_with_every_line_and_flag (exact file, #HttpOnly_ line), curl_under_exec_cookie_file_sends_the_cookies_and_leaves_no_file (real curl -b), expired_cookies_are_left_out_of_every_read; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "pytest to_netscape_writes_every_cookie_as_a_plain_line, get_prints_a_cookies_txt_with_every_line_and_flag, curl_under_exec_cookie_file_sends_the_cookies_and_leaves_no_file (real curl -b), expired_cookies_are_left_out_of_every_read; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65"
   - log: 2026-11-17T08:46:33Z @kj edited evidence "pytest to_netscape_writes_every_cookie_as_a_plain_line, get_prints_a_cookies_txt_with_every_line_and_flag, curl_under_exec_cookie_file_sends_the_cookies_and_leaves_no_file (real curl -b), expired_cookies_are_left_out_of_every_read; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65" -> "pytest to_netscape_writes_every_cookie_as_a_plain_line, get_prints_a_cookies_txt_with_every_line_and_flag, wget_loads_the_cookies_txt_of_vault_get_through_a_process_substitution (real wget 1.21.4), expired_cookies_are_left_out_of_every_read; no test runs curl -b on the file since 2026-11-17; final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65"
-- [x] `ACC-COOKIE-336-GET-FORMAT` **vault get --format** - MEDIUM; `--format header` prints `name=value; ...` of the unexpired cookies whose domain, path and secure flag match --url, by default the entry's url, and is refused when no cookie matches, naming the entry's domains; `--format json` prints the cookie list
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-336-GET-FORMAT` **vault get --format** - MEDIUM; `--format header` prints `name=value; ...` of the unexpired cookies whose domain, path and secure flag match --url, by default the entry's url, and is refused when no cookie matches, naming the entry's domains; `--format json` prints the cookie list
   - evidence: pytest get_format_header_matches_domain_path_and_secure_and_json_is_the_list, get_format_header_with_no_cookie_for_the_url_is_refused_naming_the_domains (domain, path and scheme named; Path and Secure case); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65
   - test: a jar with two domains and a secure cookie, header for an http url, assert only the matching cookies that are not secure
   - test-tags: UNIT
@@ -2876,13 +2899,15 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T17:53:48Z @kj edited evidence "pytest get_format_header_matches_domain_path_and_secure_and_json_is_the_list (http url leaves the secure cookie out, entry url default, --format json); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "pytest get_format_header_matches_domain_path_and_secure_and_json_is_the_list, get_format_header_with_no_cookie_for_the_url_is_refused_naming_the_domains; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65"
   - log: 2026-11-17T06:51:16Z @kj edited evidence "pytest get_format_header_matches_domain_path_and_secure_and_json_is_the_list, get_format_header_with_no_cookie_for_the_url_is_refused_naming_the_domains; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65" -> "pytest get_format_header_matches_domain_path_and_secure_and_json_is_the_list, get_format_header_with_no_cookie_for_the_url_is_refused_naming_the_domains (domain, path and scheme named; Path and Secure case); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65"
   - log: 2026-11-17T06:51:16Z @kj review round 7 finding fixed: the refusal reads no cookie matches the domain, path and scheme of the url (patches/r10-3.patch)
-- [x] `ACC-COOKIE-337-EXPIRED` **Expired cookies left out** - HIGH; every read of a cookie entry (get, copy, exec, the Python API) leaves out a cookie past its expiry; a session cookie has no expiry and stays
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-337-EXPIRED` **Expired cookies left out** - HIGH; every read of a cookie entry (get, copy, exec, the Python API) leaves out a cookie past its expiry; a session cookie has no expiry and stays
   - evidence: pytest expired_cookies_are_left_out_of_every_read (stopped clock: read and copy staging keep session and later cookies), a_read_with_no_cookie_left_is_code_expired_in_every_client (get, exec, Vault); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: freeze the clock past one cookie's expiry, assert it absent from each read
   - test-tags: UNIT
   - log: 2026-11-15T21:42:32Z @kj added
   - log: 2026-11-16T13:40:50Z @kj closed
-- [x] `ACC-COOKIE-338-ALL-EXPIRED` **Edge: no cookie left** - HIGH; a read that leaves no cookie fails with --json code `expired`, naming `vault edit NAME --cookies`; an add or edit whose paste holds no unexpired cookie is refused with the same code and nothing is written
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-338-ALL-EXPIRED` **Edge: no cookie left** - HIGH; a read that leaves no cookie fails with --json code `expired`, naming `vault edit NAME --cookies`; an add or edit whose paste holds no unexpired cookie is refused with the same code and nothing is written
   - evidence: pytest a_read_with_no_cookie_left_is_code_expired_in_every_client, a_paste_with_no_unexpired_cookie_is_refused_at_add_and_edit, a_rest_write_of_a_paste_with_no_unexpired_cookie_answers_410_expired, a_paste_whose_every_cookie_has_expired_is_refused_with_code_expired; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65
   - test: a jar of expired cookies, get --json, assert code expired and the hint
   - test-tags: UNIT
@@ -2891,14 +2916,16 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T17:53:30Z @kj amended text "a read that leaves no cookie fails with --json code `expired`, naming `vault edit NAME --cookies`" -> "a read that leaves no cookie fails with --json code `expired`, naming `vault edit NAME --cookies`; an add or edit whose paste holds no unexpired cookie is refused with the same code and nothing is written"
   - log: 2026-11-16T17:53:49Z @kj edited evidence "pytest a_read_with_no_cookie_left_is_code_expired_in_every_client, the_expired_answer_reaches_the_client_and_json_as_code_expired, a_read_with_no_cookie_left_fails_with_code_expired (410, names vault edit --cookies); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "pytest a_read_with_no_cookie_left_is_code_expired_in_every_client, a_paste_with_no_unexpired_cookie_is_refused_at_add_and_edit, a_rest_write_of_a_paste_with_no_unexpired_cookie_answers_410_expired, a_paste_whose_every_cookie_has_expired_is_refused_with_code_expired; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65"
   - log: 2026-11-17T06:51:16Z @kj review round 7 finding fixed: docs/design-vault.md and docs/usage.md name code expired (410) for the refused cookie write too (patches/r10-2.patch)
-- [x] `ACC-COOKIE-339-LIST` **List never carries a cookie value** - CRITICAL; `vault list` and `GET vault/entries` give a cookie entry's type and, per cookie, its domain, name and expiry, never a value; `vault list` prints the count, the expired count and the domains
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-339-LIST` **List never carries a cookie value** - CRITICAL; `vault list` and `GET vault/entries` give a cookie entry's type and, per cookie, its domain, name and expiry, never a value; `vault list` prints the count, the expired count and the domains
   - evidence: pytest the_list_carries_type_and_cookie_metadata_never_a_value (REST), vault_list_prints_no_cookie_value (text, --json), list_prints_the_count_the_expired_count_and_the_domains; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - related: ACC-ENTRY-112 - the same rule for passwords
   - test: list a jar of marker values, assert no marker in text, --json or REST output
   - test-tags: UNIT
   - log: 2026-11-15T21:42:33Z @kj added
   - log: 2026-11-16T13:40:51Z @kj closed
-- [x] `ACC-COOKIE-340-EXEC` **vault exec --env on a cookie entry** - HIGH; `vault exec --env VAR=NAME -- COMMAND` on a cookie entry sets VAR to its Cookie header, the text `vault get NAME --format header` prints, in the command's environment only; no url or no matching cookie is refused with code usage, no unexpired cookie with code expired; `--cookie-file` does not exist
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-340-EXEC` **vault exec --env on a cookie entry** - HIGH; `vault exec --env VAR=NAME -- COMMAND` on a cookie entry sets VAR to its Cookie header, the text `vault get NAME --format header` prints, in the command's environment only; no url or no matching cookie is refused with code usage, no unexpired cookie with code expired; `--cookie-file` does not exist
   - evidence: pytest exec_env_sets_the_cookie_header_of_a_cookie_entry_never_in_argv, exec_env_refuses_a_cookie_entry_as_get_format_header_does, a_tool_under_exec_env_sends_the_cookies_and_leaves_no_file (real curl, header on standard input), cookie_file_is_no_option_of_exec; final gates 2026-11-17: pytest 1306, Jest 473, Galata 65/65
   - test: `sh -c 'printf "Cookie: %s\n" "$C" | curl -H @- <stub>'` under exec --env against a stdlib http.server; assert the Cookie header, no file under /tmp, /dev/shm or HOME, no value in stdout or stderr
   - test-tags: FUNCTIONAL
@@ -2920,7 +2947,8 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-17T08:46:31Z @kj edited evidence "pytest exec_cookie_file_hands_the_command_the_path_of_a_cookies_txt_a_holder_keeps_in_memory, a_python_child_that_inherits_no_descriptor_opens_the_cookie_file, a_job_the_command_leaves_running_reads_the_cookie_file_after_the_command_ended, a_command_that_waits_until_it_has_no_child_ends, the_holder_ends_after_the_command_and_its_jobs_and_nothing_holds_the_file, exec_cookie_file_runs_in_a_cli_started_with_sigchld_ignored; final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65" -> "pytest exec_env_sets_the_cookie_header_of_a_cookie_entry_never_in_argv, exec_env_refuses_a_cookie_entry_as_get_format_header_does, a_tool_under_exec_env_sends_the_cookies_and_leaves_no_file (real curl and wget), cookie_file_is_no_option_of_exec; final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65"
   - log: 2026-11-17T10:47:29Z @kj edited test "`sh -c 'curl -b "$C" <stub>'` under exec --env against a stdlib http.server; assert the Cookie header, no file under /tmp, /dev/shm or HOME, no value in stdout or stderr" -> "`sh -c 'printf "Cookie: %s\n" "$C" | curl -H @- <stub>'` under exec --env against a stdlib http.server; assert the Cookie header, no file under /tmp, /dev/shm or HOME, no value in stdout or stderr"
   - log: 2026-11-17T11:22:58Z @kj edited evidence "pytest exec_env_sets_the_cookie_header_of_a_cookie_entry_never_in_argv, exec_env_refuses_a_cookie_entry_as_get_format_header_does, a_tool_under_exec_env_sends_the_cookies_and_leaves_no_file (real curl and wget), cookie_file_is_no_option_of_exec; final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65" -> "pytest exec_env_sets_the_cookie_header_of_a_cookie_entry_never_in_argv, exec_env_refuses_a_cookie_entry_as_get_format_header_does, a_tool_under_exec_env_sends_the_cookies_and_leaves_no_file (real curl, header on standard input), cookie_file_is_no_option_of_exec; final gates 2026-11-17: pytest 1306, Jest 473, Galata 65/65"
-- [x] `ACC-COOKIE-341-EXEC-ENV` **Edge: --env on a cookie entry** - LOW; `--env VAR=NAME` with no field on a cookie entry sets VAR to the entry's Cookie header; `--env VAR=NAME:FIELD` reads username, url, category, notes or name as on any entry
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-341-EXEC-ENV` **Edge: --env on a cookie entry** - LOW; `--env VAR=NAME` with no field on a cookie entry sets VAR to the entry's Cookie header; `--env VAR=NAME:FIELD` reads username, url, category, notes or name as on any entry
   - evidence: pytest exec_env_sets_the_cookie_header_of_a_cookie_entry_never_in_argv (the header), exec_json_returns_the_result_of_a_command_given_a_cookie_entry (NAME:username and NAME:url); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65
   - test: both forms, assert the header, the username and the url
   - test-tags: UNIT
@@ -2929,63 +2957,73 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-17T08:11:24Z @kj amended text "`--env VAR=NAME` with no field on a cookie entry is refused, naming --cookie-file; `--env VAR=NAME:url` reads the url as on any entry" -> "`--env VAR=NAME` with no field on a cookie entry sets VAR to the entry's Cookie header; `--env VAR=NAME:FIELD` reads username, url, category, notes or name as on any entry"
   - log: 2026-11-17T08:11:24Z @kj edited test "both forms, assert the refusal and the url" -> "both forms, assert the header, the username and the url"
   - log: 2026-11-17T08:46:32Z @kj edited evidence "pytest env_on_a_cookie_entry_is_refused_naming_cookie_file_and_a_field_is_read (refusal names --cookie-file; NAME:url prints the url); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "pytest exec_env_sets_the_cookie_header_of_a_cookie_entry_never_in_argv (the header), exec_json_returns_the_result_of_a_command_given_a_cookie_entry (NAME:username and NAME:url); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65"
-- [x] `ACC-COOKIE-342-COPY` **vault copy and show** - MEDIUM; `vault copy NAME` on a cookie entry puts its cookies.txt on the browser clipboard through the relay; `vault show` refuses a cookie entry, naming copy
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-342-COPY` **vault copy and show** - MEDIUM; `vault copy NAME` on a cookie entry puts its cookies.txt on the browser clipboard through the relay; `vault show` refuses a cookie entry, naming copy
   - evidence: pytest copy_stages_the_cookies_txt_and_show_is_refused_naming_copy, copy_of_a_cookies_txt_over_a_user_key_reaches_the_relay_on_keyctl (ran, not skipped); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: copy, assert the staged value is the cookies.txt; show, assert the refusal
   - test-tags: UNIT
   - log: 2026-11-15T21:42:34Z @kj added
   - log: 2026-11-16T13:40:52Z @kj closed
-- [x] `ACC-COOKIE-343-PY-JAR` **Python cookie jar** - HIGH; `Vault().cookies(name)` returns an http.cookiejar.CookieJar of the unexpired cookies, which requests (`cookies=jar`) and urllib's HTTPCookieProcessor send; `Vault().get(name)` returns the cookies.txt; `cookies()` on a login entry raises VaultClientError code `invalid`
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-343-PY-JAR` **Python cookie jar** - HIGH; `Vault().cookies(name)` returns an http.cookiejar.CookieJar of the unexpired cookies, which requests (`cookies=jar`) and urllib's HTTPCookieProcessor send; `Vault().get(name)` returns the cookies.txt; `cookies()` on a login entry raises VaultClientError code `invalid`
   - evidence: pytest vault_cookies_is_a_cookie_jar_that_urllib_sends (invalid on a login entry), requests_sends_the_jar_of_vault_cookies, vault_add_makes_a_login_a_generated_and_a_cookie_entry (get is the cookies.txt); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: requests.get to a stdlib http.server with cookies=Vault().cookies(name), assert the Cookie header
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-11-15T21:42:34Z @kj added
   - log: 2026-11-16T13:40:52Z @kj closed
-- [x] `ACC-COOKIE-344-REST-WRITE` **REST write of a cookie entry** - MEDIUM; `POST vault/entries` takes `type` `cookies` and the pasted text in `fields.cookies`, and answers 400 with the reason when no cookie is read
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-344-REST-WRITE` **REST write of a cookie entry** - MEDIUM; `POST vault/entries` takes `type` `cookies` and the pasted text in `fields.cookies`, and answers 400 with the reason when no cookie is read
   - evidence: pytest a_rest_write_takes_the_type_and_the_pasted_text (cURL copy 204; bad text 400 invalid with the reason); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: post a cURL copy and a bad text, assert 204 and 400
   - test-tags: UNIT
   - log: 2026-11-15T21:42:34Z @kj added
   - log: 2026-11-16T13:40:52Z @kj closed
-- [x] `ACC-COOKIE-345-PARSE` **Parse without storing** - MEDIUM; `POST vault/cookies-parse` with `text` and `url` answers the count, the domains and the cookie names, or 400 with the reason, and writes nothing
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-345-PARSE` **Parse without storing** - MEDIUM; `POST vault/cookies-parse` with `text` and `url` answers the count, the domains and the cookie names, or 400 with the reason, and writes nothing
   - evidence: pytest cookies_parse_answers_a_summary_and_writes_nothing (count, domains, names; 400 with the reason; vault file unchanged); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: post a copy, assert the summary and the vault file unchanged
   - test-tags: UNIT
   - log: 2026-11-15T21:42:35Z @kj added
   - log: 2026-11-16T13:40:53Z @kj closed
-- [x] `ACC-COOKIE-346-NO-LEAK` **Values never in logs or errors** - CRITICAL; no cookie value and no pasted text appears in the server log, the central log, an exception, a --json error or a notification; a refusal names the form and the line number, never the text
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-346-NO-LEAK` **Values never in logs or errors** - CRITICAL; no cookie value and no pasted text appears in the server log, the central log, an exception, a --json error or a notification; a refusal names the form and the line number, never the text
   - evidence: pytest a_refusal_names_the_form_and_the_line_never_the_text (27 cases), no_cookie_value_or_pasted_text_reaches_a_log_an_error_or_an_answer (caplog DEBUG), add_cookies_in_the_browser_asks_one_multi_line_paste_field (notification arguments); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: refuse malformed inputs holding a marker; grep logs, errors and notifications for the marker
   - test-tags: UNIT
   - log: 2026-11-15T21:42:35Z @kj added
   - log: 2026-11-16T13:40:53Z @kj closed
-- [x] `ACC-COOKIE-347-GIT-SKIP` **Git helper skips cookie entries** - HIGH; git's credential helper never answers from a cookie entry, and `vault git migrate` never matches, reads or overwrites one, even one whose url matches the host git asks for
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-347-GIT-SKIP` **Git helper skips cookie entries** - HIGH; git's credential helper never answers from a cookie entry, and `vault git migrate` never matches, reads or overwrites one, even one whose url matches the host git asks for
   - evidence: pytest test_vault_git.py a_cookie_entry_never_answers_even_for_its_host, migrate_never_matches_reads_or_overwrites_a_cookie_entry (both cases: entry unchanged); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: a cookie entry with url https://github.com: git credential fill for github.com gets no answer from it, and vault git migrate imports a github.com store line and leaves the entry unchanged
   - test-tags: UNIT
   - log: 2026-11-15T21:42:35Z @kj added
   - log: 2026-11-16T07:38:20Z @kj edited text "git's credential helper never answers from a cookie entry, even one whose url matches the host git asks for" -> "git's credential helper never answers from a cookie entry, and `vault git migrate` never matches, reads or overwrites one, even one whose url matches the host git asks for"; test "a cookie entry with url https://github.com, git credential fill for github.com, assert no answer from it" -> "a cookie entry with url https://github.com: git credential fill for github.com gets no answer from it, and vault git migrate imports a github.com store line and leaves the entry unchanged"
   - log: 2026-11-16T13:40:53Z @kj closed
-- [x] `ACC-COOKIE-348-AWS-SKIP` **Edge: AWS helper on a cookie entry** - LOW; `aws-credential-jupyterlab-passkey <profile>` exits 1 naming the type when aws/<profile> is a cookie entry
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-348-AWS-SKIP` **Edge: AWS helper on a cookie entry** - LOW; `aws-credential-jupyterlab-passkey <profile>` exits 1 naming the type when aws/<profile> is a cookie entry
   - evidence: pytest test_vault_aws.py a_cookie_entry_exits_one_naming_the_type (exit 1, names a cookies entry, no value); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: a cookie entry at aws/x, run the helper, assert exit 1 and the message
   - test-tags: UNIT
   - log: 2026-11-15T21:42:35Z @kj added
   - log: 2026-11-16T13:40:54Z @kj closed
-- [x] `ACC-COOKIE-349-PANEL-CHOICE` **Add asks the type** - HIGH; the panel's Add button opens a dialog with two buttons, Password and Cookies, each with one short line under its name; Cancel is its only other button
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-349-PANEL-CHOICE` **Add asks the type** - HIGH; the panel's Add button opens a dialog with two buttons, Password and Cookies, each with one short line under its name; Cancel is its only other button
   - evidence: Galata 'Add asks the kind of entry: Password and Cookies with one line each, and Cancel'; 1 vault-cookies.spec.ts Jest title in tests; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: Galata: click Add, assert the two buttons, their lines and Cancel
   - test-tags: E2E
   - log: 2026-11-15T21:42:36Z @kj added
   - log: 2026-11-16T13:40:54Z @kj closed
-- [x] `ACC-COOKIE-350-PANEL-FORM` **Cookie form** - HIGH; the Cookies form has name, username, url, category, notes and a multi-line paste field; Save stores the entry through `POST vault/entries`
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-350-PANEL-FORM` **Cookie form** - HIGH; the Cookies form has name, username, url, category, notes and a multi-line paste field; Save stores the entry through `POST vault/entries`
   - evidence: Galata 'the cookie form reads the paste before Save, shows no value, and saves the entry'; 2 vault-cookies.spec.ts Jest titles in tests; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: Galata: paste a cURL copy, save, assert the row and the stored count
   - test-tags: E2E
   - log: 2026-11-15T21:42:36Z @kj added
   - log: 2026-11-16T05:39:44Z @kj amended text "the Cookies form has name, url, category, notes and a multi-line paste field; Save stores the entry through `POST vault/entries`" -> "the Cookies form has name, username, url, category, notes and a multi-line paste field; Save stores the entry through `POST vault/entries`"
   - log: 2026-11-16T13:40:54Z @kj closed
-- [x] `ACC-COOKIE-351-PANEL-PREVIEW` **Paste read before Save** - HIGH; under the paste field the form shows the count, the domains and the cookie names read, or the reason none were read; Save stays disabled until an unexpired cookie, or a header with no cookie, is read; a URL change keeps the last line while read again; no value shown
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-351-PANEL-PREVIEW` **Paste read before Save** - HIGH; under the paste field the form shows the count, the domains and the cookie names read, or the reason none were read; Save stays disabled until an unexpired cookie, or a header with no cookie, is read; a URL change keeps the last line while read again; no value shown
   - evidence: Galata 'the cookie form reads the paste before Save, shows no value, and saves the entry' (a header with no cookie enables Save); 5 Jest titles of vault-cookies.spec.ts; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: Galata: paste a valid then an invalid text, assert the line and Save's state, and no marker value in the dialog
   - test-tags: E2E
@@ -2996,7 +3034,8 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T17:53:57Z @kj edited evidence "Galata 'the cookie form reads the paste before Save, shows no value, and saves the entry'; 3 vault-cookies.spec.ts Jest titles in tests; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "Galata 'the cookie form reads the paste before Save, shows no value, and saves the entry'; Jest 'keeps the line of the last read while a URL change is read', 'keeps Save disabled for a paste whose every cookie has expired'; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65"
   - log: 2026-11-17T14:26:42Z @kj amended text "under the paste field the form shows the count, the domains and the cookie names read, or the reason none were read; Save stays disabled until an unexpired cookie is read; a URL change keeps the last line while it is read again; no value is shown" -> "under the paste field the form shows the count, the domains and the cookie names read, or the reason none were read; Save stays disabled until an unexpired cookie, or a header with no cookie, is read; a URL change keeps the last line while read again; no value shown"
   - log: 2026-11-17T19:16:17Z @kj edited evidence "Galata 'the cookie form reads the paste before Save, shows no value, and saves the entry'; Jest 'keeps the line of the last read while a URL change is read', 'keeps Save disabled for a paste whose every cookie has expired'; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65" -> "Galata 'the cookie form reads the paste before Save, shows no value, and saves the entry' (a header with no cookie enables Save); 5 Jest titles of vault-cookies.spec.ts; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67"; reason: text amended for the headers change; the evidence names the tests of the amended text
-- [x] `ACC-COOKIE-352-PANEL-ROW` **Cookie entry row** - MEDIUM; a cookie entry's row shows a cookie icon, which a password entry's row does not, and an `expired` badge when no cookie is left unexpired; the badge and the cookie table header keep a 4.5:1 contrast in the Light and the Dark theme
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-352-PANEL-ROW` **Cookie entry row** - MEDIUM; a cookie entry's row shows a cookie icon, which a password entry's row does not, and an `expired` badge when no cookie is left unexpired; the badge and the cookie table header keep a 4.5:1 contrast in the Light and the Dark theme
   - evidence: Galata 'a cookie entry's row has the cookie icon, and an expired jar the expired badge', 'the expired tag and the cookie table header keep a 4.5:1 contrast in the Light and the Dark theme'; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65
   - test: Galata: one live and one expired jar, assert the icon and the badge
   - test-tags: E2E
@@ -3004,14 +3043,16 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T13:40:55Z @kj closed
   - log: 2026-11-16T17:53:32Z @kj amended text "a cookie entry's row shows a cookie icon, which a password entry's row does not, and an `expired` badge when no cookie is left unexpired" -> "a cookie entry's row shows a cookie icon, which a password entry's row does not, and an `expired` badge when no cookie is left unexpired; the badge and the cookie table header keep a 4.5:1 contrast in the Light and the Dark theme"
   - log: 2026-11-16T17:53:50Z @kj edited evidence "Galata 'a cookie entry's row has the cookie icon, and an expired jar the expired badge'; 2 vault-cookies.spec.ts Jest titles in tests; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "Galata 'a cookie entry's row has the cookie icon, and an expired jar the expired badge', 'the expired tag and the cookie table header keep a 4.5:1 contrast in the Light and the Dark theme'; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65"
-- [x] `ACC-COOKIE-353-PANEL-VIEW` **Cookie entry dialog** - HIGH; opening a cookie entry shows its username and url, and each cookie's domain, name and expiry (`session` when it has none, expired ones marked), never a value, and no eye button
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-353-PANEL-VIEW` **Cookie entry dialog** - HIGH; opening a cookie entry shows its username and url, and each cookie's domain, name and expiry (`session` when it has none, expired ones marked), never a value, and no eye button
   - evidence: Galata 'a cookie entry opens with a table of domain, name and expiry, no value and no eye'; 2 vault-cookies.spec.ts Jest titles (Username and URL fields) in tests; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: Galata: open the entry, assert the table and no marker value or eye button
   - test-tags: E2E
   - log: 2026-11-15T21:42:37Z @kj added
   - log: 2026-11-16T05:39:44Z @kj amended text "opening a cookie entry shows each cookie's domain, name and expiry (`session` when it has none, expired ones marked), never a value, and no eye button" -> "opening a cookie entry shows its username and url, and each cookie's domain, name and expiry (`session` when it has none, expired ones marked), never a value, and no eye button"
   - log: 2026-11-16T13:40:55Z @kj closed
-- [x] `ACC-COOKIE-354-PANEL-EDIT` **Edit keeps or replaces the jar** - MEDIUM; in a cookie entry's edit form an empty paste field keeps the jar and a paste that reads replaces it; the help under the empty field names what is kept, so an entry with headers and no cookie reads 'Leave empty to keep the 1 header'
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-354-PANEL-EDIT` **Edit keeps or replaces the jar** - MEDIUM; in a cookie entry's edit form an empty paste field keeps the jar and a paste that reads replaces it; the help under the empty field names what is kept, so an entry with headers and no cookie reads 'Leave empty to keep the 1 header'
   - evidence: Galata 'Edit of a cookie entry keeps the jar with an empty paste, and a paste that reads replaces it'; 2 vault-cookies.spec.ts Jest titles; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: Galata: edit the url only, assert the count kept; paste a new copy, assert it replaced; Jest: the empty-paste help names the cookies, the headers, or the header alone
   - test-tags: E2E
@@ -3019,7 +3060,8 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-16T13:40:55Z @kj closed
   - log: 2026-11-17T23:40:17Z @kj amended text "in a cookie entry's edit form an empty paste field keeps the jar and a paste that reads replaces it" -> "in a cookie entry's edit form an empty paste field keeps the jar and a paste that reads replaces it; the help under the empty field names what is kept, so an entry with headers and no cookie reads 'Leave empty to keep the 1 header'"
   - log: 2026-11-17T23:40:23Z @kj edited test "Galata: edit the url only, assert the count kept; paste a new copy, assert it replaced" -> "Galata: edit the url only, assert the count kept; paste a new copy, assert it replaced; Jest: the empty-paste help names the cookies, the headers, or the header alone"
-- [x] `ACC-COOKIE-355-HELP` **--help states cookie use** - MEDIUM; `vault add`, `vault get` and `vault exec` --help state the accepted forms, --format and `--env` on a cookie entry with one example each; no example puts a cookie variable in a tool's arguments
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-355-HELP` **--help states cookie use** - MEDIUM; `vault add`, `vault get` and `vault exec` --help state the accepted forms, --format and `--env` on a cookie entry with one example each; no example puts a cookie variable in a tool's arguments
   - evidence: pytest help_states_the_cookie_forms_format_and_exec_env_with_an_example_each (the printf example; `-b "$C"` and `--header "Cookie: $C"` in no example); final gates 2026-11-17: pytest 1306, Jest 473, Galata 65/65
   - test: pytest: the help text names each form, flag and example
   - test-tags: UNIT
@@ -3029,7 +3071,8 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-17T08:46:32Z @kj edited evidence "pytest help_states_the_cookie_forms_format_and_cookie_file_with_an_example_each (add forms, get --format, exec --cookie-file, one example each); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "pytest help_states_the_cookie_forms_format_and_exec_env_with_an_example_each (add forms, get --format, exec --env on a cookie entry, one example each); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65"
   - log: 2026-11-17T10:47:30Z @kj amended text "`vault add`, `vault get` and `vault exec` --help state the accepted forms, --format and `--env` on a cookie entry with one example each" -> "`vault add`, `vault get` and `vault exec` --help state the accepted forms, --format and `--env` on a cookie entry with one example each; no example puts a cookie variable in a tool's arguments"
   - log: 2026-11-17T11:22:58Z @kj edited evidence "pytest help_states_the_cookie_forms_format_and_exec_env_with_an_example_each (add forms, get --format, exec --env on a cookie entry, one example each); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65" -> "pytest help_states_the_cookie_forms_format_and_exec_env_with_an_example_each (the printf example; `-b "$C"` and `--header "Cookie: $C"` in no example); final gates 2026-11-17: pytest 1306, Jest 473, Galata 65/65"
-- [x] `ACC-COOKIE-356-DOC-CLI` **CLI reference covers cookies** - MEDIUM; docs/cli-reference.md has a cookie section with worked examples: add from a browser's Copy as cURL with --in-browser, curl through exec --env with the header on standard input, wget --load-cookies on the output of get, get --format header, requests with Vault().cookies; no example puts a cookie variable in a tool's arguments
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-356-DOC-CLI` **CLI reference covers cookies** - MEDIUM; docs/cli-reference.md has a cookie section with worked examples: add from a browser's Copy as cURL with --in-browser, curl through exec --env with the header on standard input, wget --load-cookies on the output of get, get --format header, requests with Vault().cookies; no example puts a cookie variable in a tool's arguments
   - evidence: pytest every_cookie_and_rename_example_parses_with_the_cli_parser (the printf example pinned; `-b "$C"` and `--header "Cookie: $C"` in no example); final gates 2026-11-17: pytest 1306, Jest 473, Galata 65/65
   - test: parse every example's command line with the CLI parser
   - test-tags: UNIT
@@ -3039,25 +3082,29 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-17T08:46:32Z @kj edited evidence "pytest every_cookie_and_rename_example_parses_with_the_cli_parser (add --cookies --in-browser, exec --cookie-file curl and yt-dlp, get --format header, Vault().cookies); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "pytest every_cookie_and_rename_example_parses_with_the_cli_parser (add --cookies --in-browser, exec --env with curl and wget, wget --load-cookies on get, get --format header, Vault().cookies); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65"
   - log: 2026-11-17T10:47:38Z @kj amended text "docs/cli-reference.md has a cookie section with worked examples: add from a browser's Copy as cURL with --in-browser, curl and wget through exec --env, wget --load-cookies on the output of get, get --format header, and requests with Vault().cookies" -> "docs/cli-reference.md has a cookie section with worked examples: add from a browser's Copy as cURL with --in-browser, curl through exec --env with the header on standard input, wget --load-cookies on the output of get, get --format header, requests with Vault().cookies; no example puts a cookie variable in a tool's arguments"
   - log: 2026-11-17T11:22:58Z @kj edited evidence "pytest every_cookie_and_rename_example_parses_with_the_cli_parser (add --cookies --in-browser, exec --env with curl and wget, wget --load-cookies on get, get --format header, Vault().cookies); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65" -> "pytest every_cookie_and_rename_example_parses_with_the_cli_parser (the printf example pinned; `-b "$C"` and `--header "Cookie: $C"` in no example); final gates 2026-11-17: pytest 1306, Jest 473, Galata 65/65"
-- [x] `ACC-COOKIE-357-DOC-DESIGN` **Design document covers cookies** - MEDIUM; docs/design-vault.md states the entry type, the stored cookie fields, the accepted forms, the expiry rule, the size limit and the two REST additions
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-357-DOC-DESIGN` **Design document covers cookies** - MEDIUM; docs/design-vault.md states the entry type, the stored cookie fields, the accepted forms, the expiry rule, the size limit and the two REST additions
   - evidence: my reading, test hint 'read': design-vault.md 3.5 states entry type, the 8 stored fields, accepted forms, expiry rule, 65,536 limit; section 8 lists POST rename and cookies-parse; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: read the sections against this category
   - test-tags: MANUAL
   - log: 2026-11-15T21:42:38Z @kj added
   - log: 2026-11-16T13:40:56Z @kj closed
-- [x] `ACC-COOKIE-358-DOC-LIMITS` **Cookie limits stated** - MEDIUM; docs/design-vault.md and the README state: whoever reads a cookie has the session; the extension cannot read the browser's cookies, so the user copies them; a site may refuse a session used from another address; the vault never refreshes an expired session
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-358-DOC-LIMITS` **Cookie limits stated** - MEDIUM; docs/design-vault.md and the README state: whoever reads a cookie has the session; the extension cannot read the browser's cookies, so the user copies them; a site may refuse a session used from another address; the vault never refreshes an expired session
   - evidence: my reading, test hint 'read': design-vault.md section 10 and README 'Cookie limits' each state session, user copies, another address, no refresh; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: read both documents for each limit
   - test-tags: MANUAL
   - log: 2026-11-15T21:42:38Z @kj added
   - log: 2026-11-16T13:40:57Z @kj closed
-- [x] `ACC-COOKIE-359-DOC-README` **README names cookie entries** - LOW; the README feature list names cookie entries and links the cookie section of docs/cli-reference.md
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-359-DOC-README` **README names cookie entries** - LOW; the README feature list names cookie entries and links the cookie section of docs/cli-reference.md
   - evidence: my reading, test hint 'read': README Features line 43 'Cookie entries' links docs/cli-reference.md#cookie-entries; the target '### Cookie entries' is at line 237; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64
   - test: read the feature list and follow the link
   - test-tags: MANUAL
   - log: 2026-11-15T21:42:39Z @kj added
   - log: 2026-11-16T13:40:57Z @kj closed
-- [x] `ACC-COOKIE-360-SKILL` **Agent skill covers cookies** - HIGH; the agent skill's description names cookies, cookies.txt and a logged-in session for curl, wget, yt-dlp or requests; its body says the user pastes with `vault add NAME --cookies --in-browser`, tools get them through `vault exec --env`, and code `expired` means ask for a fresh copy
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-360-SKILL` **Agent skill covers cookies** - HIGH; the agent skill's description names cookies, cookies.txt and a logged-in session for curl, wget, yt-dlp or requests; its body says the user pastes with `vault add NAME --cookies --in-browser`, tools get them through `vault exec --env`, and code `expired` means ask for a fresh copy
   - evidence: pytest agent_skill_description_names_cookies_and_keeps_its_triggers, agent_skill_states_the_three_cookie_rules (names `vault exec --env`), agent_skill_is_short_and_points_at_help, installed_agent_skill_matches_repository; final gates 2026-11-17: pytest 1306, Jest 473, Galata 65/65
   - related: ACC-VDOCS-187 - the 30-line limit this keeps
   - test: pytest test_agent_skill.py: the triggers and the three rules present, the skill under 30 lines
@@ -3067,7 +3114,8 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-17T08:11:25Z @kj amended text "the agent skill's description names cookies, cookies.txt and a logged-in session for curl, wget, yt-dlp or requests; its body says the user pastes with `vault add NAME --cookies --in-browser`, tools get them through `vault exec --cookie-file`, and code `expired` means ask for a fresh copy" -> "the agent skill's description names cookies, cookies.txt and a logged-in session for curl, wget, yt-dlp or requests; its body says the user pastes with `vault add NAME --cookies --in-browser`, tools get them through `vault exec --env`, and code `expired` means ask for a fresh copy"
   - log: 2026-11-17T08:46:33Z @kj edited evidence "pytest agent_skill_description_names_cookies_and_keeps_its_triggers, agent_skill_states_the_three_cookie_rules, agent_skill_is_short_and_points_at_help (under 30 lines); final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "pytest agent_skill_description_names_cookies_and_keeps_its_triggers, agent_skill_states_the_three_cookie_rules (names `vault exec --env`), agent_skill_is_short_and_points_at_help, installed_agent_skill_matches_repository; final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65"
   - log: 2026-11-17T11:22:59Z @kj edited evidence "pytest agent_skill_description_names_cookies_and_keeps_its_triggers, agent_skill_states_the_three_cookie_rules (names `vault exec --env`), agent_skill_is_short_and_points_at_help, installed_agent_skill_matches_repository; final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65" -> "pytest agent_skill_description_names_cookies_and_keeps_its_triggers, agent_skill_states_the_three_cookie_rules (names `vault exec --env`), agent_skill_is_short_and_points_at_help, installed_agent_skill_matches_repository; final gates 2026-11-17: pytest 1306, Jest 473, Galata 65/65"
-- [x] `ACC-COOKIE-377-EXEC-SIGCHLD` **Edge: CLI started with SIGCHLD ignored** - LOW; `vault exec --json` reports the command's exit status, in result.exit and as its own exit status, when the CLI was started with the SIGCHLD signal ignored
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-377-EXEC-SIGCHLD` **Edge: CLI started with SIGCHLD ignored** - LOW; `vault exec --json` reports the command's exit status, in result.exit and as its own exit status, when the CLI was started with the SIGCHLD signal ignored
   - evidence: pytest exec_json_reports_the_exit_of_the_command_in_a_cli_started_with_sigchld_ignored (before the change: exit 0 for `sh -c 'exit 3'`; after: 3 in result.exit and as the exit status); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65
   - test: pytest test_cookie_e2e.py -k sigchld_ignored
   - test-tags: FUNCTIONAL
@@ -3077,131 +3125,153 @@ A website session's cookies as their own entry type: pasted from a browser copy,
   - log: 2026-11-17T06:56:06Z @kj closed
   - log: 2026-11-17T08:11:24Z @kj amended text "`vault exec --cookie-file` runs the command and hands it the cookie file when the CLI was started with the SIGCHLD signal ignored; the start of the holder process does not fail" -> "`vault exec --json` reports the command's exit status, in result.exit and as its own exit status, when the CLI was started with the SIGCHLD signal ignored"
   - log: 2026-11-17T08:46:32Z @kj edited evidence "pytest exec_cookie_file_runs_in_a_cli_started_with_sigchld_ignored (failed before the change with ChildProcessError at vault/cli.py:465); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65; review round 8 SHIP" -> "pytest exec_json_reports_the_exit_of_the_command_in_a_cli_started_with_sigchld_ignored (before the change: exit 0 for `sh -c 'exit 3'`; after: 3 in result.exit and as the exit status); final gates 2026-11-17: pytest 1307, Jest 473, Galata 65/65"
-- [x] `ACC-COOKIE-378-HDR-STORED` **Request headers sealed with the entry** - CRITICAL; a cookie entry holds a site's web authorization: its cookies and `headers`, the request headers kept from a cURL or fetch copy as name and value in paste order, sealed under the data key with the other entries; no header value is in the vault file as plaintext
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-378-HDR-STORED` **Request headers sealed with the entry** - CRITICAL; a cookie entry holds a site's web authorization: its cookies and `headers`, the request headers kept from a cURL or fetch copy as name and value in paste order, sealed under the data key with the other entries; no header value is in the vault file as plaintext
   - evidence: pytest headers_are_sealed_with_the_entry_and_read_back_in_paste_order (marker absent from the vault file, pairs read back in paste order); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: add a cURL copy with a marker in a header value, grep the vault file for the marker, read the headers back in order
   - test-tags: UNIT
   - log: 2026-11-17T14:25:03Z @kj added
   - log: 2026-11-17T19:16:10Z @kj closed
-- [x] `ACC-COOKIE-379-HDR-KEPT` **Every header kept except the browser's own** - HIGH; every header of a cURL or fetch copy is kept except, in any letter case: Host, Cookie, Content-Length, Content-Type, Accept, Accept-*, User-Agent, Referer, Referrer-Policy, Origin, Sec-*, Connection, Keep-Alive, Cache-Control, Pragma, Priority, If-*, TE, Transfer-Encoding, Upgrade-Insecure-Requests, DNT, names starting `:`, and a header with no value
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-379-HDR-KEPT` **Every header kept except the browser's own** - HIGH; every header of a cURL or fetch copy is kept except, in any letter case: Host, Cookie, Content-Length, Content-Type, Accept, Accept-*, User-Agent, Referer, Referrer-Policy, Origin, Sec-*, Connection, Keep-Alive, Cache-Control, Pragma, Priority, If-*, TE, Transfer-Encoding, Upgrade-Insecure-Requests, DNT, names starting `:`, and a header with no value
   - evidence: pytest a_curl_copy_keeps_every_header_except_the_browsers_own_in_paste_order (bash, cmd), a_fetch_copy_keeps_every_header_except_the_browsers_own_in_paste_order, each_of_the_browsers_own_headers_and_one_with_no_value_is_left_out_in_any_letter_case (25 names, Referrer-Policy included), a_name_that_only_starts_as_one_of_the_browsers_own_is_kept; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: a Chrome cURL copy with authorization, x-csrf-token, a custom x- header and the browser's own headers: assert the kept names in order
   - test-tags: UNIT
   - log: 2026-11-17T14:25:03Z @kj added
   - log: 2026-11-17T15:54:55Z @kj amended text "every header of a cURL or fetch copy is kept except, in any letter case: Host, Cookie, Content-Length, Content-Type, Accept, Accept-*, User-Agent, Referer, Origin, Sec-*, Connection, Keep-Alive, Cache-Control, Pragma, Priority, If-*, TE, Transfer-Encoding, Upgrade-Insecure-Requests, DNT, names starting `:`, and a header with no value" -> "every header of a cURL or fetch copy is kept except, in any letter case: Host, Cookie, Content-Length, Content-Type, Accept, Accept-*, User-Agent, Referer, Referrer-Policy, Origin, Sec-*, Connection, Keep-Alive, Cache-Control, Pragma, Priority, If-*, TE, Transfer-Encoding, Upgrade-Insecure-Requests, DNT, names starting `:`, and a header with no value"; reason: the list of dropped names is the criterion
   - log: 2026-11-17T19:16:10Z @kj closed
-- [x] `ACC-COOKIE-380-HDR-VERBATIM` **Header stored byte for byte or refused** - HIGH; a kept header's name is stored as pasted and its value byte for byte after the first colon, outer spaces and tabs removed; a name that is no HTTP token, or a value with a line break or NUL, refuses the paste naming form and line, never the text
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-380-HDR-VERBATIM` **Header stored byte for byte or refused** - HIGH; a kept header's name is stored as pasted and its value byte for byte after the first colon, outer spaces and tabs removed; a name that is no HTTP token, or a value with a line break or NUL, refuses the paste naming form and line, never the text
   - evidence: pytest a_kept_header_keeps_its_name_as_pasted_and_its_value_byte_for_byte, a_header_that_is_no_token_or_holds_a_line_break_refuses_the_paste (14 pastes, whole refusal sentence asserted); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: values with quotes, %20, a backslash and = signs through the bash, cmd and fetch forms; a value with a line feed: assert the refusal and no marker in it
   - test-tags: UNIT
   - log: 2026-11-17T14:25:03Z @kj added
   - log: 2026-11-17T19:16:10Z @kj closed
-- [x] `ACC-COOKIE-381-HDR-ONLY` **Copy with headers and no cookie is stored** - HIGH; a cURL or fetch copy with no cookie and at least one kept header is stored as an entry with headers and no cookie; with no url given it takes the copy's origin; a copy with no cookie and no kept header is refused and nothing is written
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-381-HDR-ONLY` **Copy with headers and no cookie is stored** - HIGH; a cURL or fetch copy with no cookie and at least one kept header is stored as an entry with headers and no cookie; with no url given it takes the copy's origin; a copy with no cookie and no kept header is refused and nothing is written
   - evidence: pytest a_copy_with_headers_and_no_cookie_is_stored_with_the_copys_origin, a_copy_with_no_cookie_and_no_header_to_keep_is_refused_and_nothing_is_written (vault file bytes unchanged); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: a cURL copy with an Authorization header and no cookie: assert the entry, its url and `cookies: 0`
   - test-tags: UNIT
   - log: 2026-11-17T14:25:04Z @kj added
   - log: 2026-11-17T19:16:11Z @kj closed
-- [x] `ACC-COOKIE-382-HDR-FETCH` **Edge: plain Copy as fetch stays refused** - MEDIUM; a browser's plain Copy as fetch with `"credentials": "include"` and no cookie header is refused whatever headers it has, naming the copies that carry cookies: its cookies are not in the copy
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-382-HDR-FETCH` **Edge: plain Copy as fetch stays refused** - MEDIUM; a browser's plain Copy as fetch with `"credentials": "include"` and no cookie header is refused whatever headers it has, naming the copies that carry cookies: its cookies are not in the copy
   - evidence: pytest a_plain_copy_as_fetch_with_credentials_include_stays_refused_whatever_its_headers, a_plain_copy_as_fetch_is_refused_at_a_write_and_nothing_is_written (vault file bytes unchanged); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: a Chrome Copy as fetch with credentials include, a custom header and no cookie: assert the refusal and nothing written
   - test-tags: UNIT
   - log: 2026-11-17T14:25:11Z @kj added
   - log: 2026-11-17T19:16:11Z @kj closed
-- [x] `ACC-COOKIE-383-HDR-REPLACE` **Edit replaces cookies and headers** - MEDIUM; `edit NAME --cookies` replaces the cookies and the headers with those of the new paste; a paste form that carries no headers leaves the entry with no header; an edit of other fields keeps both
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-383-HDR-REPLACE` **Edit replaces cookies and headers** - MEDIUM; `edit NAME --cookies` replaces the cookies and the headers with those of the new paste; a paste form that carries no headers leaves the entry with no header; an edit of other fields keeps both
   - evidence: pytest edit_cookies_replaces_the_cookies_and_the_headers_and_other_edits_keep_both, a_rest_edit_with_a_form_that_carries_no_headers_leaves_no_header; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: edit with a cookies.txt after a cURL copy: assert no header left; edit --url only: assert headers kept
   - test-tags: UNIT
   - log: 2026-11-17T14:25:11Z @kj added
   - log: 2026-11-17T19:16:11Z @kj closed
-- [x] `ACC-COOKIE-384-HDR-LIMIT` **Stored headers size limit** - MEDIUM; the stored headers are at most 65,536 characters as JSON; a larger set is refused with nothing written
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-384-HDR-LIMIT` **Stored headers size limit** - MEDIUM; the stored headers are at most 65,536 characters as JSON; a larger set is refused with nothing written
   - evidence: pytest headers_over_the_limit_are_refused_and_nothing_is_written (65,537 refused, 65,536 stored, vault file bytes unchanged); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: a copy whose kept headers exceed the limit: assert the refusal and the vault file bytes unchanged
   - test-tags: UNIT
   - log: 2026-11-17T14:25:11Z @kj added
   - log: 2026-11-17T19:16:12Z @kj closed
-- [x] `ACC-COOKIE-385-HDR-GET` **vault get --format headers** - HIGH; `vault get NAME --format headers` prints one line per header: `Cookie: ...` as `--format header` gives it for --url or the entry's url when the entry stores cookies, then each kept header as `Name: value` in stored order; `curl -H @-` sends them from standard input
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-385-HDR-GET` **vault get --format headers** - HIGH; `vault get NAME --format headers` prints one line per header: `Cookie: ...` as `--format header` gives it for --url or the entry's url when the entry stores cookies, then each kept header as `Name: value` in stored order; `curl -H @-` sends them from standard input
   - evidence: pytest get_format_headers_prints_the_cookie_line_then_each_kept_header, curl_reads_the_lines_of_get_format_headers_from_standard_input (real curl, no value in any command line); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: real curl: `vault get NAME --format headers | curl -H @- <stub>`; assert the Cookie header and each kept header at the server, no value in any command line
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-11-17T14:25:12Z @kj added
   - log: 2026-11-17T19:16:12Z @kj closed
-- [x] `ACC-COOKIE-386-HDR-EXEC` **vault exec --env VAR=NAME:headers** - HIGH; `vault exec --env VAR=NAME:headers -- COMMAND` sets VAR to the text `vault get NAME --format headers` prints for the entry's url, in the command's environment only; `headers` after the colon is refused on a login entry; `--env VAR=NAME` stays the Cookie header
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-386-HDR-EXEC` **vault exec --env VAR=NAME:headers** - HIGH; `vault exec --env VAR=NAME:headers -- COMMAND` sets VAR to the text `vault get NAME --format headers` prints for the entry's url, in the command's environment only; `headers` after the colon is refused on a login entry; `--env VAR=NAME` stays the Cookie header
   - evidence: pytest exec_env_name_headers_sets_the_text_of_get_format_headers_never_in_argv, the_headers_of_a_login_entry_are_refused_by_get_and_exec_with_code_invalid, exec_env_name_headers_refuses_as_get_format_headers_does; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: exec with NAME:headers, assert the variable's lines and no value in argv; a login entry: assert the refusal
   - test-tags: UNIT
   - log: 2026-11-17T14:25:12Z @kj added
   - log: 2026-11-17T19:16:12Z @kj closed
-- [x] `ACC-COOKIE-387-HDR-NOCOOKIE` **Edge: reads of an entry with no cookie** - HIGH; on an entry that stores no cookie, every cookie read (get in netscape, header or json format, `--env VAR=NAME`, copy, `Vault().cookies()`, `Vault().get()`) is refused with code `invalid` naming `vault get NAME --format headers`; `--format headers` prints its headers with no Cookie line and needs no url
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-387-HDR-NOCOOKIE` **Edge: reads of an entry with no cookie** - HIGH; on an entry that stores no cookie, every cookie read (get in netscape, header or json format, `--env VAR=NAME`, copy, `Vault().cookies()`, `Vault().get()`) is refused with code `invalid` naming `vault get NAME --format headers`; `--format headers` prints its headers with no Cookie line and needs no url
   - evidence: pytest every_cookie_read_of_an_entry_with_no_cookie_is_code_invalid_naming_format_headers (7 CLI reads, Vault().get, cookies, copy; headers with no url), a_cookie_read_of_an_entry_with_no_cookie_is_refused_naming_format_headers; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: a headers-only entry: each cookie read through the CLI with --json and through Python, assert code invalid and the hint; --format headers prints the lines
   - test-tags: UNIT
   - log: 2026-11-17T14:25:12Z @kj added
   - log: 2026-11-17T19:16:13Z @kj closed
-- [x] `ACC-COOKIE-388-HDR-EXPIRED` **Edge: headers of an entry whose cookies expired** - MEDIUM; an entry that stores cookies and has none unexpired fails every read with code `expired`, the headers reads too (`--format headers`, `NAME:headers`, `Vault().headers()`)
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-388-HDR-EXPIRED` **Edge: headers of an entry whose cookies expired** - MEDIUM; an entry that stores cookies and has none unexpired fails every read with code `expired`, the headers reads too (`--format headers`, `NAME:headers`, `Vault().headers()`)
   - evidence: pytest get_format_headers_of_an_entry_whose_cookies_all_expired_is_code_expired, the_headers_of_an_entry_whose_cookies_all_expired_fail_with_code_expired, a_read_with_no_cookie_left_is_code_expired_in_every_client; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: an entry with headers whose cookies have all expired (clock moved): assert code expired for each headers read
   - test-tags: UNIT
   - log: 2026-11-17T14:25:13Z @kj added
   - log: 2026-11-17T19:16:13Z @kj closed
-- [x] `ACC-COOKIE-389-HDR-SUMMARY` **Header names in summaries, never a value** - HIGH; `add --cookies` and `edit --cookies` print the kept header names after the cookie summary and `--json` carries `result.headers`; `POST vault/cookies-parse` answers `headers`; `list` shows the header count and `list --json` each entry's `headers` names; none holds a value
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-389-HDR-SUMMARY` **Header names in summaries, never a value** - HIGH; `add --cookies` and `edit --cookies` print the kept header names after the cookie summary and `--json` carries `result.headers`; `POST vault/cookies-parse` answers `headers`; `list` shows the header count and `list --json` each entry's `headers` names; none holds a value
   - evidence: pytest a_cookie_write_and_the_list_name_the_kept_headers_never_a_value, the_list_and_the_preview_give_the_header_names_never_a_value; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: pipe a cURL copy with a marker header value: assert the names in each output and no marker in stdout, stderr or the answers
   - test-tags: UNIT
   - log: 2026-11-17T14:25:13Z @kj added
   - log: 2026-11-17T19:16:13Z @kj closed
-- [x] `ACC-COOKIE-390-HDR-NOLEAK` **No header value leaks** - CRITICAL; no header value appears in argv, a log record, a notification, a --json refusal, an HTTP error body or an exception message
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-390-HDR-NOLEAK` **No header value leaks** - CRITICAL; no header value appears in argv, a log record, a notification, a --json refusal, an HTTP error body or an exception message
   - evidence: pytest no_header_value_reaches_a_log_an_error_or_an_answer, exec_env_name_headers_sets_the_text_of_get_format_headers_never_in_argv, curl_reads_the_lines_of_get_format_headers_from_standard_input, every_cookie_read_of_an_entry_with_no_cookie_is_code_invalid_naming_format_headers; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: malformed and refused pastes holding a marker in a header value: assert the marker in no log record, exception text, HTTP body or CLI output
   - test-tags: UNIT
   - log: 2026-11-17T14:25:13Z @kj added
   - log: 2026-11-17T19:16:14Z @kj closed
-- [x] `ACC-COOKIE-391-HDR-PY` **Python Vault().headers** - HIGH; `Vault().headers(NAME)` returns a dict of the kept headers, name to value, with no Cookie key; a name stored twice keeps its last value; `requests` sends them with `headers=`; on a login entry it raises VaultClientError code `invalid`; `Vault().add(NAME, cookies=text)` stores the headers
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-391-HDR-PY` **Python Vault().headers** - HIGH; `Vault().headers(NAME)` returns a dict of the kept headers, name to value, with no Cookie key; a name stored twice keeps its last value; `requests` sends them with `headers=`; on a login entry it raises VaultClientError code `invalid`; `Vault().add(NAME, cookies=text)` stores the headers
   - evidence: pytest vault_headers_is_a_dict_of_the_kept_headers_with_no_cookie_key, requests_sends_the_jar_and_the_headers_of_a_cookie_entry (requests ran, not skipped); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: requests.get to a stdlib http.server with cookies=Vault().cookies(n) and headers=Vault().headers(n): assert the Cookie and Authorization headers
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-11-17T14:25:14Z @kj added
   - log: 2026-11-17T19:16:14Z @kj closed
-- [x] `ACC-COOKIE-392-HDR-REST` **REST read of headers** - MEDIUM; the vault read route answers field `headers` of a cookie entry as the stored list of name and value pairs, and refuses it on a login entry with code `invalid`; entries written before this change answer an empty list
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-392-HDR-REST` **REST read of headers** - MEDIUM; the vault read route answers field `headers` of a cookie entry as the stored list of name and value pairs, and refuses it on a login entry with code `invalid`; entries written before this change answer an empty list
   - evidence: pytest the_read_route_answers_the_headers_of_a_cookie_entry_and_refuses_a_login_entry (pairs, 400 invalid on a login entry, [] with no key); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: POST a cURL copy through vault/entries, read field headers, assert the pairs; a login entry: 400 and code invalid
   - test-tags: UNIT
   - log: 2026-11-17T14:25:14Z @kj added
   - log: 2026-11-17T19:16:14Z @kj closed
-- [x] `ACC-COOKIE-393-HDR-PREVIEW` **Panel preview names the headers** - HIGH; the cookie form's preview line names the header count and the header names beside the cookie summary, never a value; Save is enabled when an unexpired cookie is read, or when no cookie and at least one header is read
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-393-HDR-PREVIEW` **Panel preview names the headers** - HIGH; the cookie form's preview line names the header count and the header names beside the cookie summary, never a value; Save is enabled when an unexpired cookie is read, or when no cookie and at least one header is read
   - evidence: Galata 'the cookie form names the kept headers beside the cookies, never a value, and saves a copy with a header and no cookie'; 3 Jest titles of vault-cookies.spec.ts; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: Galata: paste a cURL copy with headers, assert the names and no marker value; paste a copy with a header and no cookie, assert Save enabled and the saved entry
   - test-tags: E2E
   - log: 2026-11-17T14:25:14Z @kj added
   - log: 2026-11-17T19:16:15Z @kj closed
-- [x] `ACC-COOKIE-394-HDR-VIEW` **Panel popup lists the header names** - HIGH; a cookie entry's popup lists the kept header names with no value and no eye button; an entry with no cookie shows no cookie table and its row no `expired` badge
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-394-HDR-VIEW` **Panel popup lists the header names** - HIGH; a cookie entry's popup lists the kept header names with no value and no eye button; an entry with no cookie shows no cookie table and its row no `expired` badge
   - evidence: Galata 'a cookie entry opens with the kept header names under the cookie table, no value and no eye; one with no cookie has no cookie table and no expired badge'; 3 Jest titles of vault-cookies.spec.ts; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: Galata: open an entry with headers, assert the names and no marker value; a headers-only entry: no table, no badge
   - test-tags: E2E
   - log: 2026-11-17T14:25:14Z @kj added
   - log: 2026-11-17T19:16:15Z @kj closed
-- [x] `ACC-COOKIE-395-HDR-DOCS` **Texts state web authorization and the headers recipe** - MEDIUM; `vault get` and `vault exec` --help, docs/cli-reference.md, docs/design-vault.md, README.md and the agent skill say a cookie entry holds cookies and request headers, show `vault get NAME --format headers | curl -H @- URL`, and state that a header has no expiry the vault can read
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-395-HDR-DOCS` **Texts state web authorization and the headers recipe** - MEDIUM; `vault get` and `vault exec` --help, docs/cli-reference.md, docs/design-vault.md, README.md and the agent skill say a cookie entry holds cookies and request headers, show `vault get NAME --format headers | curl -H @- URL`, and state that a header has no expiry the vault can read
   - evidence: pytest help_states_the_cookie_forms_format_and_exec_env_with_an_example_each, each_document_states_the_headers_read (5 documents), every_cookie_and_rename_example_parses_with_the_cli_parser, agent_skill_states_the_headers_read, agent_skill_description_names_cookies_and_keeps_its_triggers; final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: pytest: the help and each document name --format headers and the recipe; every example parses with the CLI parser
   - test-tags: UNIT
   - log: 2026-11-17T14:25:15Z @kj added
   - log: 2026-11-17T19:16:16Z @kj closed
-- [x] `ACC-COOKIE-396-HDR-PYGET` **Edge: Vault().get with field headers** - LOW; `Vault().get(NAME, "headers")` raises VaultClientError code `invalid` in a sentence naming `Vault().headers(NAME)`; it never ends in a TypeError
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-396-HDR-PYGET` **Edge: Vault().get with field headers** - LOW; `Vault().get(NAME, "headers")` raises VaultClientError code `invalid` in a sentence naming `Vault().headers(NAME)`; it never ends in a TypeError
   - evidence: pytest vault_get_of_the_field_headers_is_code_invalid_naming_vault_headers (an entry with headers and one with none, code invalid, no request made); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: an entry with headers and one with none: get(name, 'headers') raises with code invalid
   - test-tags: UNIT
   - log: 2026-11-17T15:54:55Z @kj added
   - log: 2026-11-17T19:16:16Z @kj closed
-- [x] `ACC-COOKIE-397-UNICODE` **Edge: value that is not valid Unicode text** - MEDIUM; a paste whose cookie value or kept header value cannot be encoded as UTF-8, such as a lone surrogate escape in a fetch copy, is refused naming the form and the line, never the text; nothing is stored
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-397-UNICODE` **Edge: value that is not valid Unicode text** - MEDIUM; a paste whose cookie value or kept header value cannot be encoded as UTF-8, such as a lone surrogate escape in a fetch copy, is refused naming the form and the line, never the text; nothing is stored
   - evidence: pytest a_paste_that_is_not_utf8_is_refused_at_a_write_and_nothing_is_written (add and edit answer 400 invalid naming form and line, vault file bytes unchanged), a_cookie_or_header_value_that_is_not_utf8_refuses_the_paste; final gates 2026-11-17: pytest 1398, Jest 478, Galata 67/67
   - test: a fetch copy with \\ud800 in a cookie value, and one with it in a header value: assert the refusal and no marker in it
   - test-tags: UNIT
   - log: 2026-11-17T15:54:55Z @kj added
   - log: 2026-11-17T20:41:58Z @kj closed
-- [x] `ACC-COOKIE-398-HDR-PIPE` **Texts state the limit of the pipe recipe** - MEDIUM; `vault get` --help, docs/cli-reference.md and the agent skill state beside the pipe recipe that on a refused read curl still sends the request, without the headers, and that under `vault exec --env VAR=NAME:headers` the command does not run
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
+- [x] `ACC-WEBAUT-398-HDR-PIPE` **Texts state the limit of the pipe recipe** - MEDIUM; `vault get` --help, docs/cli-reference.md and the agent skill state beside the pipe recipe that on a refused read curl still sends the request, without the headers, and that under `vault exec --env VAR=NAME:headers` the command does not run
   - evidence: pytest help_states_the_cookie_forms_format_and_exec_env_with_an_example_each, the_reference_states_what_a_refused_read_does_beside_the_pipe_and_the_wget_recipe, agent_skill_states_what_a_refused_read_does_in_the_pipe, exec_env_name_headers_refuses_as_get_format_headers_does (command not run); final gates 2026-11-17: pytest 1396, Jest 480, Galata 67/67
   - test: pytest: each of the three texts carries the clause; exec with NAME:headers on a refused read does not run the command
   - test-tags: UNIT
   - log: 2026-11-17T17:43:36Z @kj added
   - log: 2026-11-17T19:16:17Z @kj closed
+  - log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT"
 

@@ -2,6 +2,8 @@
 
 Defects in the passkey bridge: the relay between the Jupyter server and local clients, the browser dialogs, the CLI's reporting of ceremony results, and the password vault and its panel.
 
+- log: 2026-11-18T18:09:18Z @kj renamed category "COOKIE" -> "WEBAUT", 2 mention(s) rewritten
+
 ## Authors
 
 - `@kj` Konrad Jelen
@@ -630,7 +632,7 @@ The vault server side, CLI and Python API
   - log: 2026-11-16T17:52:34Z @kj added
   - log: 2026-11-16T17:52:43Z @kj first fix made the holder process a child of the command, so a command that waits for every child never returned; the holder is now started with a double fork
   - log: 2026-11-16T17:52:43Z @kj closed
-  - log: 2026-11-17T08:11:34Z @kj owner 2026-11-17: --cookie-file, the memory file and the holder process removed; a cookie entry reaches a command through exec --env as its Cookie header (ACC-COOKIE-340-EXEC)
+  - log: 2026-11-17T08:11:34Z @kj owner 2026-11-17: --cookie-file, the memory file and the holder process removed; a cookie entry reaches a command through exec --env as its Cookie header (ACC-WEBAUT-340-EXEC)
 - [-] `DEF-VAULT-121-OLD-SERVER` **add --cookies against a server not restarted stores a login entry** - MINOR; the new CLI against a Jupyter server not restarted since the install: `vault add NAME --cookies` stores a login entry with no password, because the old server knows no cookie entry
   - repro: install the build, do not restart the server, run vault add NAME --cookies with a paste on stdin
   - root-cause: 2026-11-17T07:07:40Z @kj the server loads the extension at its start, so the old code answers until the restart
@@ -1201,7 +1203,7 @@ The vault sidebar panel, its dialogs and styles
   - log: 2026-11-17T23:20:33Z @kj added
   - log: 2026-11-18T00:04:40Z @kj closed
 - [x] `DEF-PANEL-132-KEEP-HELP` **Edit help for a headers-only entry says 'the 0 cookies'** - MINOR; an entry stored from a copy with headers and no cookie shows 'Leave empty to keep the 0 cookies and the 1 header' in the Edit form, and the header it does hold reads as an afterthought
-  - related: ACC-COOKIE-354-PANEL-EDIT
+  - related: ACC-WEBAUT-354-PANEL-EDIT
   - evidence: jest vault-cookies.spec.ts 'says an empty paste keeps the headers too...': a headers-only entry reads 'Leave empty to keep the 1 header', the old expectation failed first; cookies strings unchanged; final gates 2026-11-18: pytest 1398, Jest 484, Galata 69/69
   - test-tags: UNIT
   - root-cause: 2026-11-17T23:20:38Z @kj dialogs.ts:241 composes the cookie clause from this._stored unconditionally

@@ -53,13 +53,13 @@ def test_agent_skill_is_short_and_points_at_help():
 
 @needs_checkout
 def test_agent_skill_description_names_cookies_and_keeps_its_triggers():
-    # ACC-COOKIE-360: the cookie triggers join the ones the description had.
+    # ACC-WEBAUT-360: the cookie triggers join the ones the description had.
     description = next(line for line in _REPOSITORY_COPY.read_text().splitlines()
                        if line.startswith("description: "))
     for trigger in ("cookies", "cookies.txt", "logged-in session", "curl", "wget", "yt-dlp",
                     "requests", "credential or token", "passphrase typed in the browser",
                     "git credential helper", "AWS credentials", "credential_process",
-                    # ACC-COOKIE-395: the words a request for a logged-in API call uses.
+                    # ACC-WEBAUT-395: the words a request for a logged-in API call uses.
                     "request headers", "Authorization header", "bearer token"):
         assert trigger in description, trigger
 
@@ -76,7 +76,7 @@ def test_agent_skill_states_the_three_cookie_rules():
 
 @needs_checkout
 def test_agent_skill_states_the_headers_read():
-    # ACC-COOKIE-395: cookies and request headers reach curl on standard input, and
+    # ACC-WEBAUT-395: cookies and request headers reach curl on standard input, and
     # `requests` as a dict; a header has no expiry.
     text = _REPOSITORY_COPY.read_text()
     assert "`vault get NAME --format headers | curl -H @- URL`" in text
@@ -86,7 +86,7 @@ def test_agent_skill_states_the_headers_read():
 
 @needs_checkout
 def test_agent_skill_states_what_a_refused_read_does_in_the_pipe():
-    # ACC-COOKIE-398: curl still sends the request; under exec the command does not run.
+    # ACC-WEBAUT-398: curl still sends the request; under exec the command does not run.
     line = next(line for line in _REPOSITORY_COPY.read_text().splitlines()
                 if "`vault get NAME --format headers | curl -H @- URL`" in line)
     assert "refused read: reason on stderr, curl still sends the request, without the headers" in line

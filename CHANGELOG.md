@@ -2,6 +2,12 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.13] - 2026-11-18
+
+### Changed
+
+- The acceptance-criteria category `COOKIE` is renamed `WEBAUT` across all 67 criteria, with every reference in the defects register and the tests following; no product behaviour changes
+
 ## [1.2.12] - 2026-11-18
 
 ### Added

@@ -831,7 +831,7 @@ def test_help_states_the_cookie_forms_format_and_exec_env_with_an_example_each(m
     assert "jupyterlab-passkey vault get NAME --format headers | curl -H @- URL" in exec_
     for said in (get, exec_):
         assert "A header has no expiry the vault can read" in said
-        # ACC-COOKIE-398: what a refused read does in the pipe, and under exec.
+        # ACC-WEBAUT-398: what a refused read does in the pipe, and under exec.
         assert ("when the read is refused, get prints its reason on stderr and curl still sends the request, "
                 "without the headers; under `exec --env VAR=NAME:headers` the command does not run") in said
     recipe = 'printf "Cookie: %s\\n" "$C" | curl -H @- https://app.example.com/api'
