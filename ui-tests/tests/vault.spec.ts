@@ -728,14 +728,11 @@ test('one category opens at a time, and the wheel folds to the next at its last 
   expect(await height(work)).toBeGreaterThan(100);
   await expect(home).toBeVisible();
   await expect(work).toBeVisible();
-  // At the last entry the wheel previews the previous category, and a fresh gesture
-  // after the wheel stops folds into it. The wheel anywhere over the panel drives the
+  // At the last entry one -200 px notch adds a 50 px step, at or past the give
+  // length (48 px at a base of 88 px or more, else half the base), so it folds into
+  // the previous category on that event. The wheel anywhere over the panel drives the
   // open category, never the one under the pointer.
   await panel(page).hover();
-  await page.mouse.wheel(0, -200);
-  await page.waitForTimeout(500);
-  await page.mouse.wheel(0, -200);
-  await page.waitForTimeout(500);
   await page.mouse.wheel(0, -200);
   await expect(home).toHaveAttribute('aria-expanded', 'true', {
     timeout: 5000

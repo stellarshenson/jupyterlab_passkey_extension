@@ -2,6 +2,12 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.14] - 2026-11-22
+
+### Changed
+
+- The vault panel's harmonica navigation follows the design system's give-at-full-stretch rule: the wheel event that brings the pull to the give length folds to the next category, the pull follows the scroll distance, the give length is 48 px or half the base, the fold starts from the heights on screen, and no settle follows
+
 ## [1.2.13] - 2026-11-18
 
 ### Changed

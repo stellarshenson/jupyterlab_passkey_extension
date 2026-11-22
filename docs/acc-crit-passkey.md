@@ -2189,9 +2189,9 @@ The vault sidebar panel in JupyterLab
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-11-05T13:47:28Z @kj added
   - log: 2026-11-05T15:46:40Z @kj closed
-- [x] `ACC-PANEL-307-HOLD` **hold or fresh gesture switches** - HIGH; at the last entry, 438 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end
-  - evidence: Jest 425 of 425: 'pins the hold at 438 ms: 400 ms is no fold, past 438 ms folds'; the wheel test folds at 440 ms and the spring wait is 160 + 400; Galata 30 of 30
-  - test: fake timers: 400 ms of pull does not fold, past 438 ms it does, a fresh burst folds at once
+- [x] `ACC-PANEL-307-GIVE` **the give length event switches** - HIGH; at the last entry, the wheel event that brings the pull to the give length folds the category and opens the next, and nothing else does; there is no held-pull time and no pause give; upward mirrors it at the first entry
+  - evidence: Jest 489 of 489, 2026-11-22: 'folds on the wheel event that brings the pull to the 48px give length', 'does not fold at 47px' and the upward fold test; 261 of 261 in the vault suite
+  - test: fake timers: two 100px notches fold at 48px; 88px then 100px stops at 47px and the next notch folds; no timer folds on its own; an upward 48px pull folds back
   - test-tags: UNIT, FUNCTIONAL
   - log: 2026-11-05T13:47:28Z @kj added
   - log: 2026-11-05T14:56:56Z @kj amended text "at the last entry, 700 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end" -> "HIGH; at the last entry, 350 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end"
@@ -2201,18 +2201,32 @@ The vault sidebar panel in JupyterLab
   - log: 2026-11-05T18:14:55Z @kj amended text "at the last entry, 350 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end" -> "HIGH; at the last entry, 438 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end"
   - log: 2026-11-05T18:14:55Z @kj edited test "fake timers: 300 ms of pull does not fold, past 350 ms it does, a fresh burst folds at once" -> "fake timers: 400 ms of pull does not fold, past 438 ms it does, a fresh burst folds at once"
   - log: 2026-11-05T19:04:29Z @kj closed: verified on the installed build
-- [x] `ACC-PANEL-308-PULL` **pull preview and spring** - MEDIUM; the pull preview eases the neighbour in 3 px per wheel event, capped at 22 px, and springs back after 160 ms idle
-  - evidence: Jest 424, 2026-11-05: the 22 px cap, the 160 ms release and the spring back without moving the rows are three tests with those names
-  - test: send ten pull events, assert 22 px; idle 150 ms and assert it stands, past 160 ms it returns
+  - log: 2026-11-22T19:08:22Z @kj renamed code "HOLD" -> "GIVE"
+  - log: 2026-11-22T19:08:23Z @kj reopened: owner updated the harmonica rule on 2026-11-17: the switch comes at full stretch, with no held pull and no gesture gap; evidence retired: Jest 425 of 425: 'pins the hold at 438 ms: 400 ms is no fold, past 438 ms folds'; the wheel test folds at 440 ms and the spring wait is 160 + 400; Galata 30 of 30
+  - log: 2026-11-22T19:08:23Z @kj amended title "hold or fresh gesture switches" -> "the give length event switches"; text "at the last entry, 438 ms of held pull or a fresh gesture after a gap of 220 ms folds the category and opens the next; a wide swipe alone stops at the end" -> "HIGH; at the last entry, the wheel event that brings the pull to the give length folds the category and opens the next, and nothing else does; there is no held-pull time and no pause give; upward mirrors it at the first entry"
+  - log: 2026-11-22T19:08:23Z @kj edited test "fake timers: 400 ms of pull does not fold, past 438 ms it does, a fresh burst folds at once" -> "fake timers: two 100px notches fold at 48px; 88px then 100px stops at 47px and the next notch folds; no timer folds on its own; an upward 48px pull folds back"
+  - log: 2026-11-22T19:08:24Z @kj closed: verified on the new rule
+- [x] `ACC-PANEL-308-PULL` **pull preview, spring and direction** - MEDIUM; each wheel event eases the neighbour in by max(3px, |deltaY|/4) from the pull on screen, up to the give length; a short pull springs back after 160ms idle, settled under 300ms; a direction change drops the preview
+  - evidence: Jest 489 of 489, 2026-11-22: the pull-step, line-mode, 160ms spring and direction-change tests; 261 of 261 in the vault suite
+  - test: one 100px notch adds 25px; an 8px notch adds 3px; a three-line notch adds 12px; the spring stands at 150ms, runs from 160ms and settles under 300ms; a direction change clears the preview
   - test-tags: UNIT
   - log: 2026-11-05T13:47:28Z @kj added
   - log: 2026-11-05T15:46:44Z @kj closed
-- [x] `ACC-PANEL-309-FOLD` **fold and settle timing** - MEDIUM; the switch folds over 400 ms and a 250 ms settle after it ignores the wheel
-  - evidence: Jest 424, 2026-11-05: the wheel test pins the 400 ms eased fold and the 250 ms settle; the mid-fold banner test asserts the completion relayout
-  - test: fake timers: assert the 400 ms eased fold and that a wheel during the 250 ms settle moves nothing
+  - log: 2026-11-22T19:08:24Z @kj reopened: owner updated the harmonica rule on 2026-11-17: the pull follows the scroll distance and the spring settles sooner; evidence retired: Jest 424, 2026-11-05: the 22 px cap, the 160 ms release and the spring back without moving the rows are three tests with those names
+  - log: 2026-11-22T19:08:24Z @kj amended title "pull preview and spring" -> "pull preview, spring and direction"; text "the pull preview eases the neighbour in 3 px per wheel event, capped at 22 px, and springs back after 160 ms idle" -> "MEDIUM; each wheel event eases the neighbour in by max(3px, |deltaY|/4) from the pull on screen, up to the give length; a short pull springs back after 160ms idle, settled under 300ms; a direction change drops the preview"
+  - log: 2026-11-22T19:08:24Z @kj edited test "send ten pull events, assert 22 px; idle 150 ms and assert it stands, past 160 ms it returns" -> "one 100px notch adds 25px; an 8px notch adds 3px; three line-mode notches add 12px; the spring stands at 150ms, runs from 160ms and settles under 300ms; a direction change clears the preview"
+  - log: 2026-11-22T19:08:25Z @kj closed: verified on the new rule
+  - log: 2026-11-22T19:42:17Z @kj edited test "one 100px notch adds 25px; an 8px notch adds 3px; three line-mode notches add 12px; the spring stands at 150ms, runs from 160ms and settles under 300ms; a direction change clears the preview" -> "one 100px notch adds 25px; an 8px notch adds 3px; a three-line notch adds 12px; the spring stands at 150ms, runs from 160ms and settles under 300ms; a direction change clears the preview"
+- [x] `ACC-PANEL-309-FOLD` **fold from the heights on screen, no settle** - MEDIUM; the switch folds the leaving section to its band and opens the entering one over 400ms ease-out cubic from the heights on screen, and a wheel during the fold is cancelled; no settle follows, so the first event after the fold acts on the new section
+  - evidence: Jest 489 of 489, 2026-11-22: 'cancels wheel events during the fold...' and 'acts on the new section with the first wheel after the fold'; 261 of 261 in the vault suite
+  - test: fake timers: assert the 400ms eased fold from base less pull and pull, a wheel during the fold changes no height, and the first wheel after it acts on the new section
   - test-tags: UNIT
   - log: 2026-11-05T13:47:28Z @kj added
   - log: 2026-11-05T15:46:44Z @kj closed
+  - log: 2026-11-22T19:08:25Z @kj reopened: owner updated the harmonica rule on 2026-11-17: the fold starts from the heights on screen and no settle follows; evidence retired: Jest 424, 2026-11-05: the wheel test pins the 400 ms eased fold and the 250 ms settle; the mid-fold banner test asserts the completion relayout
+  - log: 2026-11-22T19:08:25Z @kj amended title "fold and settle timing" -> "fold from the heights on screen, no settle"; text "the switch folds over 400 ms and a 250 ms settle after it ignores the wheel" -> "MEDIUM; the switch folds the leaving section to its band and opens the entering one over 400ms ease-out cubic from the heights on screen, and a wheel during the fold is cancelled; no settle follows, so the first event after the fold acts on the new section"
+  - log: 2026-11-22T19:08:26Z @kj edited test "fake timers: assert the 400 ms eased fold and that a wheel during the 250 ms settle moves nothing" -> "fake timers: assert the 400ms eased fold from base less pull and pull, a wheel during the fold changes no height, and the first wheel after it acts on the new section"
+  - log: 2026-11-22T19:08:26Z @kj closed: verified on the new rule
 - [x] `ACC-PANEL-310-GUTTER` **the open category owns the scrollbar** - MEDIUM; the open category's rows own the scrollbar at the panel's right edge, and the status row's holder ends level with the rows' right edge
   - evidence: Jest 424 and Galata ux11 30 of 30, 2026-11-05: 'keeps the status row gutter in one place in every view' stubs the measured scrollbar; the Galata geometry test passes on the same build
   - test: stub the viewport's scrollbar width, assert --jp-passkey-vault-gutter and the status row's padding
@@ -2270,6 +2284,20 @@ The vault sidebar panel in JupyterLab
   - log: 2026-11-16T13:40:45Z @kj closed
   - log: 2026-11-16T17:53:32Z @kj amended text "the entry edit form's name field can be changed; Save with a new name renames the entry, and a name that exists is refused with the reason under the field" -> "the entry edit form's name field can be changed; Save with a new name renames the entry and puts focus on the renamed row, and a name that exists is refused with the reason under the field"
   - log: 2026-11-16T17:53:50Z @kj edited evidence "Galata 'Edit renames an entry, and a name in use is refused under the field'; 3 vault-cookies.spec.ts and 1 vault-api.spec.ts Jest titles in tests; final gates 2026-11-16: pytest 1275, Jest 470, Galata 64/64" -> "Galata 'Edit renames an entry, and a name in use is refused under the field'; Jest 'puts focus on the renamed row after a rename from the Edit form'; final gates 2026-11-16: pytest 1306, Jest 473, Galata 65/65"
+- [x] `ACC-PANEL-399-GIVE-LENGTH` **the give length scales with the base** - MEDIUM; the give length is 48px when the open list's base height is 88px or more, else half the base rounded down to a whole px, never under 3px
+  - evidence: Jest 489 of 489, 2026-11-22: 'halves the give length below an 88px base' and the 16-event touchpad test
+  - test: base 156px gives 48px and folds on the 16th 8px touchpad event; a 60px base gives 30px
+  - test-tags: UNIT
+  - log: 2026-11-22T19:08:26Z @kj added
+  - log: 2026-11-22T19:08:26Z @kj closed: verified on the new rule
+  - log: 2026-11-22T19:42:17Z @kj edited test "base 156px gives 48px and folds on the 16th 12px touchpad event; a 60px base gives 30px" -> "base 156px gives 48px and folds on the 16th 8px touchpad event; a 60px base gives 30px"
+- [x] `ACC-PANEL-400-NO-SCROLL` **a list that cannot scroll switches the same way** - MEDIUM; a list whose rows fit, or has none, is at its end in both directions, so the wheel stretches the pull and switches the same way and never passes through
+  - evidence: Jest 489 of 489, 2026-11-22: the down-fold and upward-fold wheel tests on lists with jsdom scrollHeight 0 fold on the same events and each wheel event is cancelled
+  - test: wheel down and up on categories whose rows fit; assert the preview and the fold, and that each wheel event is cancelled
+  - test-tags: UNIT
+  - log: 2026-11-22T19:08:27Z @kj added
+  - log: 2026-11-22T19:08:27Z @kj closed: verified on the new rule
+  - log: 2026-11-22T19:42:19Z @kj edited test "open a category whose rows fit and wheel both ways; assert the preview and the fold, and that every wheel event is cancelled" -> "wheel down and up on categories whose rows fit; assert the preview and the fold, and that each wheel event is cancelled"; evidence "Jest 489 of 489, 2026-11-22: the wheel tests on lists with jsdom scrollHeight 0 fold on the same events and every wheel event is cancelled" -> "Jest 489 of 489, 2026-11-22: the down-fold and upward-fold wheel tests on lists with jsdom scrollHeight 0 fold on the same events and each wheel event is cancelled"
 
 ## Vault settings `CONFIG`
 

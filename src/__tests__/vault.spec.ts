@@ -441,13 +441,16 @@ function openFilter(panel: VaultPanel): HTMLInputElement {
   ) as HTMLInputElement;
 }
 
-/** Stub the harmonica's geometry (a 200 px list, a 22 px section) and lay it out. */
-function harmonica(panel: VaultPanel): void {
+/**
+ * Stub the harmonica's geometry (a 200 px list, a 22 px section) and lay it out, so
+ * the open base is 156 px; a shorter list gives a shorter base.
+ */
+function harmonica(panel: VaultPanel, listHeight = 200): void {
   const list = panel.node.querySelector(
     '.jp-PasskeyVaultPanel-list'
   ) as HTMLElement;
   Object.defineProperty(list, 'clientHeight', {
-    value: 200,
+    value: listHeight,
     configurable: true
   });
   for (const section of Array.from(
@@ -2840,9 +2843,8 @@ describe('VaultPanel', () => {
         configurable: true
       });
       home.scrollTop = 500 - 156;
-      // One event arms the switch; a fresh gesture after the gap folds.
+      // The first notch adds 25px of the 48px give; the second reaches it and folds.
       wheel(panel, 100);
-      await jest.advanceTimersByTimeAsync(300);
       wheel(panel, 100);
       // Mid-fold a banner line takes 26 px of the list.
       await jest.advanceTimersByTimeAsync(100);
@@ -2892,16 +2894,13 @@ describe('VaultPanel', () => {
       // The rows scroll inside the open category before anything folds.
       expect(wheel(panel, 100).defaultPrevented).toBe(true);
       expect(home.scrollTop).toBe(100);
-      // At the last entry the neighbour eases in 3 px per event.
+      // At the last entry the neighbour eases in by a quarter of the notch.
       home.scrollTop = 500 - 156;
       wheel(panel, 100);
-      expect(home.style.height).toBe('153px');
-      expect(infra.style.height).toBe('3px');
-      // 438 ms of held pull folds: 400 ms later the next category owns the list.
-      for (const wait of [100, 100, 100, 100, 40]) {
-        await jest.advanceTimersByTimeAsync(wait);
-        wheel(panel, 100);
-      }
+      expect(home.style.height).toBe('131px');
+      expect(infra.style.height).toBe('25px');
+      // The second notch brings the pull to the 48px give: the fold starts.
+      wheel(panel, 100);
       await jest.advanceTimersByTimeAsync(400);
       expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
         'false',
@@ -2911,48 +2910,12 @@ describe('VaultPanel', () => {
         '0px',
         '156px'
       ]);
-      // The settle swallows the carried momentum: no scroll and no new pull.
-      const before = infra.scrollTop;
-      expect(wheel(panel, -100).defaultPrevented).toBe(true);
-      expect(infra.scrollTop).toBe(before);
-      expect(viewports(panel).map(v => v.style.height)).toEqual([
-        '0px',
-        '156px'
-      ]);
-      // A fresh gesture after the settle folds back up.
-      await jest.advanceTimersByTimeAsync(300);
-      wheel(panel, -100);
-      expect(infra.style.height).toBe('153px');
-      await jest.advanceTimersByTimeAsync(300);
-      wheel(panel, -100);
-      await jest.advanceTimersByTimeAsync(400);
-      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
-        'true',
-        'false'
-      ]);
-      expect(viewports(panel).map(v => v.style.height)).toEqual([
-        '156px',
-        '0px'
-      ]);
     } finally {
       jest.useRealTimers();
     }
   });
 
-  it('moves a line-mode wheel delta as lines, not pixels', async () => {
-    const panel = await panelWith(fakeApi());
-    harmonica(panel);
-    const [home] = viewports(panel);
-    Object.defineProperty(home, 'scrollHeight', {
-      value: 500,
-      configurable: true
-    });
-    // Three lines, as a Firefox notch reports them: 3 x 16 px.
-    wheel(panel, 3, WheelEvent.DOM_DELTA_LINE);
-    expect(home.scrollTop).toBe(48);
-  });
-
-  it('stops the pull preview at 22 px, however far the wheel goes', async () => {
+  it('moves a line-mode notch as 48px of scroll, then 12px of pull at the end', async () => {
     jest.useFakeTimers();
     try {
       const panel = await panelWith(fakeApi());
@@ -2962,50 +2925,79 @@ describe('VaultPanel', () => {
         value: 500,
         configurable: true
       });
+      // Three lines, as a Firefox notch reports them: 3 x 16 px.
+      wheel(panel, 3, WheelEvent.DOM_DELTA_LINE);
+      expect(home.scrollTop).toBe(48);
+      // At the end the same notch adds max(3px, 48px / 4) to the pull.
       home.scrollTop = 500 - 156;
-      // Ten events would add 30 px; the preview stops at the 22 px cap.
-      for (let n = 0; n < 10; n += 1) {
-        wheel(panel, 100);
-      }
+      wheel(panel, 3, WheelEvent.DOM_DELTA_LINE);
+      expect(infra.style.height).toBe('12px');
+      expect(home.style.height).toBe('144px');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('folds on the wheel event that brings the pull to the 48px give length', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      const [home, infra] = viewports(panel);
+      // A 100px notch adds 25px; the second reaches the give and folds.
+      expect(wheel(panel, 100).defaultPrevented).toBe(true);
+      expect(home.style.height).toBe('131px');
+      expect(infra.style.height).toBe('25px');
+      // A pull previews the neighbour without opening it.
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'true',
+        'false'
+      ]);
+      expect(wheel(panel, 100).defaultPrevented).toBe(true);
+      // The fold starts from the heights on screen: base less the pull, and the pull.
+      expect(home.style.height).toBe('108px');
+      expect(infra.style.height).toBe('48px');
+      await jest.advanceTimersByTimeAsync(16);
+      expect(home.style.height).toBe('96px');
+      expect(infra.style.height).toBe('60px');
+      await jest.advanceTimersByTimeAsync(200);
+      // The fold runs from those heights towards 0 and the free space.
+      expect(Number.parseFloat(home.style.height)).toBeGreaterThan(0);
+      expect(Number.parseFloat(home.style.height)).toBeLessThan(108);
+      expect(Number.parseFloat(infra.style.height)).toBeGreaterThan(48);
+      await jest.advanceTimersByTimeAsync(250);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'true'
+      ]);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '156px'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not fold at 47px of pull; the next notch reaches the give', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      const [, infra] = viewports(panel);
+      // 88px adds 22px, then a 100px notch adds 25px: 47px, one short of the give.
+      wheel(panel, 88);
       expect(infra.style.height).toBe('22px');
-      // The same 22 px come off the section being left.
-      expect(home.style.height).toBe('134px');
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  it('pins the hold at 438 ms: 400 ms is no fold, past 438 ms folds', async () => {
-    jest.useFakeTimers();
-    try {
-      const panel = await panelWith(fakeApi());
-      harmonica(panel);
-      const [home] = viewports(panel);
-      Object.defineProperty(home, 'scrollHeight', {
-        value: 500,
-        configurable: true
-      });
-      home.scrollTop = 500 - 156;
       wheel(panel, 100);
-      // 400 ms of held pull, an event every 100 ms so the gesture stays one burst.
-      for (const wait of [100, 100, 100, 100]) {
-        await jest.advanceTimersByTimeAsync(wait);
-        wheel(panel, 100);
-      }
+      expect(infra.style.height).toBe('47px');
       expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
         'true',
         'false'
       ]);
-      // The next event past 438 ms folds; both categories are open during the fold.
-      await jest.advanceTimersByTimeAsync(39);
+      // The next 100px notch reaches the give and folds.
       wheel(panel, 100);
-      await jest.advanceTimersByTimeAsync(50);
-      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
-        'true',
-        'true'
-      ]);
-      // The fold settles on the next category.
-      await jest.advanceTimersByTimeAsync(400);
+      expect(infra.style.height).toBe('48px');
+      await jest.advanceTimersByTimeAsync(450);
       expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
         'false',
         'true'
@@ -3015,7 +3007,59 @@ describe('VaultPanel', () => {
     }
   });
 
-  it('springs the pull preview back when the wheel stops, without moving the rows', async () => {
+  it('adds 3px for each slow touchpad event and folds on the 16th', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      const [, infra] = viewports(panel);
+      // 8px events add their 3px floor; 15 of them stop at 45px.
+      for (let n = 0; n < 15; n += 1) {
+        wheel(panel, 8);
+      }
+      expect(infra.style.height).toBe('45px');
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'true',
+        'false'
+      ]);
+      // The 16th reaches the 48px give.
+      wheel(panel, 8);
+      expect(infra.style.height).toBe('48px');
+      await jest.advanceTimersByTimeAsync(450);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'true'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('halves the give length below an 88px base', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      // A 104px list less the two 22px bands gives a 60px base and a 30px give.
+      harmonica(panel, 104);
+      const [home, infra] = viewports(panel);
+      expect(home.style.height).toBe('60px');
+      wheel(panel, 100);
+      expect(infra.style.height).toBe('25px');
+      // The next notch reaches the 30px give, not 48px, and folds.
+      wheel(panel, 100);
+      expect(home.style.height).toBe('30px');
+      expect(infra.style.height).toBe('30px');
+      await jest.advanceTimersByTimeAsync(450);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '60px'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps the preview 150ms idle, runs the spring from 160ms and settles under 300ms', async () => {
     jest.useFakeTimers();
     try {
       const panel = await panelWith(fakeApi());
@@ -3027,22 +3071,81 @@ describe('VaultPanel', () => {
       });
       home.scrollTop = 500 - 156;
       wheel(panel, 100);
-      expect(home.style.height).toBe('153px');
-      expect(infra.style.height).toBe('3px');
-      // After 160 ms idle the damped spring runs and settles under 300 ms.
-      await jest.advanceTimersByTimeAsync(160 + 400);
+      expect(home.style.height).toBe('131px');
+      expect(infra.style.height).toBe('25px');
+      // Before 160 ms idle the preview stands.
+      await jest.advanceTimersByTimeAsync(150);
+      expect(home.style.height).toBe('131px');
+      expect(infra.style.height).toBe('25px');
+      // At 160 ms the damped spring runs from the pull on screen.
+      await jest.advanceTimersByTimeAsync(26);
+      expect(Number.parseFloat(infra.style.height)).toBeLessThan(25);
+      expect(Number.parseFloat(infra.style.height)).toBeGreaterThanOrEqual(0);
+      // It settles under 300 ms, and the rows never moved.
+      await jest.advanceTimersByTimeAsync(300);
       expect(viewports(panel).map(v => v.style.height)).toEqual([
         '156px',
         '0px'
       ]);
-      // Decoration only: the rows never moved.
       expect(home.scrollTop).toBe(500 - 156);
     } finally {
       jest.useRealTimers();
     }
   });
 
-  it('keeps the pull preview for 160 ms idle, then springs it to zero', async () => {
+  it('cancels wheel events during the fold without changing a height', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      wheel(panel, 100);
+      wheel(panel, 100);
+      await jest.advanceTimersByTimeAsync(100);
+      const before = viewports(panel).map(v => v.style.height);
+      const during = wheel(panel, 100);
+      expect(during.defaultPrevented).toBe(true);
+      expect(viewports(panel).map(v => v.style.height)).toEqual(before);
+      await jest.advanceTimersByTimeAsync(400);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'true'
+      ]);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '156px'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('acts on the new section with the first wheel after the fold', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      const [, infra] = viewports(panel);
+      wheel(panel, 100);
+      wheel(panel, 100);
+      await jest.advanceTimersByTimeAsync(450);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'true'
+      ]);
+      Object.defineProperty(infra, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      // A downward fold rests the new list at its top, so the first wheel scrolls it.
+      expect(infra.scrollTop).toBe(0);
+      expect(wheel(panel, 100).defaultPrevented).toBe(true);
+      expect(infra.scrollTop).toBe(100);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('drops the preview on a direction change', async () => {
     jest.useFakeTimers();
     try {
       const panel = await panelWith(fakeApi());
@@ -3054,21 +3157,50 @@ describe('VaultPanel', () => {
       });
       home.scrollTop = 500 - 156;
       wheel(panel, 100);
-      expect(infra.style.height).toBe('3px');
-      // Before 160 ms idle the preview stands.
-      await jest.advanceTimersByTimeAsync(150);
-      expect(home.style.height).toBe('153px');
-      expect(infra.style.height).toBe('3px');
-      // After it the spring returns the preview ...
-      await jest.advanceTimersByTimeAsync(250);
-      expect(parseFloat(infra.style.height)).toBeLessThan(3);
-      expect(parseFloat(infra.style.height)).toBeGreaterThanOrEqual(0);
-      // ... to zero.
-      await jest.advanceTimersByTimeAsync(1000);
+      expect(infra.style.height).toBe('25px');
+      // Upward the shrunken list can still scroll: the preview drops and the rows move.
+      expect(wheel(panel, -100).defaultPrevented).toBe(true);
       expect(viewports(panel).map(v => v.style.height)).toEqual([
         '156px',
         '0px'
       ]);
+      expect(home.scrollTop).toBe(500 - 156 - 100);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('folds upward into the previous category and pins its list to the bottom', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(fakeApi());
+      harmonica(panel);
+      const [home, infra] = viewports(panel);
+      // Open the last category from its band, at the top of its rows.
+      bands(panel)[1].click();
+      Object.defineProperty(home, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      // Upward from the first entry previews the previous category's last rows.
+      expect(wheel(panel, -100).defaultPrevented).toBe(true);
+      expect(home.style.height).toBe('25px');
+      expect(infra.style.height).toBe('131px');
+      expect(home.scrollTop).toBe(500);
+      // The second notch reaches the give and folds up over 400ms.
+      expect(wheel(panel, -100).defaultPrevented).toBe(true);
+      expect(home.style.height).toBe('48px');
+      await jest.advanceTimersByTimeAsync(450);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'true',
+        'false'
+      ]);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '156px',
+        '0px'
+      ]);
+      // The fold pins the entering list to its bottom.
+      expect(home.scrollTop).toBe(500);
     } finally {
       jest.useRealTimers();
     }

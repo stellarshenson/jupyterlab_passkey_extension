@@ -249,15 +249,17 @@ const cookieIcon = new LabIcon({
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path class="jp-icon3" fill="#616161" d="M12 3a9 9 0 1 0 9 9c0-.5-.04-1-.13-1.5C20.6 10 20 10 20 10h-2V9c0-1-1-1-1-1h-2V7c0-1-1-1-1-1h-1V4c0-1-1-1-1-1zM9.5 6a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm-3 4a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm5 1a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm5 2a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM11 16a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z"/></svg>'
 });
 
-/** The harmonica's values, from the design system's Harmonica navigation chapter. */
+/**
+ * The harmonica's values, from the design system's Harmonica navigation chapter.
+ * The wheel event that brings the pull to the give length folds the section;
+ * the give length is 48px, or half the open list's base below 88px, never under 3px.
+ */
 const EXPAND_STEP = 160; // px of free space one wheel event may take
-const HOLD_MS = 438; // the held pull before a switch
-const GESTURE_GAP_MS = 220; // a pause that starts a new gesture
-const PULL_STEP = 3; // px the neighbour eases in per event
-const PULL_MAX = 22; // the cap of the pull preview
+const GIVE_PX = 48; // the pull that folds a list at 88px or more
+const GIVE_BASE_PX = 88; // below this the give length is half the base
 const PULL_RELEASE_MS = 160; // idle before the spring starts
+const SPRING_MS = 300; // the spring settles by this time
 const FOLD_MS = 400; // the fold from one category to the next
-const SETTLE_MS = 250; // wheel ignored after a switch
 const WHEEL_LINE_PX = 16; // px in one line-mode wheel delta
 
 /** One category of the main list: its band, and the viewport that scrolls its rows. */
@@ -1460,12 +1462,13 @@ export class VaultPanel extends Widget {
     this._sections.forEach((s, i) => {
       // Boundary tests read the base height, never the rendered one.
       const base = this._baseHeights[i] ?? 0;
+      const pull = Math.max(0, this._pull.amount);
       let extra = 0;
-      if (this._pull.amount > 0) {
+      if (pull > 0) {
         if (i === this._pull.from) {
-          extra = -this._pull.amount;
+          extra = -pull;
         } else if (i === this._pull.to) {
-          extra = this._pull.amount;
+          extra = pull;
         }
       }
       // A panel too short for the bands: the open category keeps its natural height
@@ -1531,30 +1534,38 @@ export class VaultPanel extends Widget {
     return true;
   }
 
-  /** Ease the boundary neighbour in by a step, and spring back when the wheel stops. */
-  private _pullTo(from: number, to: number): void {
-    this._pull.from = from;
-    this._pull.to = to;
-    this._pull.amount = Math.min(PULL_MAX, this._pull.amount + PULL_STEP);
-    this._apply();
-    if (this._pullTimer !== null) {
-      window.clearTimeout(this._pullTimer);
-    }
-    this._pullTimer = window.setTimeout(
-      () => this._springBack(),
-      PULL_RELEASE_MS
-    );
+  /** The give length: 48px, else half the base rounded down, never under 3px. */
+  private _giveLength(base: number): number {
+    return base >= GIVE_BASE_PX ? GIVE_PX : Math.max(3, Math.floor(base / 2));
   }
 
-  private _clearPull(): void {
+  /** Cancel the idle timer and the frame of a running spring. */
+  private _stopSpring(): void {
     if (this._pullTimer !== null) {
       window.clearTimeout(this._pullTimer);
       this._pullTimer = null;
     }
-    if (this._pull.amount > 0) {
+    if (this._frame !== null) {
+      window.cancelAnimationFrame(this._frame);
+      this._frame = null;
+    }
+  }
+
+  private _clearPull(): void {
+    this._stopSpring();
+    if (this._pull.from !== -1) {
       this._pull = { from: -1, to: -1, amount: 0 };
       this._apply();
     }
+  }
+
+  /** Arm the 160ms idle spring that returns a short pull to rest. */
+  private _armSpring(): void {
+    this._stopSpring();
+    this._pullTimer = window.setTimeout(
+      () => this._springBack(),
+      PULL_RELEASE_MS
+    );
   }
 
   /** The damped spring of the pull preview; it moves no scroll position. */
@@ -1564,44 +1575,55 @@ export class VaultPanel extends Widget {
     if (from <= 0 || this._folding) {
       return;
     }
-    let start: number | null = null;
-    const frame = (t: number): void => {
-      if (start === null) {
-        start = t;
-      }
-      const x = (t - start) / 1000;
-      const a = from * Math.exp(-7 * x) * Math.cos(16 * x);
-      if (Math.abs(a) < 0.4 || x > 0.7) {
+    const start = Date.now();
+    const frame = (): void => {
+      const elapsed = Date.now() - start;
+      const t = elapsed / 1000;
+      const value = from * Math.exp(-7 * t) * Math.cos(16 * t);
+      if (Math.abs(value) < 1 || elapsed >= SPRING_MS) {
         this._pull = { from: -1, to: -1, amount: 0 };
         this._frame = null;
         this._apply();
         return;
       }
-      this._pull.amount = Math.abs(a);
+      this._pull.amount = value;
       this._apply();
       this._frame = window.requestAnimationFrame(frame);
     };
     this._frame = window.requestAnimationFrame(frame);
   }
 
-  /** Fold `from` into its band while `to` opens over FOLD_MS, then settle. */
+  /**
+   * Fold `from` into its band while `to` opens over FOLD_MS, ease-out cubic,
+   * from the heights on screen: leaving at its base less the pull, entering
+   * at the pull, both reaching 0 and the free space.
+   */
   private _foldInto(to: number, dir: number): void {
     if (to < 0 || to >= this._sections.length) {
       return;
     }
     this._folding = true;
+    this._stopSpring();
     const from = this._focus;
-    const total = this._baseHeights[from] ?? 0;
-    let start: number | null = null;
-    const frame = (t: number): void => {
-      if (start === null) {
-        start = t;
-      }
-      const p = Math.min(1, (t - start) / FOLD_MS);
+    const base = this._baseHeights[from] ?? 0;
+    const give = this._giveLength(base);
+    // The pull is the fold's starting height, so clearing it is what keeps it from
+    // being subtracted twice.
+    this._pull = { from: -1, to: -1, amount: 0 };
+    const start = Date.now();
+    const frame = (): void => {
+      const p = Math.min(1, (Date.now() - start) / FOLD_MS);
       const e = 1 - Math.pow(1 - p, 3);
-      const span = Math.min(total, this._freeSpace());
-      this._baseHeights[from] = Math.round(span * (1 - e));
-      this._baseHeights[to] = Math.round(span * e);
+      const free = this._freeSpace();
+      const leaveHeight = (base - give) * (1 - e);
+      const enterHeight = give + (free - give) * e;
+      // A banner that shrinks the list mid-fold scales both heights onto it.
+      const fit =
+        leaveHeight + enterHeight > free
+          ? free / (leaveHeight + enterHeight)
+          : 1;
+      this._baseHeights[from] = Math.round(leaveHeight * fit);
+      this._baseHeights[to] = Math.round(enterHeight * fit);
       this._apply();
       // The last rows stay in view through the fold: the leaving viewport pins to
       // its bottom; the entering one to its top downward, its bottom upward.
@@ -1615,11 +1637,8 @@ export class VaultPanel extends Widget {
       }
       this._focus = to;
       this._openCategory = this._sections[to].category;
-      this._hold = null;
-      this._armedSwitch = null;
       this._folding = false;
       this._frame = null;
-      this._settleUntil = Date.now() + SETTLE_MS;
       this._layoutHeights();
     };
     this._frame = window.requestAnimationFrame(frame);
@@ -1637,23 +1656,15 @@ export class VaultPanel extends Widget {
 
   /** Stop a fold or a spring and drop the pull; the next render rebuilds the list. */
   private _stopHarmonica(): void {
-    if (this._frame !== null) {
-      window.cancelAnimationFrame(this._frame);
-      this._frame = null;
-    }
-    if (this._pullTimer !== null) {
-      window.clearTimeout(this._pullTimer);
-      this._pullTimer = null;
-    }
+    this._stopSpring();
     this._folding = false;
-    this._hold = null;
-    this._armedSwitch = null;
     this._pull = { from: -1, to: -1, amount: 0 };
   }
 
   /**
    * The harmonica's one gesture: the wheel anywhere over the panel drives the category
-   * in focus - expand, scroll, pull, then fold. Other views keep their own scrolling.
+   * in focus - expand, scroll, pull, then fold. The event that brings the pull to the
+   * give length folds; nothing else does.
    */
   private readonly _onWheel = (e: WheelEvent): void => {
     if (
@@ -1666,9 +1677,8 @@ export class VaultPanel extends Widget {
     if (!e.deltaY) {
       return;
     }
-    const now = Date.now();
-    if (this._folding || now < this._settleUntil) {
-      // A fold, and the settle after it, swallows the carried momentum.
+    // A wheel during the fold is cancelled and does nothing; no settle follows.
+    if (this._folding) {
       e.preventDefault();
       return;
     }
@@ -1676,9 +1686,6 @@ export class VaultPanel extends Widget {
       // The bands alone do not fit: the list scrolls natively, as before.
       return;
     }
-    // A gap before this event means a new gesture, not the tail of the last one.
-    const newBurst = now - this._lastWheel > GESTURE_GAP_MS;
-    this._lastWheel = now;
     const dir = e.deltaY > 0 ? 1 : -1;
     e.preventDefault();
     // Firefox mouse wheels report lines, not pixels; the native scroll is already off.
@@ -1697,62 +1704,54 @@ export class VaultPanel extends Widget {
     const step = Math.min(Math.abs(dy) || 100, EXPAND_STEP);
     // 1. The focused category takes the whole list first.
     if (this._grow(step)) {
-      this._hold = null;
-      this._armedSwitch = null;
       this._clearPull();
       return;
     }
     // 2. Then its rows scroll.
     const viewport = this._sections[i].viewport;
     const base = this._baseHeights[i] ?? 0;
-    const maxTop = viewport.scrollHeight - base;
-    const canScroll =
-      base > 12 &&
-      (dir > 0 ? viewport.scrollTop < maxTop - 1 : viewport.scrollTop > 1);
-    if (canScroll) {
-      this._hold = null;
-      this._armedSwitch = null;
+    // A list that cannot scroll is at its end in both directions.
+    const atEnd =
+      dir > 0
+        ? viewport.scrollTop + base >= viewport.scrollHeight - 1
+        : viewport.scrollTop <= 0;
+    if (!atEnd) {
       this._clearPull();
       viewport.scrollTop += dy;
       return;
     }
-    // 3. At the end of the rows the neighbour eases in, so the gesture shows what it
-    // pulls on. A hold switches, or a fresh gesture after stopping: a wide swipe
-    // that reaches the end stops there.
+    // 3. At the list end the neighbour eases in, up to the give length.
     const to = i + dir;
     if (to < 0 || to >= this._sections.length) {
       this._clearPull();
       return;
     }
-    this._pullTo(i, to);
+    let from = Math.max(0, this._pull.amount);
+    if (this._pull.from !== i || this._pull.to !== to) {
+      // A direction change drops the preview and starts at zero.
+      this._clearPull();
+      from = 0;
+    } else {
+      this._stopSpring();
+    }
+    const give = this._giveLength(base);
+    this._pull = {
+      from: i,
+      to,
+      amount: Math.min(give, from + Math.max(3, Math.abs(dy) / 4))
+    };
+    this._apply();
     if (dir < 0) {
+      // Upward, the neighbour previews its last rows.
       this._sections[to].viewport.scrollTop =
         this._sections[to].viewport.scrollHeight;
     }
-    if (
-      this._armedSwitch &&
-      this._armedSwitch.dir === dir &&
-      this._armedSwitch.i === i &&
-      newBurst
-    ) {
-      this._armedSwitch = null;
-      this._hold = null;
-      this._clearPull();
+    if (this._pull.amount >= give) {
+      // The event that reaches the give length folds on the same event.
       this._foldInto(to, dir);
       return;
     }
-    if (!this._hold || this._hold.dir !== dir || this._hold.i !== i) {
-      this._hold = { dir, i, since: now };
-      this._armedSwitch = { dir, i };
-      return;
-    }
-    if (now - this._hold.since < HOLD_MS) {
-      return;
-    }
-    this._armedSwitch = null;
-    this._hold = null;
-    this._clearPull();
-    this._foldInto(to, dir);
+    this._armSpring();
   };
 
   /**
@@ -2132,11 +2131,7 @@ export class VaultPanel extends Widget {
   /** The pull preview: an offset on the two boundary sections, never a base height. */
   private _pull = { from: -1, to: -1, amount: 0 };
   private _pullTimer: number | null = null;
-  private _hold: { dir: number; i: number; since: number } | null = null;
-  private _armedSwitch: { dir: number; i: number } | null = null;
-  private _lastWheel = 0;
   private _folding = false;
-  private _settleUntil = 0;
   private _frame: number | null = null;
   private _armed: string | null = null;
   private _bannerShown = '';
