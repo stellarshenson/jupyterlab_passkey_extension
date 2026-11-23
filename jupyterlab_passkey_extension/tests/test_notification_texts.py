@@ -439,7 +439,7 @@ SITES: tuple[Site, ...] = (
     # raiseSuccessToast raises every success toast in its own tab; its callers supply
     # the text.
     Site(
-        key=f"{PANEL_TS}:297",
+        key=f"{PANEL_TS}:298",
         kind="page",
         helper="",
         rows=(
@@ -463,19 +463,19 @@ SITES: tuple[Site, ...] = (
                 label_from=None,
                 caller=Source(PLUGIN_TS, 364, "raiseSuccessToast("),
             ),
-            _panel_row("Vault created", "created", "Vault", 710, 680, "this._act("),
-            _panel_row("Password and passkey added", "added", "passkey", 796, 778,
+            _panel_row("Vault created", "created", "Vault", 713, 683, "this._act("),
+            _panel_row("Password and passkey added", "added", "passkey", 799, 781,
                        "this._act("),
-            _panel_row("Passkey added", "added", "Passkey", 797, 778, "this._act("),
+            _panel_row("Passkey added", "added", "Passkey", 800, 781, "this._act("),
             _panel_row("Password and authenticator app added", "added",
-                       "authenticator app", 824, 810, "this._act("),
-            _panel_row("Recovery passphrase changed", "changed", "passphrase", 854, 830,
+                       "authenticator app", 827, 813, "this._act("),
+            _panel_row("Recovery passphrase changed", "changed", "passphrase", 857, 833,
                        "this._act("),
-            _panel_row("Data key rotated", "rotated", "key", 881, 865, "this._act("),
-            _panel_row("Passkey removed", "removed", "Passkey", 1888, 1885, "remove("),
+            _panel_row("Data key rotated", "rotated", "key", 884, 868, "this._act("),
+            _panel_row("Passkey removed", "removed", "Passkey", 1940, 1937, "remove("),
             _panel_row("Password and authenticator app removed", "removed",
-                       "authenticator app", 1910, 1907, "remove("),
-            _panel_row("Password and passkey removed", "removed", "passkey", 1931, 1928,
+                       "authenticator app", 1962, 1959, "remove("),
+            _panel_row("Password and passkey removed", "removed", "passkey", 1983, 1980,
                        "remove("),
         ),
     ),
@@ -955,7 +955,7 @@ def test_page_notifications_match_their_type_auto_close_and_action():
 
 
 def test_the_success_toast_carries_no_label_and_closes_in_three_seconds():
-    site = next(site for site in SITES if site.key == f"{PANEL_TS}:297")
+    site = next(site for site in SITES if site.key == f"{PANEL_TS}:298")
     row = site.rows[0]
     assert (row.type, row.auto_close, row.label, row.action) == (
         "success", 3000, "", False)

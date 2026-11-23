@@ -2,6 +2,12 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.16] - 2026-11-23
+
+### Fixed
+
+- The vault panel harmonica reads the swipe after a fold and continues with the next pull and its 400 ms animation; a swipe that ends leaves the new section at rest, and a new gesture scrolls it
+
 ## [1.2.14] - 2026-11-22
 
 ### Changed

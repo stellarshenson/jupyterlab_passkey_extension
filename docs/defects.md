@@ -1209,6 +1209,24 @@ The vault sidebar panel, its dialogs and styles
   - root-cause: 2026-11-17T23:20:38Z @kj dialogs.ts:241 composes the cookie clause from this._stored unconditionally
   - log: 2026-11-17T23:20:38Z @kj added
   - log: 2026-11-18T00:04:40Z @kj closed
+- [x] `DEF-PANEL-133-MOMENTUM` **the swipe's momentum turns the next section after a fold** - MEDIUM; after a fold the swipe's momentum keeps driving the wheel, so the new section scrolls and can fold again after the fingers stopped; cause: the wheel accepts post-fold events with no gesture boundary; fix: ignore the wheel until 160 ms pass with no event; `src/vault/panel.ts`
+  - evidence: Jest 491 of 491, 2026-11-22: the momentum and redraw tests; Galata 69 of 69 in 8.9 min; the fix was rejected and regressed as DEF-PANEL-133-MOMENTUM-1
+  - repro: trackpad, three categories: fold the first section with a swipe and keep the momentum going; the second section folds without a new pull
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-11-22T21:15:28Z @kj the fold ends with no gesture boundary, so the same swipe's momentum events are processed as a new pull
+  - log: 2026-11-22T21:15:28Z @kj added
+  - log: 2026-11-22T22:25:41Z @kj closed: fixed: the wheel is ignored after the fold until 160ms pass with no wheel event, and a redraw no longer clears the gate
+  - log: 2026-11-22T22:36:41Z @kj regressed as DEF-PANEL-133-MOMENTUM-1
+  - log: 2026-11-23T00:48:19Z @kj edited evidence "Jest 491 of 491, 2026-11-22: the momentum and redraw tests; Galata 69 of 69 in 8.9 min on port 37591; the trackpad repro no longer turns the second section" -> "Jest 491 of 491, 2026-11-22: the momentum and redraw tests; Galata 69 of 69 in 8.9 min; the fix was rejected and regressed as DEF-PANEL-133-MOMENTUM-1"
+- [x] `DEF-PANEL-133-MOMENTUM-1` **the swipe's momentum turns the next section after a fold** - MEDIUM; the quiet-gap gate stops reading the swipe after the fold; the swipe must be read and a continuing swipe must continue with the next pull from zero and the next 400ms fold animation; a swipe that ends leaves the new section at rest; `src/vault/panel.ts`
+  - evidence: Jest 496 of 496, 2026-11-23: the eight momentum tests at vault.spec.ts:3132-3417; 268 of 268 in the vault suite; Galata 69 of 69 in 9.3 min on port 38495
+  - root-cause: 2026-11-22T22:37:00Z @kj the quiet-gap gate treated the continuing swipe as noise instead of the next gesture, so the next pull and animation never started
+  - repro: trackpad: fold a section and keep swiping; the installed build ignores the continuing swipe for 160ms instead of continuing the next pull and animation
+  - log: 2026-11-22T22:36:41Z @kj regression of DEF-PANEL-133-MOMENTUM: the owner rejected the quiet-gap gate: it stops reading the swipe; the swipe must be read after the fold and continue with the next pull and its animation
+  - log: 2026-11-22T22:36:42Z @kj edited repro added "trackpad: fold a section and keep swiping; the installed build ignores the continuing swipe for 160ms instead of continuing the next pull and animation"
+  - log: 2026-11-22T22:37:00Z @kj amended text "after a fold the swipe's momentum keeps driving the wheel, so the new section scrolls and can fold again after the fingers stopped; cause: the wheel accepts post-fold events with no gesture boundary; fix: ignore the wheel until 160 ms pass with no event; `src/vault/panel.ts`" -> "MEDIUM; the quiet-gap gate stops reading the swipe after the fold; the swipe must be read and a continuing swipe must continue with the next pull from zero and the next 400ms fold animation; a swipe that ends leaves the new section at rest; `src/vault/panel.ts`"
+  - log: 2026-11-22T23:09:15Z @kj closed: fixed: the swipe is read after the fold, its continuation drives the next pull and the next 400ms fold, and a stopped swipe leaves the new section at rest
+  - log: 2026-11-23T00:48:19Z @kj edited evidence "Jest 493 of 493, 2026-11-23: the five continuation tests; 265 of 265 in the vault suite; Galata 69 of 69 in 9.3 min on port 38495" -> "Jest 496 of 496, 2026-11-23: the eight momentum tests at vault.spec.ts:3132-3417; 268 of 268 in the vault suite; Galata 69 of 69 in 9.3 min on port 38495"
 
 ## Lint `LINT`
 

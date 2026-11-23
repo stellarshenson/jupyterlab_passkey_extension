@@ -443,7 +443,8 @@ function openFilter(panel: VaultPanel): HTMLInputElement {
 
 /**
  * Stub the harmonica's geometry (a 200 px list, a 22 px section) and lay it out, so
- * the open base is 156 px; a shorter list gives a shorter base.
+ * the open base is 156 px with two sections; a shorter list, or more sections' bands,
+ * gives a shorter base, so three sections take 222 px for the same 156 px.
  */
 function harmonica(panel: VaultPanel, listHeight = 200): void {
   const list = panel.node.querySelector(
@@ -479,6 +480,15 @@ function viewports(panel: VaultPanel): HTMLElement[] {
   return Array.from(
     panel.node.querySelectorAll<HTMLElement>('.jp-PasskeyVaultPanel-viewport')
   );
+}
+
+/** One entry in each of three categories, so a fold has a next section. */
+function threeCategories(): typeof ENTRIES {
+  return [
+    { ...ENTRIES[2], name: 'home/one', category: 'home' },
+    { ...ENTRIES[0], name: 'infra/one', category: 'infra' },
+    { ...ENTRIES[1], name: 'work/one', category: 'work' }
+  ];
 }
 
 /** A wheel event over the panel, as the harmonica's global gesture sees it. */
@@ -3119,7 +3129,120 @@ describe('VaultPanel', () => {
     }
   });
 
-  it('acts on the new section with the first wheel after the fold', async () => {
+  it('continues the swipe after the fold: the next section pulls and does not scroll', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(
+        fakeApi({ entries: jest.fn().mockResolvedValue(threeCategories()) })
+      );
+      harmonica(panel, 222);
+      const [, infra, work] = viewports(panel);
+      // The first notch adds 25px, the second reaches the give and folds.
+      wheel(panel, 100);
+      wheel(panel, 100);
+      // A fold cancels its events; they still move the gesture clock, so the fold
+      // ends 100ms after the last cancelled event.
+      await jest.advanceTimersByTimeAsync(100);
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(200);
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(100);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'true',
+        'false'
+      ]);
+      Object.defineProperty(infra, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      // The same swipe carries on: the next notch stretches the pull toward the
+      // third section from zero, and the new section's rows do not scroll.
+      expect(wheel(panel, 100).defaultPrevented).toBe(true);
+      expect(infra.style.height).toBe('131px');
+      expect(work.style.height).toBe('25px');
+      expect(infra.scrollTop).toBe(0);
+      // The next notch reaches the give and folds the third section over 400ms.
+      expect(wheel(panel, 100).defaultPrevented).toBe(true);
+      expect(infra.style.height).toBe('108px');
+      expect(work.style.height).toBe('48px');
+      await jest.advanceTimersByTimeAsync(16);
+      expect(Number.parseFloat(infra.style.height)).toBeLessThan(108);
+      expect(Number.parseFloat(work.style.height)).toBeGreaterThan(48);
+      await jest.advanceTimersByTimeAsync(400);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'false',
+        'true'
+      ]);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '0px',
+        '156px'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('continues a burst after the fold through a second fold into the third section', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(
+        fakeApi({ entries: jest.fn().mockResolvedValue(threeCategories()) })
+      );
+      harmonica(panel, 222);
+      const [, infra, work] = viewports(panel);
+      wheel(panel, 100);
+      wheel(panel, 100);
+      // The cancelled fold events move the gesture clock: the fold ends 100ms after
+      // the last one.
+      await jest.advanceTimersByTimeAsync(100);
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(200);
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(100);
+      Object.defineProperty(infra, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      // A burst after the fold builds the pull 3px at a time and never scrolls.
+      for (let n = 0; n < 15; n += 1) {
+        expect(wheel(panel, 8).defaultPrevented).toBe(true);
+      }
+      expect(infra.style.height).toBe('111px');
+      expect(work.style.height).toBe('45px');
+      expect(infra.scrollTop).toBe(0);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'true',
+        'false'
+      ]);
+      // The 16th event reaches the give: the second fold animates its own 400ms
+      // and ends with the third section open.
+      wheel(panel, 8);
+      expect(infra.style.height).toBe('108px');
+      expect(work.style.height).toBe('48px');
+      await jest.advanceTimersByTimeAsync(16);
+      expect(Number.parseFloat(infra.style.height)).toBeLessThan(108);
+      expect(Number.parseFloat(work.style.height)).toBeGreaterThan(48);
+      await jest.advanceTimersByTimeAsync(400);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'false',
+        'true'
+      ]);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '0px',
+        '156px'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('ends the swipe on a 160ms quiet gap: the next wheel scrolls the new section', async () => {
     jest.useFakeTimers();
     try {
       const panel = await panelWith(fakeApi());
@@ -3128,18 +3251,204 @@ describe('VaultPanel', () => {
       wheel(panel, 100);
       wheel(panel, 100);
       await jest.advanceTimersByTimeAsync(450);
-      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
-        'false',
-        'true'
-      ]);
       Object.defineProperty(infra, 'scrollHeight', {
         value: 500,
         configurable: true
       });
-      // A downward fold rests the new list at its top, so the first wheel scrolls it.
-      expect(infra.scrollTop).toBe(0);
+      // More than 160ms with no wheel event ends the swipe: the new section stays
+      // at rest, and the next gesture scrolls its rows.
+      await jest.advanceTimersByTimeAsync(200);
       expect(wheel(panel, 100).defaultPrevented).toBe(true);
       expect(infra.scrollTop).toBe(100);
+      // The new gesture keeps scrolling: the ended swipe stays ended.
+      await jest.advanceTimersByTimeAsync(50);
+      expect(wheel(panel, 100).defaultPrevented).toBe(true);
+      expect(infra.scrollTop).toBe(200);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '156px'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('ends the swipe at its fold when no wheel event arrives: the next wheel scrolls', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(
+        fakeApi({ entries: jest.fn().mockResolvedValue(threeCategories()) })
+      );
+      harmonica(panel, 222);
+      const [, infra] = viewports(panel);
+      wheel(panel, 100);
+      wheel(panel, 100);
+      // No wheel event during the fold: the swipe ended with the fold, so the next
+      // event is a new gesture and scrolls the open section.
+      await jest.advanceTimersByTimeAsync(450);
+      Object.defineProperty(infra, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      expect(wheel(panel, 100).defaultPrevented).toBe(true);
+      expect(infra.scrollTop).toBe(100);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '156px',
+        '0px'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('ends the continuation on a band click during the fold: the next wheel scrolls', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(
+        fakeApi({ entries: jest.fn().mockResolvedValue(threeCategories()) })
+      );
+      harmonica(panel, 222);
+      const [, infra] = viewports(panel);
+      wheel(panel, 100);
+      wheel(panel, 100);
+      await jest.advanceTimersByTimeAsync(100);
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(200);
+      wheel(panel, 8);
+      // The click clears the swipe even though the fold ignores it and runs on.
+      bands(panel)[2].click();
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(100);
+      Object.defineProperty(infra, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      expect(wheel(panel, 100).defaultPrevented).toBe(true);
+      expect(infra.scrollTop).toBe(100);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '156px',
+        '0px'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('springs a post-fold pull back and leaves the new section at rest when the swipe ends', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(
+        fakeApi({ entries: jest.fn().mockResolvedValue(threeCategories()) })
+      );
+      harmonica(panel, 222);
+      const [, infra, work] = viewports(panel);
+      wheel(panel, 100);
+      wheel(panel, 100);
+      // The cancelled fold events move the gesture clock: the fold ends 100ms after
+      // the last one.
+      await jest.advanceTimersByTimeAsync(100);
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(200);
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(100);
+      Object.defineProperty(infra, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      // One event of the continued swipe builds a 25px pull.
+      wheel(panel, 100);
+      expect(infra.style.height).toBe('131px');
+      expect(work.style.height).toBe('25px');
+      // The swipe ends: the pull springs back, with no scroll and no fold.
+      await jest.advanceTimersByTimeAsync(200);
+      expect(Number.parseFloat(work.style.height)).toBeLessThan(25);
+      await jest.advanceTimersByTimeAsync(400);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '156px',
+        '0px'
+      ]);
+      expect(infra.scrollTop).toBe(0);
+      expect(bands(panel).map(h => h.getAttribute('aria-expanded'))).toEqual([
+        'false',
+        'true',
+        'false'
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps the continuation across a resize: the next wheel pulls, not scrolls', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(
+        fakeApi({ entries: jest.fn().mockResolvedValue(threeCategories()) })
+      );
+      harmonica(panel, 222);
+      const [, infra, work] = viewports(panel);
+      wheel(panel, 100);
+      wheel(panel, 100);
+      // The cancelled fold events move the gesture clock: the fold ends 100ms after
+      // the last one.
+      await jest.advanceTimersByTimeAsync(100);
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(200);
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(100);
+      Object.defineProperty(infra, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      // A resize inside the continuation stops any animation but must not end the
+      // swipe: the next wheel still pulls the third section.
+      MessageLoop.sendMessage(panel, Widget.ResizeMessage.UnknownSize);
+      expect(wheel(panel, 100).defaultPrevented).toBe(true);
+      expect(infra.style.height).toBe('131px');
+      expect(work.style.height).toBe('25px');
+      expect(infra.scrollTop).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('ends the continuation on a direction change: the next wheel scrolls, not pulls', async () => {
+    jest.useFakeTimers();
+    try {
+      const panel = await panelWith(
+        fakeApi({ entries: jest.fn().mockResolvedValue(threeCategories()) })
+      );
+      harmonica(panel, 222);
+      const [, infra, work] = viewports(panel);
+      wheel(panel, 100);
+      wheel(panel, 100);
+      // The cancelled fold events move the gesture clock: the fold ends 100ms after
+      // the last one.
+      await jest.advanceTimersByTimeAsync(100);
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(200);
+      wheel(panel, 8);
+      await jest.advanceTimersByTimeAsync(100);
+      Object.defineProperty(infra, 'scrollHeight', {
+        value: 500,
+        configurable: true
+      });
+      // One notch of the continued swipe pulls the third section.
+      wheel(panel, 100);
+      expect(infra.style.height).toBe('131px');
+      expect(work.style.height).toBe('25px');
+      // The reversal ends the continuation: the downward wheel that follows scrolls
+      // the open section instead of pulling the third.
+      wheel(panel, -100);
+      expect(wheel(panel, 100).defaultPrevented).toBe(true);
+      expect(infra.scrollTop).toBe(100);
+      expect(viewports(panel).map(v => v.style.height)).toEqual([
+        '0px',
+        '156px',
+        '0px'
+      ]);
     } finally {
       jest.useRealTimers();
     }

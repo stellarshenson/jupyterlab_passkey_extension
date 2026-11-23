@@ -260,6 +260,7 @@ const GIVE_BASE_PX = 88; // below this the give length is half the base
 const PULL_RELEASE_MS = 160; // idle before the spring starts
 const SPRING_MS = 300; // the spring settles by this time
 const FOLD_MS = 400; // the fold from one category to the next
+const SWIPE_GAP_MS = 160; // no wheel event for this long ends the swipe
 const WHEEL_LINE_PX = 16; // px in one line-mode wheel delta
 
 /** One category of the main list: its band, and the viewport that scrolls its rows. */
@@ -436,6 +437,7 @@ export class VaultPanel extends Widget {
   protected onBeforeHide(msg: Message): void {
     this._stopTimer();
     this._stopHarmonica();
+    this._clearContinuation();
     // A panel shown again starts in its main view, not in the settings it was left in.
     if (this._view === 'settings') {
       this._view = 'main';
@@ -451,6 +453,7 @@ export class VaultPanel extends Widget {
   protected onBeforeDetach(msg: Message): void {
     this._stopTimer();
     this._stopHarmonica();
+    this._clearContinuation();
   }
 
   /** A splitter drag changes the free space and the scrollbar without a render. */
@@ -1490,6 +1493,7 @@ export class VaultPanel extends Widget {
 
   /** Open a category from its band: every other one folds to its band at once. */
   private _openSection(i: number): void {
+    this._clearContinuation();
     if (this._folding) {
       return;
     }
@@ -1594,6 +1598,39 @@ export class VaultPanel extends Widget {
   }
 
   /**
+   * Ease the neighbour in by max(3px, |dy| / 4) from the pull on screen, up to the
+   * give length; the event that reaches it folds.
+   */
+  private _pullNext(i: number, to: number, dir: number, dy: number): void {
+    let from = Math.max(0, this._pull.amount);
+    if (this._pull.from !== i || this._pull.to !== to) {
+      // A direction change drops the preview and starts at zero.
+      this._clearPull();
+      from = 0;
+    } else {
+      this._stopSpring();
+    }
+    const give = this._giveLength(this._baseHeights[i] ?? 0);
+    this._pull = {
+      from: i,
+      to,
+      amount: Math.min(give, from + Math.max(3, Math.abs(dy) / 4))
+    };
+    this._apply();
+    if (dir < 0) {
+      // Upward, the neighbour previews its last rows.
+      this._sections[to].viewport.scrollTop =
+        this._sections[to].viewport.scrollHeight;
+    }
+    if (this._pull.amount >= give) {
+      // The event that reaches the give length folds on the same event.
+      this._foldInto(to, dir);
+      return;
+    }
+    this._armSpring();
+  }
+
+  /**
    * Fold `from` into its band while `to` opens over FOLD_MS, ease-out cubic,
    * from the heights on screen: leaving at its base less the pull, entering
    * at the pull, both reaching 0 and the free space.
@@ -1603,6 +1640,7 @@ export class VaultPanel extends Widget {
       return;
     }
     this._folding = true;
+    const token = this._foldToken;
     this._stopSpring();
     const from = this._focus;
     const base = this._baseHeights[from] ?? 0;
@@ -1638,6 +1676,11 @@ export class VaultPanel extends Widget {
       this._focus = to;
       this._openCategory = this._sections[to].category;
       this._folding = false;
+      // The same swipe continues: its next events pull the next section from zero.
+      if (token === this._foldToken) {
+        this._continuation = true;
+        this._continuationDir = dir;
+      }
       this._frame = null;
       this._layoutHeights();
     };
@@ -1661,10 +1704,20 @@ export class VaultPanel extends Widget {
     this._pull = { from: -1, to: -1, amount: 0 };
   }
 
+  /** A new gesture: the wheel no longer continues the fold. */
+  private _clearContinuation(): void {
+    this._continuation = false;
+    this._continuationDir = 0;
+    this._lastWheelAt = 0;
+    this._foldToken += 1;
+  }
+
   /**
    * The harmonica's one gesture: the wheel anywhere over the panel drives the category
    * in focus - expand, scroll, pull, then fold. The event that brings the pull to the
-   * give length folds; nothing else does.
+   * give length folds; nothing else does. The wheel is read for the whole swipe: after
+   * a fold the same swipe stretches the next section's pull from zero, until a 160ms
+   * quiet gap or a direction change ends it.
    */
   private readonly _onWheel = (e: WheelEvent): void => {
     if (
@@ -1677,22 +1730,46 @@ export class VaultPanel extends Widget {
     if (!e.deltaY) {
       return;
     }
-    // A wheel during the fold is cancelled and does nothing; no settle follows.
+    const now = Date.now();
+    const gap = now - this._lastWheelAt;
+    this._lastWheelAt = now;
     if (this._folding) {
+      // A fold cancels every event; the cancelled events still move the gesture clock.
       e.preventDefault();
       return;
     }
-    if (this._freeSpace() <= 0) {
-      // The bands alone do not fit: the list scrolls natively, as before.
-      return;
-    }
     const dir = e.deltaY > 0 ? 1 : -1;
-    e.preventDefault();
     // Firefox mouse wheels report lines, not pixels; the native scroll is already off.
     const dy =
       e.deltaMode === WheelEvent.DOM_DELTA_LINE
         ? e.deltaY * WHEEL_LINE_PX
         : e.deltaY;
+    // The same swipe continues after a fold: its events stretch the next section's
+    // pull from zero and never scroll the new section's rows, and the event that
+    // reaches the give folds it with its own animation. A 160ms quiet gap or an
+    // opposite direction ends the continuation; that event is a new gesture.
+    if (
+      this._continuation &&
+      gap <= SWIPE_GAP_MS &&
+      dir === this._continuationDir
+    ) {
+      e.preventDefault();
+      const to = this._focus + dir;
+      if (to < 0 || to >= this._sections.length) {
+        // No neighbour to pull: the event is absorbed.
+        return;
+      }
+      this._pullNext(this._focus, to, dir, dy);
+      return;
+    }
+    if (this._continuation) {
+      this._clearContinuation();
+    }
+    if (this._freeSpace() <= 0) {
+      // The bands alone do not fit: the list scrolls natively, as before.
+      return;
+    }
+    e.preventDefault();
     let i = this._focus;
     if ((this._baseHeights[i] ?? 0) === 0) {
       i = this._openFrom(i, dir);
@@ -1726,32 +1803,7 @@ export class VaultPanel extends Widget {
       this._clearPull();
       return;
     }
-    let from = Math.max(0, this._pull.amount);
-    if (this._pull.from !== i || this._pull.to !== to) {
-      // A direction change drops the preview and starts at zero.
-      this._clearPull();
-      from = 0;
-    } else {
-      this._stopSpring();
-    }
-    const give = this._giveLength(base);
-    this._pull = {
-      from: i,
-      to,
-      amount: Math.min(give, from + Math.max(3, Math.abs(dy) / 4))
-    };
-    this._apply();
-    if (dir < 0) {
-      // Upward, the neighbour previews its last rows.
-      this._sections[to].viewport.scrollTop =
-        this._sections[to].viewport.scrollHeight;
-    }
-    if (this._pull.amount >= give) {
-      // The event that reaches the give length folds on the same event.
-      this._foldInto(to, dir);
-      return;
-    }
-    this._armSpring();
+    this._pullNext(i, to, dir, dy);
   };
 
   /**
@@ -2132,6 +2184,11 @@ export class VaultPanel extends Widget {
   private _pull = { from: -1, to: -1, amount: 0 };
   private _pullTimer: number | null = null;
   private _folding = false;
+  /** After a fold, the same swipe stretches the next section's pull. */
+  private _continuation = false;
+  private _continuationDir = 0;
+  private _lastWheelAt = 0;
+  private _foldToken = 0;
   private _frame: number | null = null;
   private _armed: string | null = null;
   private _bannerShown = '';
